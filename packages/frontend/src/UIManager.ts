@@ -16,7 +16,7 @@ export class UIManager {
   // Screen instances
   private lobbyListScreen: LobbyListScreen;
   private lobbyScreen: LobbyScreen;
-  private gameScreen: GameScreen;
+  private gameScreen: GameScreen | null = null;
   private resultsScreen: ResultsScreen;
 
   constructor(gameManager: GameManager) {
@@ -27,10 +27,9 @@ export class UIManager {
     this.container.id = 'app-container';
     document.body.appendChild(this.container);
 
-    // Initialize all screens
+    // Initialize screens (GameScreen is created on-demand with lobbyId)
     this.lobbyListScreen = new LobbyListScreen(this.container);
     this.lobbyScreen = new LobbyScreen(this.container);
-    this.gameScreen = new GameScreen(this.container);
     this.resultsScreen = new ResultsScreen(this.container);
 
     this.setupEventListeners();
@@ -79,7 +78,9 @@ export class UIManager {
         break;
       case 'game':
         if (param) {
-          this.gameScreen.show(param);
+          // Create GameScreen with lobbyId
+          this.gameScreen = new GameScreen(this.container, param);
+          this.gameScreen.show();
         }
         break;
       case 'results':
@@ -104,7 +105,9 @@ export class UIManager {
         this.lobbyScreen.hide();
         break;
       case 'game':
-        this.gameScreen.hide();
+        if (this.gameScreen) {
+          this.gameScreen.hide();
+        }
         break;
       case 'results':
         this.resultsScreen.hide();

@@ -1,18 +1,19 @@
 /**
- * ResultsScreen - Shows game results and statistics
+ * ResultsScreen - Shows Go Fish game results and statistics
  */
 
-import type { GameState, Player } from '../../../shared/data-types/src/game-types';
-import { GameService } from '../services/GameService';
+import type { GoFishGameState, GoFishPlayer } from '../../../shared/data-types/src/go-fish-types';
+import { GoFishGameService } from '../services/GoFishGameService';
+import { CardComponent } from '../components/Card';
 
 export class ResultsScreen {
-  private gameService: GameService;
+  private gameService: GoFishGameService;
   private container: HTMLElement;
   private lobbyId: string = '';
 
   constructor(container: HTMLElement) {
     this.container = container;
-    this.gameService = GameService.getInstance();
+    this.gameService = GoFishGameService.getInstance();
   }
 
   show(lobbyId: string) {
@@ -44,116 +45,94 @@ export class ResultsScreen {
     this.attachEventListeners();
   }
 
-  private renderResultsBanner(game: GameState): string {
-    const winner = game.winner;
-    const isWinner = winner === 'werewolves'
-      ? 'werewolf'
-      : winner === 'villagers'
-      ? ['villager', 'seer', 'doctor']
-      : [];
-
+  private renderResultsBanner(game: GoFishGameState): string {
+    const winner = game.players.find(p => p.id === game.winner);
     const currentPlayer = this.gameService.getCurrentPlayer(this.lobbyId);
-    const playerWon = currentPlayer && Array.isArray(isWinner)
-      ? isWinner.includes(currentPlayer.role || '')
-      : currentPlayer?.role === isWinner;
+    const isWinner = currentPlayer?.id === game.winner;
 
     return `
-      <div class="results-banner ${winner}">
+      <div class="results-banner ${isWinner ? 'victory' : 'defeat'}">
         <div class="winner-announcement">
-          <h1>${winner === 'werewolves' ? '🐺 Werewolves Win!' : '🏘️ Villagers Win!'}</h1>
-          <p class="result-subtitle">
-            ${winner === 'werewolves'
-              ? 'The werewolves have overrun the village!'
-              : 'The village has eliminated all werewolves!'}
-          </p>
-          ${currentPlayer ? `
-            <div class="player-result ${playerWon ? 'victory' : 'defeat'}">
-              ${playerWon ? '🎉 Victory!' : '💀 Defeat'}
-            </div>
-          ` : ''}
+          <h1>🎣 Game Over!</h1>
+          <div class="result-subtitle">
+            ${winner ? `${winner.name} wins with ${winner.books.length} books!` : 'Game ended'}
+          </div>
+          <div class="player-result ${isWinner ? 'victory' : 'defeat'}">
+            ${isWinner ? '🏆 Victory!' : '😔 Better luck next time!'}
+          </div>
         </div>
       </div>
     `;
   }
 
-  private renderPlayerStats(game: GameState): string {
-    const survivors = game.players.filter(p => p.isAlive);
-    const eliminated = game.players.filter(p => !p.isAlive);
+  private renderPlayerStats(game: GoFishGameState): string {
+    // Sort players by number of books (descending)
+    const sortedPlayers = [...game.players].sort((a, b) => b.books.length - a.books.length);
 
     return `
       <div class="player-stats">
         <div class="stats-section">
-          <h2>👥 Survivors (${survivors.length})</h2>
+          <h2>Final Standings</h2>
           <div class="player-list">
-            ${survivors.map(player => this.renderPlayerCard(player, true)).join('')}
+            ${sortedPlayers.map((player, index) => this.renderPlayerCard(player, index + 1, game)).join('')}
           </div>
         </div>
-
-        ${eliminated.length > 0 ? `
-          <div class="stats-section">
-            <h2>💀 Eliminated (${eliminated.length})</h2>
-            <div class="player-list">
-              ${eliminated.map(player => this.renderPlayerCard(player, false)).join('')}
-            </div>
-          </div>
-        ` : ''}
       </div>
     `;
   }
 
-  private renderPlayerCard(player: Player, isAlive: boolean): string {
-    const roleEmoji = {
-      werewolf: '🐺',
-      villager: '👤',
-      seer: '🔮',
-      doctor: '⚕️',
-    };
-
-    const roleColors = {
-      werewolf: '#d32f2f',
-      villager: '#1976d2',
-      seer: '#7b1fa2',
-      doctor: '#388e3c',
-    };
+  private renderPlayerCard(player: GoFishPlayer, rank: number, game: GoFishGameState): string {
+    const isWinner = player.id === game.winner;
+    const currentPlayerId = this.gameService.getPlayerId();
+    const isCurrentPlayer = player.id === currentPlayerId;
 
     return `
-      <div class="player-card ${isAlive ? 'alive' : 'eliminated'}">
-        <div class="player-avatar" style="background-color: ${roleColors[player.role || 'villager']}">
-          ${roleEmoji[player.role || 'villager']}
+      <div class="player-card ${isWinner ? 'winner-card' : ''}">
+        <div class="player-rank">
+          ${rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`}
         </div>
         <div class="player-info">
-          <div class="player-name">${player.name}</div>
-          <div class="player-role" style="color: ${roleColors[player.role || 'villager']}">
-            ${player.role ? player.role.charAt(0).toUpperCase() + player.role.slice(1) : 'Unknown'}
+          <div class="player-name">
+            ${player.name} ${isCurrentPlayer ? '(You)' : ''}
+          </div>
+          <div class="player-books-result">
+            <strong>${player.books.length}</strong> ${player.books.length === 1 ? 'Book' : 'Books'}
+          </div>
+          <div class="books-display">
+            ${player.books.map(rank => CardComponent.renderBook(rank)).join('')}
           </div>
         </div>
       </div>
     `;
   }
 
-  private renderGameSummary(game: GameState): string {
+  private renderGameSummary(game: GoFishGameState): string {
     const duration = game.endedAt && game.startedAt
-      ? Math.floor((game.endedAt - game.startedAt) / 1000)
+      ? Math.floor((game.endedAt - game.startedAt) / 1000 / 60)
       : 0;
 
-    const minutes = Math.floor(duration / 60);
-    const seconds = duration % 60;
+    const totalBooks = game.players.reduce((sum, p) => sum + p.books.length, 0);
+    const avgBooks = (totalBooks / game.players.length).toFixed(1);
 
     return `
       <div class="game-summary">
-        <h2>📊 Game Summary</h2>
+        <h2>Game Statistics</h2>
         <div class="summary-stats">
           <div class="stat-item">
-            <span class="stat-label">Total Rounds:</span>
-            <span class="stat-value">${game.round}</span>
+            <span class="stat-label">Duration</span>
+            <span class="stat-value">${duration} min</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">Duration:</span>
-            <span class="stat-value">${minutes}m ${seconds}s</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Total Players:</span>
+            <span class="stat-label">Total Players</span>
             <span class="stat-value">${game.players.length}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Total Books</span>
+            <span class="stat-value">${totalBooks}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Avg Books/Player</span>
+            <span class="stat-value">${avgBooks}</span>
           </div>
         </div>
       </div>
@@ -163,24 +142,18 @@ export class ResultsScreen {
   private renderActions(): string {
     return `
       <div class="results-actions">
-        <button class="btn btn-primary" id="return-lobby-btn">
-          Return to Lobby List
-        </button>
+        <button id="return-to-lobby-btn" class="btn btn-primary">Return to Lobby List</button>
       </div>
     `;
   }
 
   private attachEventListeners() {
-    const returnBtn = document.getElementById('return-lobby-btn');
-    if (returnBtn) {
-      returnBtn.addEventListener('click', () => {
-        this.dispatchEvent('navigate', { screen: 'lobby-list' });
-      });
-    }
+    document.getElementById('return-to-lobby-btn')?.addEventListener('click', () => {
+      this.dispatchEvent('navigate', { screen: 'lobby-list' });
+    });
   }
 
-  private dispatchEvent(eventType: string, detail: any) {
-    const event = new CustomEvent(eventType, { detail });
-    this.container.dispatchEvent(event);
+  private dispatchEvent(type: string, detail: any) {
+    this.container.dispatchEvent(new CustomEvent(type, { detail, bubbles: true }));
   }
 }

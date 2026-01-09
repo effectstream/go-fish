@@ -2,17 +2,17 @@
  * Lobby List Screen - Shows available lobbies and create lobby option
  */
 
-import { GameService } from '../services/GameService';
-import type { Lobby } from '../../../shared/data-types/src/game-types';
+import { GoFishGameService } from '../services/GoFishGameService';
+import type { Lobby } from '../../../shared/data-types/src/go-fish-types';
 
 export class LobbyListScreen {
   private container: HTMLElement;
-  private gameService: GameService;
+  private gameService: GoFishGameService;
   private refreshInterval?: number;
 
   constructor(container: HTMLElement) {
     this.container = container;
-    this.gameService = GameService.getInstance();
+    this.gameService = GoFishGameService.getInstance();
   }
 
   show() {
@@ -102,11 +102,11 @@ export class LobbyListScreen {
             <div class="form-group">
               <label>Max Players:</label>
               <select id="max-players">
-                <option value="4">4 Players</option>
+                <option value="2">2 Players</option>
+                <option value="3">3 Players</option>
+                <option value="4" selected>4 Players</option>
+                <option value="5">5 Players</option>
                 <option value="6">6 Players</option>
-                <option value="8" selected>8 Players</option>
-                <option value="10">10 Players</option>
-                <option value="12">12 Players</option>
               </select>
             </div>
             <div class="modal-actions">

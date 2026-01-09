@@ -1,19 +1,19 @@
 /**
- * Lobby Screen - Waiting room with chat before game starts
+ * Lobby Screen - Waiting room before game starts
  */
 
-import { GameService } from '../services/GameService';
-import type { GameState, Player, ChatMessage } from '../../../shared/data-types/src/game-types';
+import { GoFishGameService } from '../services/GoFishGameService';
+import type { GoFishGameState, GoFishPlayer } from '../../../shared/data-types/src/go-fish-types';
 
 export class LobbyScreen {
   private container: HTMLElement;
-  private gameService: GameService;
+  private gameService: GoFishGameService;
   private lobbyId: string = '';
   private refreshInterval?: number;
 
   constructor(container: HTMLElement) {
     this.container = container;
-    this.gameService = GameService.getInstance();
+    this.gameService = GoFishGameService.getInstance();
   }
 
   show(lobbyId: string) {
@@ -47,13 +47,6 @@ export class LobbyScreen {
     const isHost = game.hostId === this.gameService.getPlayerId();
     const canStart = this.gameService.canStartGame(this.lobbyId);
 
-    // Store chat input value and focus state before re-render
-    const chatInput = document.getElementById('chat-input') as HTMLInputElement;
-    const chatValue = chatInput?.value || '';
-    const chatIsFocused = document.activeElement === chatInput;
-    const chatCursorStart = chatInput?.selectionStart || 0;
-    const chatCursorEnd = chatInput?.selectionEnd || 0;
-
     this.container.innerHTML = `
       <div class="lobby-screen">
         <div class="lobby-header">
@@ -63,7 +56,7 @@ export class LobbyScreen {
 
         <div class="lobby-content">
           <!-- Players Panel -->
-          <div class="players-panel">
+          <div class="players-panel full-width">
             <h2>Players (${game.players.length}/${game.maxPlayers})</h2>
             <div class="players-list">
               ${game.players.map(p => this.renderPlayer(p, game)).join('')}
@@ -82,7 +75,7 @@ export class LobbyScreen {
                 <p class="info-text">
                   ${canStart
                     ? 'All players are ready!'
-                    : `Need ${game.players.length < 4 ? (4 - game.players.length) + ' more players and ' : ''}all players to ready up`
+                    : `Need ${game.players.length < 2 ? (2 - game.players.length) + ' more player(s) and ' : ''}all players to ready up`
                   }
                 </p>
                 <button
@@ -95,54 +88,27 @@ export class LobbyScreen {
               </div>
             ` : ''}
           </div>
-
-          <!-- Chat Panel -->
-          <div class="chat-panel">
-            <h2>Chat</h2>
-            <div id="chat-messages" class="chat-messages">
-              ${this.renderChatMessages()}
-            </div>
-            <div class="chat-input-container">
-              <input
-                type="text"
-                id="chat-input"
-                placeholder="Type a message..."
-                maxlength="200"
-                value="${chatValue}"
-              />
-              <button id="send-chat-btn" class="btn btn-primary">Send</button>
-            </div>
-          </div>
         </div>
 
         <!-- Game Rules -->
         <div class="game-rules">
-          <h3>How to Play</h3>
+          <h3>How to Play Go Fish</h3>
           <ul>
-            <li><strong>Werewolves</strong>: Kill a villager each night</li>
-            <li><strong>Villagers</strong>: Vote out werewolves during the day</li>
-            <li><strong>Seer</strong>: Investigate one player each night</li>
-            <li><strong>Doctor</strong>: Protect one player from werewolves each night</li>
+            <li><strong>Objective</strong>: Collect the most "books" (sets of 4 cards of the same rank)</li>
+            <li><strong>Your Turn</strong>: Ask any player for cards of a specific rank you have in your hand</li>
+            <li><strong>Success</strong>: If they have cards of that rank, they give them all to you and you go again</li>
+            <li><strong>Go Fish!</strong>: If they don't have any, you draw a card from the deck</li>
+            <li><strong>Books</strong>: When you collect all 4 cards of a rank, they automatically form a book</li>
+            <li><strong>Winning</strong>: The player with the most books when the deck runs out wins!</li>
           </ul>
-          <p>Werewolves win if they equal or outnumber villagers. Villagers win if all werewolves are eliminated.</p>
         </div>
       </div>
     `;
 
-    // Restore chat input focus and cursor position
-    if (chatIsFocused) {
-      const newChatInput = document.getElementById('chat-input') as HTMLInputElement;
-      if (newChatInput) {
-        newChatInput.focus();
-        newChatInput.setSelectionRange(chatCursorStart, chatCursorEnd);
-      }
-    }
-
     this.attachEventListeners();
-    this.scrollChatToBottom();
   }
 
-  private renderPlayer(player: Player, game: GameState): string {
+  private renderPlayer(player: GoFishPlayer, game: GoFishGameState): string {
     const isHost = player.id === game.hostId;
     const isCurrentPlayer = player.id === this.gameService.getPlayerId();
 
@@ -156,43 +122,6 @@ export class LobbyScreen {
         <span class="player-status ${player.isReady ? 'ready' : ''}">
           ${player.isReady ? '✓ Ready' : '○ Not Ready'}
         </span>
-      </div>
-    `;
-  }
-
-  private renderChatMessages(): string {
-    const messages = this.gameService.getMessages(this.lobbyId);
-
-    if (messages.length === 0) {
-      return '<div class="empty-chat">No messages yet. Say hello!</div>';
-    }
-
-    return messages.map(msg => this.renderChatMessage(msg)).join('');
-  }
-
-  private renderChatMessage(msg: ChatMessage): string {
-    const time = new Date(msg.timestamp).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    if (msg.isSystem) {
-      return `
-        <div class="chat-message system-message">
-          <span class="message-content">${msg.message}</span>
-        </div>
-      `;
-    }
-
-    const isOwnMessage = msg.playerId === this.gameService.getPlayerId();
-
-    return `
-      <div class="chat-message ${isOwnMessage ? 'own-message' : ''}">
-        <div class="message-header">
-          <span class="message-sender">${msg.playerName}</span>
-          <span class="message-time">${time}</span>
-        </div>
-        <div class="message-content">${this.escapeHtml(msg.message)}</div>
       </div>
     `;
   }
@@ -217,39 +146,6 @@ export class LobbyScreen {
         this.dispatchEvent('navigate', { screen: 'game', lobbyId: this.lobbyId });
       }
     });
-
-    // Chat input
-    const chatInput = document.getElementById('chat-input') as HTMLInputElement;
-    const sendBtn = document.getElementById('send-chat-btn');
-
-    const sendMessage = () => {
-      const message = chatInput?.value.trim();
-      if (message) {
-        this.gameService.sendMessage(this.lobbyId, message);
-        chatInput.value = '';
-        this.render();
-      }
-    };
-
-    sendBtn?.addEventListener('click', sendMessage);
-    chatInput?.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        sendMessage();
-      }
-    });
-  }
-
-  private scrollChatToBottom() {
-    const chatMessages = document.getElementById('chat-messages');
-    if (chatMessages) {
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-  }
-
-  private escapeHtml(text: string): string {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
   }
 
   private dispatchEvent(type: string, detail: any) {
