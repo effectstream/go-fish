@@ -2,8 +2,8 @@
  * RoleAssigner - Handles random role assignment for players
  */
 
-import type { Player, PlayerRole, GameConfig } from '@werewolf/data-types';
-import { DEFAULT_GAME_CONFIG } from '@werewolf/data-types';
+import type { Player, PlayerRole, GameConfig } from '@go-fish/data-types';
+import { DEFAULT_GAME_CONFIG } from '@go-fish/data-types';
 
 export class RoleAssigner {
   /**

@@ -21,7 +21,7 @@ batcher
 batcher
   .addStateTransition("startup", ({ publicConfig }) => {
     const banner =
-      `🎮 Werewolf Batcher startup - polling every ${publicConfig.pollingIntervalMs} ms\n` +
+      `🎮 Go Fish Batcher startup - polling every ${publicConfig.pollingIntervalMs} ms\n` +
       `      | 📍 Default Target: ${publicConfig.defaultTarget}\n` +
       `      | ⛓️ Blockchain Adapter Targets: ${publicConfig.adapterTargets.join(", ")}\n` +
       `      | 📋 Press Ctrl+C to stop gracefully`;
@@ -39,7 +39,7 @@ batcher
   });
 
 main(function* () {
-  console.log("🚀 Starting Werewolf Batcher...");
+  console.log("🚀 Starting Go Fish Batcher...");
   try {
     yield* batcher.runBatcher();
   } catch (error) {

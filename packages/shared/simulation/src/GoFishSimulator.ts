@@ -1,13 +1,13 @@
 /**
- * WerewolfSimulator - Core game simulation logic
+ * GoFishSimulator - Core game simulation logic
  *
  * This runs on both frontend (for instant feedback) and backend (for authoritative state)
  */
 
-import type { GameState, Player, Vote, NightAction } from '@werewolf/data-types';
+import type { GameState, Player, Vote, NightAction } from '@go-fish/data-types';
 import type { SimulationResult, PhaseResult, GameEvent } from './types.ts';
 
-export class WerewolfSimulator {
+export class GoFishSimulator {
   private gameState: GameState;
 
   constructor(gameState: GameState) {

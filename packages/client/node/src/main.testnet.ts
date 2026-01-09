@@ -5,12 +5,12 @@
 import { initPaima } from '@paimaexample/runtime';
 import { stateMachineDefinition } from './state-machine.ts';
 import { createRouter } from './api.game.ts';
-import config from '@werewolf/data-types/config.testnet.ts';
+import config from '@go-fish/data-types/config.testnet.ts';
 
 const PORT = 9999;
 
 async function main() {
-  console.log('Starting Werewolf Game - Paima Engine (Testnet Mode)');
+  console.log('Starting Go Fish Game - Paima Engine (Testnet Mode)');
   console.log(`API Server will run on port ${PORT}`);
 
   try {

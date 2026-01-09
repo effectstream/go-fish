@@ -3,7 +3,7 @@
  */
 
 import { PaimaSTM } from "@paimaexample/sm";
-import { grammar } from "@werewolf/data-types/grammar";
+import { grammar } from "@go-fish/data-types/grammar";
 import type { StartConfigGameStateTransitions } from "@paimaexample/runtime";
 import { World } from "@paimaexample/coroutine";
 

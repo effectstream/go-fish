@@ -2,7 +2,7 @@
  * Simulation-specific types
  */
 
-import type { GameState, Player, Vote, NightAction } from '@werewolf/data-types';
+import type { GameState, Player, Vote, NightAction } from '@go-fish/data-types';
 
 export interface SimulationResult {
   success: boolean;

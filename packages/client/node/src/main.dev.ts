@@ -4,23 +4,23 @@
 
 import { init, start } from "@paimaexample/runtime";
 import { main, suspend } from "effection";
-import { config } from "@werewolf/data-types/config-dev";
+import { config } from "@go-fish/data-types/config-dev";
 import {
   toSyncProtocolWithNetwork,
   withEffectstreamStaticConfig,
 } from "@paimaexample/config";
-import { migrationTable } from "@werewolf/database";
+import { migrationTable } from "@go-fish/database";
 import { gameStateTransitions } from "./state-machine.ts";
 import { apiRouter } from "./api.ts";
-import { grammar } from "@werewolf/data-types/grammar";
+import { grammar } from "@go-fish/data-types/grammar";
 
 main(function* () {
   yield* init();
-  console.log("Starting Werewolf Game - Paima Engine Node (Development Mode)");
+  console.log("Starting Go Fish Game - Paima Engine Node (Development Mode)");
 
   yield* withEffectstreamStaticConfig(config, function* () {
     yield* start({
-      appName: "werewolf-game",
+      appName: "go-fish-game",
       appVersion: "0.1.0",
       syncInfo: toSyncProtocolWithNetwork(config),
       gameStateTransitions,

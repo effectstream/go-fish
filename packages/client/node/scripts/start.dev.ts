@@ -40,7 +40,7 @@ const customProcesses = [
   /** BATCHER-BLOCK */
   {
     name: "batcher",
-    args: ["task", "-f", "@werewolf/batcher", "start"],
+    args: ["task", "-f", "@go-fish/batcher", "start"],
     waitToExit: false,
     type: "system-dependency",
     link: "http://localhost:3334",
