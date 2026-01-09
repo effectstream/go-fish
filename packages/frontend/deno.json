@@ -1,0 +1,17 @@
+{
+  "name": "@go-fish/frontend",
+  "version": "0.1.0",
+  "exports": "./src/main.ts",
+  "nodeModulesDir": "auto",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"]
+  },
+  "imports": {
+    "assert": "node:assert",
+    "buffer": "node:buffer",
+    "process": "node:process",
+    "crypto": "node:crypto",
+    "stream": "node:stream",
+    "util": "node:util"
+  }
+}

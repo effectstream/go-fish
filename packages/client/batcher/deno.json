@@ -1,0 +1,23 @@
+{
+  "name": "@go-fish/batcher",
+  "version": "0.1.0",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "tasks": {
+    "start": "deno run -A --unstable-detect-cjs src/main.ts",
+    "dev": "deno run -A --unstable-detect-cjs src/main.ts"
+  },
+  "imports": {
+    "@paimaexample/batcher": "jsr:@paimaexample/batcher@0.3.128",
+    "@paimaexample/utils": "jsr:@paimaexample/utils@0.3.128",
+    "@paimaexample/concise": "jsr:@paimaexample/concise@0.3.128",
+    "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.3.128",
+    "@paimaexample/crypto": "jsr:@paimaexample/crypto@0.3.128",
+    "effection": "npm:effection@^3.5.0",
+    "@std/path": "jsr:@std/path@^1.1.3",
+    "viem": "npm:viem@2.37.3",
+    "viem/chains": "npm:viem@2.37.3/chains",
+    "@go-fish/data-types": "../../../packages/shared/data-types/src/mod.ts"
+  }
+}

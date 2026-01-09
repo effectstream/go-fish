@@ -1,0 +1,41 @@
+{
+  "name": "@go-fish/node",
+  "version": "0.1.0",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "tasks": {
+    "check": "echo 'Skipping type check - @types/node resolution issue'",
+
+    "node:start:dev": "deno run -A --inspect --unstable-raw-imports src/main.dev.ts",
+    "node:start:testnet": "deno run -A --inspect --unstable-raw-imports src/main.testnet.ts",
+
+    "dev": "EFFECTSTREAM_ENV=dev NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.dev.ts",
+    "testnet": "EFFECTSTREAM_ENV=testnet NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.testnet.ts"
+  },
+  "imports": {
+    // Paima packages
+    "@paimaexample/concise": "jsr:@paimaexample/concise@0.3.128",
+    "@paimaexample/config": "jsr:@paimaexample/config@0.3.128",
+    "@paimaexample/log": "jsr:@paimaexample/log@0.3.128",
+    "@paimaexample/orchestrator": "jsr:@paimaexample/orchestrator@0.3.128",
+    "@paimaexample/runtime": "jsr:@paimaexample/runtime@0.3.128",
+    "@paimaexample/tui": "jsr:@paimaexample/tui@0.3.128",
+    "@paimaexample/utils": "jsr:@paimaexample/utils@0.3.128",
+    "@paimaexample/sm": "jsr:@paimaexample/sm@0.3.128",
+    "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.3.128",
+    "@paimaexample/db": "jsr:@paimaexample/db@0.3.128",
+    "fastify": "npm:fastify@^5.4.0",
+    "pg": "npm:pg@^8.14.0",
+    "@sinclair/typebox": "npm:@sinclair/typebox@^0.34.30",
+    "effection": "npm:effection@^3.5.0",
+    "@paimaexample/explorer": "npm:@paimaexample/explorer@0.3.128",
+    "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v1@1.0.0-alpha.5",
+    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1",
+    "@midnight-ntwrk/wallet-sdk-address-format": "npm:@midnight-ntwrk/wallet-sdk-address-format@3.0.0-beta.9",
+    "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger",
+    "@midnight-ntwrk/ledger-v6": "npm:@midnight-ntwrk/ledger-v6@6.1.0-alpha.6",
+    "@midnight-ntwrk/zswap": "npm:@midnight-ntwrk/zswap@4.0.0",
+    "@types/node": "npm:@types/node@^20.0.0"
+  }
+}

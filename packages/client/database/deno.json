@@ -1,0 +1,17 @@
+{
+  "name": "@go-fish/database",
+  "version": "0.1.0",
+  "exports": "./src/mod.ts",
+  "tasks": {
+    "pgtyped:update": "npx pgtyped -c pgtyped.config.json"
+  },
+  "imports": {
+    "@paimaexample/config": "jsr:@paimaexample/config@0.3.128",
+    "@paimaexample/runtime": "jsr:@paimaexample/runtime@0.3.128",
+    "@paimaexample/sm": "jsr:@paimaexample/sm@0.3.128",
+    "@paimaexample/db": "jsr:@paimaexample/db@0.3.128",
+    "@pgtyped/runtime": "npm:@pgtyped/runtime@2.4.2",
+    "pg": "npm:pg@^8.14.0",
+    "effection": "npm:effection@3.5.0"
+  }
+}

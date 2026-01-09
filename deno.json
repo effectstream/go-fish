@@ -1,0 +1,28 @@
+{
+  "workspace": [
+    "./packages/**/*"
+  ],
+  "nodeModulesDir": "auto",
+  "tasks": {
+    "dev": "deno task --filter @go-fish/node dev",
+    "testnet": "deno task --filter @go-fish/node testnet",
+    "frontend:dev": "cd packages/frontend && npm run dev",
+    "frontend:build": "cd packages/frontend && npm run build"
+  },
+  "imports": {
+    // Workaround for missing Midnight dependencies
+    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.3.128"
+  },
+  "lint": {
+    "rules": {
+      "exclude": [
+        "no-this-alias",
+        "require-yield",
+        "no-explicit-any",
+        "ban-types",
+        "no-unused-vars",
+        "no-slow-types"
+      ]
+    }
+  }
+}
