@@ -47,10 +47,17 @@ export class LobbyScreen {
     const isHost = game.hostId === this.gameService.getPlayerId();
     const canStart = this.gameService.canStartGame(this.lobbyId);
 
+    // Store chat input value and focus state before re-render
+    const chatInput = document.getElementById('chat-input') as HTMLInputElement;
+    const chatValue = chatInput?.value || '';
+    const chatIsFocused = document.activeElement === chatInput;
+    const chatCursorStart = chatInput?.selectionStart || 0;
+    const chatCursorEnd = chatInput?.selectionEnd || 0;
+
     this.container.innerHTML = `
       <div class="lobby-screen">
         <div class="lobby-header">
-          <h1>🐺 ${lobby.name}</h1>
+          <h1>🎣 ${lobby.name}</h1>
           <button id="leave-lobby-btn" class="btn btn-secondary">Leave Lobby</button>
         </div>
 
@@ -101,6 +108,7 @@ export class LobbyScreen {
                 id="chat-input"
                 placeholder="Type a message..."
                 maxlength="200"
+                value="${chatValue}"
               />
               <button id="send-chat-btn" class="btn btn-primary">Send</button>
             </div>
@@ -120,6 +128,15 @@ export class LobbyScreen {
         </div>
       </div>
     `;
+
+    // Restore chat input focus and cursor position
+    if (chatIsFocused) {
+      const newChatInput = document.getElementById('chat-input') as HTMLInputElement;
+      if (newChatInput) {
+        newChatInput.focus();
+        newChatInput.setSelectionRange(chatCursorStart, chatCursorEnd);
+      }
+    }
 
     this.attachEventListeners();
     this.scrollChatToBottom();
