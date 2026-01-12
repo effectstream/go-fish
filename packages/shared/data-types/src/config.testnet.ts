@@ -11,13 +11,13 @@ export default {
   paimaL2ContractAddress: '0x0000000000000000000000000000000000000000', // TODO: Deploy and set contract address
 
   // Batcher configuration
-  batcherUrl: 'https://batcher.werewolf.example.com', // TODO: Update with actual batcher URL
+  batcherUrl: 'https://batcher.go-fish.example.com', // TODO: Update with actual batcher URL
 
   // API configuration
-  apiUrl: 'https://api.werewolf.example.com', // TODO: Update with actual API URL
+  apiUrl: 'https://api.go-fish.example.com', // TODO: Update with actual API URL
 
   // Database configuration
-  databaseUrl: process.env.DATABASE_URL || 'postgres://localhost:5432/werewolf',
+  databaseUrl: process.env.DATABASE_URL || 'postgres://localhost:5432/go-fish',
 
   // Sync protocols
   syncProtocols: {

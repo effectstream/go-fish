@@ -12,7 +12,7 @@ import {
 const mainSyncProtocolName = "mainNtp";
 
 export const config = new ConfigBuilder()
-  .setNamespace((builder) => builder.setSecurityNamespace("[werewolf]"))
+  .setNamespace((builder) => builder.setSecurityNamespace("[go-fish]"))
   .buildNetworks((builder) =>
     builder
       .addNetwork({

@@ -205,9 +205,10 @@ export class LobbyListScreen {
     });
 
     // Confirm button
-    document.getElementById('confirm-create-btn')?.addEventListener('click', () => {
+    document.getElementById('confirm-create-btn')?.addEventListener('click', async () => {
       const nameInput = document.getElementById('lobby-name') as HTMLInputElement;
       const maxPlayersInput = document.getElementById('max-players') as HTMLSelectElement;
+      const confirmBtn = document.getElementById('confirm-create-btn') as HTMLButtonElement;
 
       const lobbyName = nameInput.value.trim() || `${this.gameService.getPlayerName()}'s Lobby`;
       const maxPlayers = parseInt(maxPlayersInput.value);
@@ -217,13 +218,38 @@ export class LobbyListScreen {
         return;
       }
 
-      const lobby = this.gameService.createLobby(lobbyName, maxPlayers);
-      this.gameService.joinLobby(lobby.id);
+      // Disable button while creating
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Creating...';
+      }
 
-      modal.style.display = 'none';
+      try {
+        // Create lobby on-chain
+        const lobby = await this.gameService.createLobby(lobbyName, maxPlayers);
 
-      // Navigate to lobby screen
-      this.dispatchEvent('navigate', { screen: 'lobby', lobbyId: lobby.id });
+        if (!lobby) {
+          alert('Failed to create lobby. Please try again.');
+          return;
+        }
+
+        // Join the lobby
+        this.gameService.joinLobby(lobby.id);
+
+        modal.style.display = 'none';
+
+        // Navigate to lobby screen
+        this.dispatchEvent('navigate', { screen: 'lobby', lobbyId: lobby.id });
+      } catch (error) {
+        console.error('Error creating lobby:', error);
+        alert('Error creating lobby. Please check your wallet and try again.');
+      } finally {
+        // Re-enable button
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Create';
+        }
+      }
     });
   }
 

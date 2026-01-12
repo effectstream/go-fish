@@ -10,7 +10,7 @@ const port = Number(Deno.env.get("BATCHER_PORT") ?? "3334");
 export const config: BatcherConfig<DefaultBatcherInput> = {
   pollingIntervalMs: batchIntervalMs,
   enableHttpServer: true,
-  namespace: "[werewolf]",
+  namespace: "[go-fish]",
   confirmationLevel: "wait-effectstream-processed",
   enableEventSystem: true,
   port,

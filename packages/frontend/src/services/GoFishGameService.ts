@@ -1,6 +1,6 @@
 /**
  * GoFishGameService - Manages Go Fish game state and logic
- * This is the off-chain version that will later connect to EVM/Midnight
+ * Connected to blockchain via Paima middleware
  */
 
 import type {
@@ -25,6 +25,8 @@ import {
   sortCards,
 } from '../../../shared/data-types/src/go-fish-types';
 
+import * as PaimaMiddleware from '../paimaMiddleware';
+
 export class GoFishGameService {
   private static instance: GoFishGameService;
 
@@ -36,8 +38,20 @@ export class GoFishGameService {
   private playerName: string = '';
 
   private constructor() {
-    // Generate a unique player ID
-    this.playerId = `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Player ID will be set from wallet address after connection
+    this.playerId = '';
+  }
+
+  // Initialize with wallet connection
+  async initializeWithWallet(): Promise<boolean> {
+    if (PaimaMiddleware.isWalletConnected()) {
+      const address = PaimaMiddleware.getWalletAddress();
+      if (address) {
+        this.playerId = address;
+        return true;
+      }
+    }
+    return false;
   }
 
   static getInstance(): GoFishGameService {
@@ -61,8 +75,17 @@ export class GoFishGameService {
   }
 
   // Lobby management
-  createLobby(name: string, maxPlayers: number): Lobby {
-    const lobbyId = `lobby_${Date.now()}`;
+  async createLobby(name: string, maxPlayers: number): Promise<Lobby | null> {
+    // Call blockchain middleware to create lobby
+    const result = await PaimaMiddleware.createLobby(name, maxPlayers);
+
+    if (!result.success) {
+      console.error('Failed to create lobby:', result.errorMessage);
+      return null;
+    }
+
+    // Create local lobby object
+    const lobbyId = result.lobbyId || `lobby_${Date.now()}`;
     const lobby: Lobby = {
       id: lobbyId,
       name,
@@ -95,6 +118,7 @@ export class GoFishGameService {
     this.games.set(lobbyId, game);
     this.chats.set(lobbyId, []);
 
+    console.log('Lobby created on-chain:', lobbyId);
     return lobby;
   }
 

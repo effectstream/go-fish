@@ -3,17 +3,22 @@
  */
 
 import { GameManager } from './GameManager';
+import { WalletScreen } from './screens/WalletScreen';
+import { NameEntryScreen } from './screens/NameEntryScreen';
 import { LobbyListScreen } from './screens/LobbyListScreen';
 import { LobbyScreen } from './screens/LobbyScreen';
 import { GameScreen } from './screens/GameScreen';
 import { ResultsScreen } from './screens/ResultsScreen';
+import { GoFishGameService } from './services/GoFishGameService';
 
 export class UIManager {
-  private currentScreen: string = 'lobby-list';
+  private currentScreen: string = 'wallet';
   private gameManager: GameManager;
   private container: HTMLElement;
 
   // Screen instances
+  private walletScreen: WalletScreen;
+  private nameEntryScreen: NameEntryScreen;
   private lobbyListScreen: LobbyListScreen;
   private lobbyScreen: LobbyScreen;
   private gameScreen: GameScreen | null = null;
@@ -27,13 +32,18 @@ export class UIManager {
     this.container.id = 'app-container';
     document.body.appendChild(this.container);
 
+    // Get game service instance
+    const gameService = GoFishGameService.getInstance();
+
     // Initialize screens (GameScreen is created on-demand with lobbyId)
+    this.walletScreen = new WalletScreen(this.container);
+    this.nameEntryScreen = new NameEntryScreen(gameService, this.container);
     this.lobbyListScreen = new LobbyListScreen(this.container);
     this.lobbyScreen = new LobbyScreen(this.container);
     this.resultsScreen = new ResultsScreen(this.container);
 
     this.setupEventListeners();
-    this.showScreen('lobby-list');
+    this.showScreen('wallet');
   }
 
   private setupEventListeners() {
@@ -42,6 +52,12 @@ export class UIManager {
       const { screen, lobbyId, gameId } = event.detail;
 
       switch (screen) {
+        case 'wallet':
+          this.showScreen('wallet');
+          break;
+        case 'name-entry':
+          this.showScreen('name-entry');
+          break;
         case 'lobby-list':
           this.showScreen('lobby-list');
           break;
@@ -68,6 +84,12 @@ export class UIManager {
     this.currentScreen = screenId;
 
     switch (screenId) {
+      case 'wallet':
+        this.walletScreen.show();
+        break;
+      case 'name-entry':
+        this.nameEntryScreen.show();
+        break;
       case 'lobby-list':
         this.lobbyListScreen.show();
         break;
@@ -98,6 +120,12 @@ export class UIManager {
   private hideCurrentScreen() {
     // Call hide method on current screen
     switch (this.currentScreen) {
+      case 'wallet':
+        this.walletScreen.hide();
+        break;
+      case 'name-entry':
+        this.nameEntryScreen.hide();
+        break;
       case 'lobby-list':
         this.lobbyListScreen.hide();
         break;

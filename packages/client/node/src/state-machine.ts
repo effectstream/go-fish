@@ -6,25 +6,65 @@ import { PaimaSTM } from "@paimaexample/sm";
 import { grammar } from "@go-fish/data-types/grammar";
 import type { StartConfigGameStateTransitions } from "@paimaexample/runtime";
 import { World } from "@paimaexample/coroutine";
+import type { Pool } from "pg";
 
 const stm = new PaimaSTM<typeof grammar, any>(grammar);
 
 /**
- * Handle setName command - allows players to set their display name
+ * Handle createdLobby command - create a new game lobby
  */
-stm.addStateTransition("setName", function* (data) {
-  const { name } = data.parsedInput;
-  if (!name || name.length < 3) {
-    console.log(`[setName] No name provided or too short`);
-    return;
+stm.addStateTransition("createdLobby", function* (data) {
+  const { playerName, maxPlayers } = data.parsedInput;
+  const walletAddress = data.input.userAddress;
+
+  console.log(`🎮 [createdLobby] Creating lobby - Player: ${playerName}, Max Players: ${maxPlayers}, Wallet: ${walletAddress}`);
+
+  // Generate unique lobby ID based on block height and timestamp
+  const lobbyId = `lobby_${data.blockHeight}_${Date.now()}`;
+
+  // Access database from data.dbConn (passed by Paima runtime)
+  const db = data.dbConn as Pool;
+
+  try {
+    // Get or create account ID for this wallet address
+    const accountResult = yield* World.resolve(async () => {
+      return await db.query(
+        `INSERT INTO effectstream.accounts (address)
+         VALUES ($1)
+         ON CONFLICT (address) DO UPDATE SET address = EXCLUDED.address
+         RETURNING account_id`,
+        [walletAddress]
+      );
+    });
+
+    const accountId = accountResult.rows[0]?.account_id;
+    if (!accountId) {
+      console.error('[createdLobby] Failed to get account ID');
+      return;
+    }
+
+    // Insert lobby into database
+    yield* World.resolve(async () => {
+      return await db.query(
+        `INSERT INTO lobbies (lobby_id, lobby_name, host_account_id, max_players, status)
+         VALUES ($1, $2, $3, $4, 'open')`,
+        [lobbyId, `${playerName}'s Lobby`, accountId, maxPlayers]
+      );
+    });
+
+    // Add host as first player in lobby
+    yield* World.resolve(async () => {
+      return await db.query(
+        `INSERT INTO lobby_players (lobby_id, account_id, player_name, is_ready)
+         VALUES ($1, $2, $3, false)`,
+        [lobbyId, accountId, playerName]
+      );
+    });
+
+    console.log(`✅ [createdLobby] Lobby created in database: ${lobbyId}`);
+  } catch (error) {
+    console.error('[createdLobby] Database error:', error);
   }
-  if (name.length > 24) {
-    console.log(`[setName] Name too long: ${name}`);
-    return;
-  }
-  console.log(`🎮 [setName] Setting name to: ${name}`);
-  // TODO: Implement database update
-  // yield* World.resolve(setUserName, { account_id: accountId, name });
 });
 
 /**
