@@ -12,9 +12,18 @@ Run the complete development environment with orchestrator:
 # First time setup
 deno install --allow-scripts
 
-# Start all services
+# Build EVM contracts
+deno task build:evm
+
+# Start all services (backend + frontend + blockchain)
 deno task dev
 ```
+
+This will launch:
+- **Frontend**: http://localhost:3000
+- **API**: http://localhost:9999
+- **Explorer**: http://localhost:10590
+- **Blockchain**: http://localhost:8545
 
 ### Frontend Only
 

@@ -1,0 +1,27 @@
+{
+  "_format": "hh-sol-build-info-1",
+  "id": "stub-build-info",
+  "solcVersion": "0.8.27",
+  "solcLongVersion": "0.8.27",
+  "input": {
+    "language": "Solidity",
+    "sources": {},
+    "settings": {
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "*": [
+            "*"
+          ]
+        }
+      }
+    }
+  },
+  "output": {
+    "contracts": {},
+    "sources": {}
+  }
+}

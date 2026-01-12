@@ -4,6 +4,7 @@
   ],
   "nodeModulesDir": "auto",
   "tasks": {
+    "build:evm": "deno task --filter @go-fish/evm-contracts contract:compile",
     "dev": "deno task --filter @go-fish/node dev",
     "testnet": "deno task --filter @go-fish/node testnet",
     "frontend:dev": "cd packages/frontend && npm run dev",

@@ -22,7 +22,7 @@ initTelemetry("@paimaexample/log", "./deno.json");
 
 // Create node tasks
 const nodeTasks = createNodeTasks({
-  JsonRpcServer: {} as unknown as never,
+  JsonRpcServer: {} as unknown as never, // Type placeholder, not used
   JsonRpcServerImplementation,
   ComponentNames,
   log,
@@ -33,11 +33,12 @@ const nodeTasks = createNodeTasks({
 
 // Create unified config with default networks
 const config: HardhatUserConfig = createHardhatConfig({
-  sourcesDir: `${__dirname}/contracts`,
+  sourcesDir: `${__dirname}/src/contracts`,
   artifactsDir: `${__dirname}/build/artifacts/hardhat`,
   cacheDir: `${__dirname}/build/cache/hardhat`,
+  // Default networks (evmMain, evmMainHttp, evmParallel, evmParallelHttp) are used automatically
   tasks: nodeTasks,
-  solidityVersion: "0.8.27",
+  solidityVersion: "0.8.30",
 });
 
 export default config;

@@ -1,6 +1,7 @@
 import { OrchestratorConfig, start } from "@paimaexample/orchestrator";
 import { ComponentNames } from "@paimaexample/log";
 import { Value } from "@sinclair/typebox/value";
+import { launchEvm } from "@paimaexample/orchestrator/start-evm";
 
 const customProcesses = [
   /** FRONTEND-BLOCK */
@@ -63,7 +64,8 @@ const config = Value.Parse(OrchestratorConfig, {
 
   // Launch my processes
   processesToLaunch: [
-    // For NTP-only config, we don't need EVM or Midnight contracts
+    // Launch EVM contracts (Hardhat node + deploy)
+    ...launchEvm("@go-fish/evm-contracts"),
     ...customProcesses,
   ],
 });

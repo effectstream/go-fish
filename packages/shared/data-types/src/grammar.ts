@@ -1,35 +1,85 @@
 /**
  * Grammar definitions for Paima Engine command parsing
- *
- * This defines the concise encoding format for on-chain commands.
+ * Go Fish Game - Defines the concise encoding format for on-chain commands
  */
 
 import type { GrammarDefinition } from "@paimaexample/concise";
 import { Type } from "@sinclair/typebox";
 
-export const werewolfL2Grammar = {
-  setName: [["name", Type.String()]],
+// Custom types for Go Fish
+const PlayerName = Type.String({ minLength: 1, maxLength: 20 });
+const LobbyID = Type.String({ minLength: 12, maxLength: 12 });
+const PlayerID = Type.String({ minLength: 1, maxLength: 100 });
+const Rank = Type.Union([
+  Type.Literal('2'),
+  Type.Literal('3'),
+  Type.Literal('4'),
+  Type.Literal('5'),
+  Type.Literal('6'),
+  Type.Literal('7'),
+  Type.Literal('8'),
+  Type.Literal('9'),
+  Type.Literal('10'),
+  Type.Literal('J'),
+  Type.Literal('Q'),
+  Type.Literal('K'),
+  Type.Literal('A'),
+]);
 
-  createGame: [
-    ["maxPlayers", Type.Integer()],
+export const goFishL2Grammar = {
+  /**
+   * Create Lobby: c|playerName|maxPlayers
+   * Example: c|Alice|4
+   */
+  createdLobby: [
+    ['playerName', PlayerName],
+    ['maxPlayers', Type.Number({ minimum: 2, maximum: 6 })],
   ],
 
-  joinGame: [
-    ["gameId", Type.Integer()],
+  /**
+   * Join Lobby: j|playerName|lobbyID
+   * Example: j|Bob|abc123def456
+   */
+  joinedLobby: [
+    ['playerName', PlayerName],
+    ['lobbyID', LobbyID],
   ],
 
-  vote: [
-    ["gameId", Type.Integer()],
-    ["targetId", Type.Integer()],
+  /**
+   * Leave Lobby: l|lobbyID
+   * Example: l|abc123def456
+   */
+  leftLobby: [['lobbyID', LobbyID]],
+
+  /**
+   * Toggle Ready: r|lobbyID
+   * Example: r|abc123def456
+   */
+  toggledReady: [['lobbyID', LobbyID]],
+
+  /**
+   * Start Game (Host only): start|lobbyID
+   * Example: start|abc123def456
+   */
+  startedGame: [['lobbyID', LobbyID]],
+
+  /**
+   * Ask For Card: ask|lobbyID|targetPlayerID|rank
+   * Example: ask|abc123def456|player_123|K
+   */
+  askedForCard: [
+    ['lobbyID', LobbyID],
+    ['targetPlayerID', PlayerID],
+    ['rank', Rank],
   ],
 
-  nightAction: [
-    ["gameId", Type.Integer()],
-    ["actionType", Type.String()],
-    ["targetId", Type.Integer()],
-  ],
+  /**
+   * Close Lobby (Host only): close|lobbyID
+   * Example: close|abc123def456
+   */
+  closedLobby: [['lobbyID', LobbyID]],
 } as const satisfies GrammarDefinition;
 
 export const grammar = {
-  ...werewolfL2Grammar,
+  ...goFishL2Grammar,
 } as const satisfies GrammarDefinition;

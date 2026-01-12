@@ -1,0 +1,11 @@
+[profile.default]
+src = 'contracts' # the source directory (we use 'contracts' not 'src/contracts')
+test = 'test' # the test directory
+out = 'build/artifacts/forge' # the output directory (for artifacts)
+libs = ['test/lib'] # a list of library directories
+cache_path = 'build/cache/forge'
+allow_paths = ["../../../../node_modules"]
+evm_version = 'berlin' # the evm version (by hardfork name)
+[invariant]
+fail_on_revert = true
+depth = 15
