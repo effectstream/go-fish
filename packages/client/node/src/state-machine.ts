@@ -6,65 +6,126 @@ import { PaimaSTM } from "@paimaexample/sm";
 import { grammar } from "@go-fish/data-types/grammar";
 import type { StartConfigGameStateTransitions } from "@paimaexample/runtime";
 import { World } from "@paimaexample/coroutine";
+import {
+  getAddressByAddress,
+  newAddressWithId,
+  newAccount
+} from "@paimaexample/db";
 import type { Pool } from "pg";
 
 const stm = new PaimaSTM<typeof grammar, any>(grammar);
+
+/**
+ * Simple prepared query interface that mimics pgtyped
+ */
+interface SimplePreparedQuery<P, R> {
+  run(params: P, client: Pool): Promise<R[]>;
+}
+
+/**
+ * Helper to create raw SQL prepared query
+ */
+function createRawQuery<P, R>(sql: string): SimplePreparedQuery<P, R> {
+  return {
+    run: async (params: P, client: Pool): Promise<R[]> => {
+      const paramValues = Object.values(params);
+      const result = await client.query(sql, paramValues);
+      return result.rows as R[];
+    }
+  };
+}
 
 /**
  * Handle createdLobby command - create a new game lobby
  */
 stm.addStateTransition("createdLobby", function* (data) {
   const { playerName, maxPlayers } = data.parsedInput;
-  const walletAddress = data.input.userAddress;
+  const walletAddress = data.signerAddress;
 
   console.log(`🎮 [createdLobby] Creating lobby - Player: ${playerName}, Max Players: ${maxPlayers}, Wallet: ${walletAddress}`);
 
   // Generate unique lobby ID based on block height and timestamp
   const lobbyId = `lobby_${data.blockHeight}_${Date.now()}`;
 
-  // Access database from data.dbConn (passed by Paima runtime)
-  const db = data.dbConn as Pool;
+  // Get or create account ID for this wallet address
+  const addressResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress! }
+  );
 
-  try {
-    // Get or create account ID for this wallet address
-    const accountResult = yield* World.resolve(async () => {
-      return await db.query(
-        `INSERT INTO effectstream.accounts (address)
-         VALUES ($1)
-         ON CONFLICT (address) DO UPDATE SET address = EXCLUDED.address
-         RETURNING account_id`,
-        [walletAddress]
-      );
-    });
+  let accountId: number;
+  if (addressResult && addressResult.length > 0) {
+    accountId = addressResult[0].account_id;
+  } else {
+    // Create new account
+    const newAccountResult = yield* World.resolve(
+      newAccount,
+      { primary_address: walletAddress! }
+    );
 
-    const accountId = accountResult.rows[0]?.account_id;
-    if (!accountId) {
-      console.error('[createdLobby] Failed to get account ID');
+    if (!newAccountResult || newAccountResult.length === 0) {
+      console.error('[createdLobby] Failed to create account');
       return;
     }
 
-    // Insert lobby into database
-    yield* World.resolve(async () => {
-      return await db.query(
-        `INSERT INTO lobbies (lobby_id, lobby_name, host_account_id, max_players, status)
-         VALUES ($1, $2, $3, $4, 'open')`,
-        [lobbyId, `${playerName}'s Lobby`, accountId, maxPlayers]
-      );
-    });
+    accountId = newAccountResult[0].id;
 
-    // Add host as first player in lobby
-    yield* World.resolve(async () => {
-      return await db.query(
-        `INSERT INTO lobby_players (lobby_id, account_id, player_name, is_ready)
-         VALUES ($1, $2, $3, false)`,
-        [lobbyId, accountId, playerName]
-      );
-    });
-
-    console.log(`✅ [createdLobby] Lobby created in database: ${lobbyId}`);
-  } catch (error) {
-    console.error('[createdLobby] Database error:', error);
+    // Link address to account
+    yield* World.resolve(
+      newAddressWithId,
+      {
+        address: walletAddress!,
+        address_type: 0,
+        account_id: accountId
+      }
+    );
   }
+
+  // Create raw SQL query for inserting lobby
+  const insertLobbyQuery = createRawQuery<{
+    lobby_id: string;
+    lobby_name: string;
+    host_account_id: number;
+    max_players: number;
+    status: string;
+  }, void>(`
+    INSERT INTO lobbies (lobby_id, lobby_name, host_account_id, max_players, status)
+    VALUES ($1, $2, $3, $4, $5)
+  `);
+
+  yield* World.resolve(
+    insertLobbyQuery,
+    {
+      lobby_id: lobbyId,
+      lobby_name: `${playerName}'s Lobby`,
+      host_account_id: accountId,
+      max_players: maxPlayers,
+      status: 'open'
+    }
+  );
+
+  // Create raw SQL query for inserting lobby player
+  const insertLobbyPlayerQuery = createRawQuery<{
+    lobby_id: string;
+    account_id: number;
+    player_name: string;
+    is_ready: boolean;
+  }, void>(`
+    INSERT INTO lobby_players (lobby_id, account_id, player_name, is_ready)
+    VALUES ($1, $2, $3, $4)
+  `);
+
+  yield* World.resolve(
+    insertLobbyPlayerQuery,
+    {
+      lobby_id: lobbyId,
+      account_id: accountId,
+      player_name: playerName,
+      is_ready: false
+    }
+  );
+
+  console.log(`✅ [createdLobby] Lobby created in database: ${lobbyId}`);
 });
 
 /**

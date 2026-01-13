@@ -126,6 +126,41 @@ export class GoFishGameService {
     return Array.from(this.lobbies.values()).filter(l => l.status === 'waiting');
   }
 
+  async fetchOpenLobbies(): Promise<Lobby[]> {
+    try {
+      const response = await fetch('http://localhost:9999/open_lobbies?page=0&count=50');
+      if (!response.ok) {
+        console.error('Failed to fetch open lobbies');
+        return [];
+      }
+      const data = await response.json();
+
+      // Convert API response to Lobby objects
+      const lobbies: Lobby[] = (data.lobbies || []).map((apiLobby: any) => ({
+        id: apiLobby.lobby_id,
+        name: apiLobby.lobby_name,
+        hostId: apiLobby.host_account_id?.toString() || '',
+        hostName: '', // API doesn't return host name currently
+        playerCount: parseInt(apiLobby.player_count) || 0,
+        maxPlayers: apiLobby.max_players,
+        status: apiLobby.status === 'open' ? 'waiting' as const : 'in_progress' as const,
+        createdAt: new Date(apiLobby.created_at).getTime(),
+      }));
+
+      // Update local cache
+      lobbies.forEach(lobby => {
+        if (!this.lobbies.has(lobby.id)) {
+          this.lobbies.set(lobby.id, lobby);
+        }
+      });
+
+      return lobbies;
+    } catch (error) {
+      console.error('Error fetching lobbies:', error);
+      return [];
+    }
+  }
+
   getLobby(lobbyId: string): Lobby | undefined {
     return this.lobbies.get(lobbyId);
   }

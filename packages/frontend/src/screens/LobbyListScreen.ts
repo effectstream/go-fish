@@ -15,8 +15,8 @@ export class LobbyListScreen {
     this.gameService = GoFishGameService.getInstance();
   }
 
-  show() {
-    this.render();
+  async show() {
+    await this.render();
     // Refresh lobby list every 2 seconds
     this.refreshInterval = window.setInterval(() => this.render(), 2000);
   }
@@ -27,8 +27,9 @@ export class LobbyListScreen {
     }
   }
 
-  private render() {
-    const lobbies = this.gameService.getLobbies();
+  private async render() {
+    // Fetch lobbies from server
+    const lobbies = await this.gameService.fetchOpenLobbies();
 
     // Check if modal is open - if so, don't re-render
     const existingModal = document.getElementById('create-lobby-modal') as HTMLElement;

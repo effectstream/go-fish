@@ -95,7 +95,7 @@ export async function createLobby(
   try {
     // Submit transaction to Paima L2 contract
     // Format: createdLobby command with playerName and maxPlayers
-    const params = ["c", name, maxPlayers];
+    const params = ["createdLobby", name, maxPlayers];
 
     // Send transaction without waiting for processing (to avoid timeout)
     const result = await sendTransaction(wallet, params, paimaEngineConfig, "no-wait");

@@ -5,10 +5,19 @@
 import type { FastifyInstance } from "fastify";
 import type { StartConfigApiRouter } from "@paimaexample/runtime";
 import type { Pool } from "pg";
+import pg from "pg";
 
-// Get database connection from server decorators
-function getDB(server: FastifyInstance): Pool {
-  return (server as any).pg.pool;
+// Global database connection pool
+let dbPool: Pool | null = null;
+
+// Get database connection - initialize on first call
+function getDB(): Pool {
+  if (!dbPool) {
+    // Get database URL from environment
+    const dbUrl = Deno.env.get("DATABASE_URL") || "postgresql://localhost:5432/go-fish";
+    dbPool = new pg.Pool({ connectionString: dbUrl });
+  }
+  return dbPool;
 }
 
 export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
@@ -82,7 +91,7 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   server.get("/open_lobbies", async (request, reply) => {
     const { page = 0, count = 10 } = request.query as { page?: number; count?: number };
 
-    const db = getDB(server);
+    const db = getDB();
     const offset = page * count;
 
     const result = await db.query(`
@@ -114,12 +123,12 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       count?: number;
     };
 
-    const db = getDB(server);
+    const db = getDB();
     const offset = page * count;
 
-    // Get account ID from wallet address
+    // Get account ID from wallet address via effectstream.addresses
     const accountResult = await db.query(`
-      SELECT account_id FROM effectstream.accounts WHERE address = $1
+      SELECT account_id FROM effectstream.addresses WHERE address = $1
     `, [wallet]);
 
     if (accountResult.rows.length === 0) {
@@ -154,7 +163,7 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   server.get("/lobby_state", async (request, reply) => {
     const { lobby_id } = request.query as { lobby_id: string };
 
-    const db = getDB(server);
+    const db = getDB();
 
     // Get lobby info
     const lobbyResult = await db.query(`
@@ -183,9 +192,9 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
         lp.player_name,
         lp.is_ready,
         lp.joined_at,
-        a.address as wallet_address
+        addr.address as wallet_address
       FROM lobby_players lp
-      INNER JOIN effectstream.accounts a ON lp.account_id = a.account_id
+      INNER JOIN effectstream.addresses addr ON lp.account_id = addr.account_id
       WHERE lp.lobby_id = $1
       ORDER BY lp.joined_at ASC
     `, [lobby_id]);
