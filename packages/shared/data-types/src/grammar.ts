@@ -8,7 +8,7 @@ import { Type } from "@sinclair/typebox";
 
 // Custom types for Go Fish
 const PlayerName = Type.String({ minLength: 1, maxLength: 20 });
-const LobbyID = Type.String({ minLength: 12, maxLength: 12 });
+const LobbyID = Type.String({ minLength: 1, maxLength: 100 });
 const PlayerID = Type.String({ minLength: 1, maxLength: 100 });
 const Rank = Type.Union([
   Type.Literal('2'),

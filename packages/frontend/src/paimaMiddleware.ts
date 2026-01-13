@@ -141,6 +141,7 @@ export async function createLobby(
  * Join an existing lobby
  */
 export async function joinLobby(
+  playerName: string,
   lobbyId: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
   if (!wallet) {
@@ -148,7 +149,8 @@ export async function joinLobby(
   }
 
   try {
-    const params = ["joinLobby", lobbyId];
+    // Grammar expects: joinedLobby|playerName|lobbyID
+    const params = ["joinedLobby", playerName, lobbyId];
     const result = await sendTransaction(wallet, params, paimaEngineConfig);
 
     if (!result.success) {
@@ -156,9 +158,73 @@ export async function joinLobby(
     }
 
     console.log('Join lobby transaction submitted:', result);
+
+    // Wait a bit for the transaction to be processed and indexed
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     return { success: true };
   } catch (error) {
     console.error('Error joining lobby:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Toggle ready status in a lobby
+ */
+export async function toggleReady(
+  lobbyId: string
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (!wallet) {
+    return { success: false, errorMessage: "Wallet not connected" };
+  }
+
+  try {
+    // Grammar expects: toggledReady|lobbyID
+    const params = ["toggledReady", lobbyId];
+    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+
+    if (!result.success) {
+      return { success: false, errorMessage: "Failed to toggle ready" };
+    }
+
+    console.log('Toggle ready transaction submitted:', result);
+    return { success: true };
+  } catch (error) {
+    console.error('Error toggling ready:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Start game (host only)
+ */
+export async function startGame(
+  lobbyId: string
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (!wallet) {
+    return { success: false, errorMessage: "Wallet not connected" };
+  }
+
+  try {
+    // Grammar expects: startedGame|lobbyID
+    const params = ["startedGame", lobbyId];
+    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+
+    if (!result.success) {
+      return { success: false, errorMessage: "Failed to start game" };
+    }
+
+    console.log('Start game transaction submitted:', result);
+    return { success: true };
+  } catch (error) {
+    console.error('Error starting game:', error);
     return {
       success: false,
       errorMessage: error instanceof Error ? error.message : 'Unknown error',
@@ -283,6 +349,8 @@ export const PaimaMiddleware = {
   isWalletConnected,
   createLobby,
   joinLobby,
+  toggleReady,
+  startGame,
   getLobbyState,
   getOpenLobbies,
   getUserLobbies,

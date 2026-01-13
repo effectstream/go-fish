@@ -9,5 +9,5 @@
   "srcDir": "./src/",
   "failOnError": false,
   "camelCaseColumnNames": false,
-  "dbUrl": "postgres://localhost:5432/go-fish"
+  "hungarianNotation": false
 }

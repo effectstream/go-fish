@@ -254,17 +254,35 @@ export class LobbyListScreen {
     });
   }
 
-  private joinLobby(lobbyId: string) {
+  private async joinLobby(lobbyId: string) {
     if (!this.gameService.getPlayerName()) {
       alert('Please enter your name first!');
       return;
     }
 
-    const success = this.gameService.joinLobby(lobbyId);
-    if (success) {
-      this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
-    } else {
-      alert('Failed to join lobby. It may be full.');
+    // Find and disable the join button
+    const joinBtn = document.querySelector(`[data-lobby-id="${lobbyId}"]`) as HTMLButtonElement;
+    if (joinBtn) {
+      joinBtn.disabled = true;
+      joinBtn.textContent = 'Joining...';
+    }
+
+    try {
+      const success = await this.gameService.joinLobby(lobbyId);
+      if (success) {
+        this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+      } else {
+        alert('Failed to join lobby. It may be full.');
+      }
+    } catch (error) {
+      console.error('Error joining lobby:', error);
+      alert('Error joining lobby. Please check your wallet and try again.');
+    } finally {
+      // Re-enable button if still on the screen
+      if (joinBtn) {
+        joinBtn.disabled = false;
+        joinBtn.textContent = 'Join';
+      }
     }
   }
 

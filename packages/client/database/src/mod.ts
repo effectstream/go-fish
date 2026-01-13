@@ -4,12 +4,10 @@
 
 import type { DBMigrations } from "@paimaexample/runtime";
 
-// Re-export query functions when they are generated
-// import * as GameQueries from './game-queries.queries.ts';
-// import * as UserQueries from './user-queries.queries.ts';
-// import * as LobbyQueries from './lobby-queries.queries.ts';
-
-// export { GameQueries, UserQueries, LobbyQueries };
+// Export pgtyped query functions
+export * from './lobby-queries.queries.ts';
+export * from './game-queries.queries.ts';
+export * from './user-queries.queries.ts';
 
 // Migration table for database schema
 // In v0.3.128+, this is now an array of migration objects

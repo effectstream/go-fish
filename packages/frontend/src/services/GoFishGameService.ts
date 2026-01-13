@@ -147,11 +147,9 @@ export class GoFishGameService {
         createdAt: new Date(apiLobby.created_at).getTime(),
       }));
 
-      // Update local cache
+      // Update local cache (always update to get latest player counts)
       lobbies.forEach(lobby => {
-        if (!this.lobbies.has(lobby.id)) {
-          this.lobbies.set(lobby.id, lobby);
-        }
+        this.lobbies.set(lobby.id, lobby);
       });
 
       return lobbies;
@@ -165,34 +163,16 @@ export class GoFishGameService {
     return this.lobbies.get(lobbyId);
   }
 
-  joinLobby(lobbyId: string): boolean {
-    const lobby = this.lobbies.get(lobbyId);
-    const game = this.games.get(lobbyId);
+  async joinLobby(lobbyId: string): Promise<boolean> {
+    // Submit join transaction to blockchain
+    const result = await PaimaMiddleware.joinLobby(this.playerName, lobbyId);
 
-    if (!lobby || !game || lobby.playerCount >= lobby.maxPlayers) {
+    if (!result.success) {
+      console.error('Failed to join lobby:', result.errorMessage);
       return false;
     }
 
-    // Check if already in lobby
-    if (game.players.some(p => p.id === this.playerId)) {
-      return true;
-    }
-
-    const player: GoFishPlayer = {
-      id: this.playerId,
-      name: this.playerName,
-      isAlive: true,
-      isReady: false,
-      hand: [],
-      books: [],
-      cardCount: 0,
-    };
-
-    game.players.push(player);
-    lobby.playerCount = game.players.length;
-
-    this.addSystemMessage(lobbyId, `${this.playerName} joined the game`);
-
+    console.log('Join lobby transaction submitted successfully');
     return true;
   }
 

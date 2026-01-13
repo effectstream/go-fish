@@ -9,31 +9,12 @@ import { World } from "@paimaexample/coroutine";
 import {
   getAddressByAddress,
   newAddressWithId,
-  newAccount
+  newAccount,
+  updateAddressAccount
 } from "@paimaexample/db";
-import type { Pool } from "pg";
+import { createLobby, joinLobby, togglePlayerReady, startGame } from "@go-fish/database";
 
 const stm = new PaimaSTM<typeof grammar, any>(grammar);
-
-/**
- * Simple prepared query interface that mimics pgtyped
- */
-interface SimplePreparedQuery<P, R> {
-  run(params: P, client: Pool): Promise<R[]>;
-}
-
-/**
- * Helper to create raw SQL prepared query
- */
-function createRawQuery<P, R>(sql: string): SimplePreparedQuery<P, R> {
-  return {
-    run: async (params: P, client: Pool): Promise<R[]> => {
-      const paramValues = Object.values(params);
-      const result = await client.query(sql, paramValues);
-      return result.rows as R[];
-    }
-  };
-}
 
 /**
  * Handle createdLobby command - create a new game lobby
@@ -53,79 +34,240 @@ stm.addStateTransition("createdLobby", function* (data) {
     { address: walletAddress! }
   );
 
-  let accountId: number;
-  if (addressResult && addressResult.length > 0) {
+  console.log('[createdLobby] addressResult:', addressResult);
+
+  let accountId: number | undefined;
+
+  // Check if address exists AND has a valid account_id
+  if (addressResult && addressResult.length > 0 && addressResult[0].account_id !== null) {
     accountId = addressResult[0].account_id;
+    console.log('[createdLobby] Found existing account:', accountId);
   } else {
-    // Create new account
+    // Create new account (either address doesn't exist or account_id is null)
+    console.log('[createdLobby] Creating new account for:', walletAddress);
     const newAccountResult = yield* World.resolve(
       newAccount,
       { primary_address: walletAddress! }
     );
 
+    console.log('[createdLobby] newAccountResult:', newAccountResult);
+
     if (!newAccountResult || newAccountResult.length === 0) {
-      console.error('[createdLobby] Failed to create account');
+      console.error('[createdLobby] Failed to create account - empty result');
       return;
     }
 
     accountId = newAccountResult[0].id;
+    console.log('[createdLobby] Created new account:', accountId);
 
-    // Link address to account
-    yield* World.resolve(
-      newAddressWithId,
-      {
-        address: walletAddress!,
-        address_type: 0,
-        account_id: accountId
-      }
-    );
+    // If address already exists (but with null account_id), update it
+    // Otherwise, create new address record
+    if (addressResult && addressResult.length > 0) {
+      console.log('[createdLobby] Updating existing address with new account_id');
+      // Address exists but has null account_id - we need to update it
+      yield* World.resolve(
+        updateAddressAccount,
+        {
+          address: walletAddress!,
+          account_id: accountId
+        }
+      );
+    } else {
+      console.log('[createdLobby] Creating new address record');
+      // Link new address to account
+      yield* World.resolve(
+        newAddressWithId,
+        {
+          address: walletAddress!,
+          address_type: 0,
+          account_id: accountId
+        }
+      );
+    }
   }
 
-  // Create raw SQL query for inserting lobby
-  const insertLobbyQuery = createRawQuery<{
-    lobby_id: string;
-    lobby_name: string;
-    host_account_id: number;
-    max_players: number;
-    status: string;
-  }, void>(`
-    INSERT INTO lobbies (lobby_id, lobby_name, host_account_id, max_players, status)
-    VALUES ($1, $2, $3, $4, $5)
-  `);
+  if (!accountId) {
+    console.error('[createdLobby] accountId is undefined after account resolution');
+    return;
+  }
 
+  console.log('[createdLobby] Using accountId:', accountId);
+
+  // Insert lobby using pgtyped query
   yield* World.resolve(
-    insertLobbyQuery,
+    createLobby,
     {
-      lobby_id: lobbyId,
-      lobby_name: `${playerName}'s Lobby`,
-      host_account_id: accountId,
-      max_players: maxPlayers,
-      status: 'open'
+      lobbyId: lobbyId,
+      lobbyName: `${playerName}'s Lobby`,
+      hostAccountId: accountId,
+      maxPlayers: maxPlayers
     }
   );
 
-  // Create raw SQL query for inserting lobby player
-  const insertLobbyPlayerQuery = createRawQuery<{
-    lobby_id: string;
-    account_id: number;
-    player_name: string;
-    is_ready: boolean;
-  }, void>(`
-    INSERT INTO lobby_players (lobby_id, account_id, player_name, is_ready)
-    VALUES ($1, $2, $3, $4)
-  `);
-
+  // Add host as first player using pgtyped query
   yield* World.resolve(
-    insertLobbyPlayerQuery,
+    joinLobby,
     {
-      lobby_id: lobbyId,
-      account_id: accountId,
-      player_name: playerName,
-      is_ready: false
+      lobbyId: lobbyId,
+      accountId: accountId,
+      playerName: playerName
     }
   );
 
   console.log(`✅ [createdLobby] Lobby created in database: ${lobbyId}`);
+});
+
+/**
+ * Handle joinedLobby command - player joins an existing lobby
+ */
+stm.addStateTransition("joinedLobby", function* (data) {
+  const { playerName, lobbyID } = data.parsedInput;
+  const walletAddress = data.signerAddress;
+
+  console.log(`🎮 [joinedLobby] Player ${playerName} joining lobby ${lobbyID} with wallet ${walletAddress}`);
+
+  // Get or create account ID for this wallet address
+  const addressResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress! }
+  );
+
+  console.log('[joinedLobby] addressResult:', addressResult);
+
+  let accountId: number | undefined;
+
+  // Check if address exists AND has a valid account_id
+  if (addressResult && addressResult.length > 0 && addressResult[0].account_id !== null) {
+    accountId = addressResult[0].account_id;
+    console.log('[joinedLobby] Found existing account:', accountId);
+  } else {
+    // Create new account (either address doesn't exist or account_id is null)
+    console.log('[joinedLobby] Creating new account for:', walletAddress);
+    const newAccountResult = yield* World.resolve(
+      newAccount,
+      { primary_address: walletAddress! }
+    );
+
+    console.log('[joinedLobby] newAccountResult:', newAccountResult);
+
+    if (!newAccountResult || newAccountResult.length === 0) {
+      console.error('[joinedLobby] Failed to create account - empty result');
+      return;
+    }
+
+    accountId = newAccountResult[0].id;
+    console.log('[joinedLobby] Created new account:', accountId);
+
+    // If address already exists (but with null account_id), update it
+    // Otherwise, create new address record
+    if (addressResult && addressResult.length > 0) {
+      console.log('[joinedLobby] Updating existing address with new account_id');
+      yield* World.resolve(
+        updateAddressAccount,
+        {
+          address: walletAddress!,
+          account_id: accountId
+        }
+      );
+    } else {
+      console.log('[joinedLobby] Creating new address record');
+      yield* World.resolve(
+        newAddressWithId,
+        {
+          address: walletAddress!,
+          address_type: 0,
+          account_id: accountId
+        }
+      );
+    }
+  }
+
+  if (!accountId) {
+    console.error('[joinedLobby] accountId is undefined after account resolution');
+    return;
+  }
+
+  console.log('[joinedLobby] Using accountId:', accountId);
+
+  // Add player to lobby using pgtyped query
+  yield* World.resolve(
+    joinLobby,
+    {
+      lobbyId: lobbyID,
+      accountId: accountId,
+      playerName: playerName
+    }
+  );
+
+  console.log(`✅ [joinedLobby] Player ${playerName} joined lobby ${lobbyID}`);
+});
+
+/**
+ * Handle toggledReady command - player toggles ready status
+ */
+stm.addStateTransition("toggledReady", function* (data) {
+  const { lobbyID } = data.parsedInput;
+  const walletAddress = data.signerAddress;
+
+  console.log(`🎮 [toggledReady] Player toggling ready in lobby ${lobbyID} with wallet ${walletAddress}`);
+
+  // Get account ID for this wallet address
+  const addressResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress! }
+  );
+
+  if (!addressResult || addressResult.length === 0 || addressResult[0].account_id === null) {
+    console.error('[toggledReady] No account found for address:', walletAddress);
+    return;
+  }
+
+  const accountId = addressResult[0].account_id;
+
+  // Toggle ready status
+  yield* World.resolve(
+    togglePlayerReady,
+    {
+      lobbyId: lobbyID,
+      accountId: accountId
+    }
+  );
+
+  console.log(`✅ [toggledReady] Player ready status toggled in lobby ${lobbyID}`);
+});
+
+/**
+ * Handle startedGame command - host starts the game
+ */
+stm.addStateTransition("startedGame", function* (data) {
+  const { lobbyID } = data.parsedInput;
+  const walletAddress = data.signerAddress;
+
+  console.log(`🎮 [startedGame] Starting game for lobby ${lobbyID} by host ${walletAddress}`);
+
+  // Get account ID for this wallet address
+  const addressResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress! }
+  );
+
+  if (!addressResult || addressResult.length === 0 || addressResult[0].account_id === null) {
+    console.error('[startedGame] No account found for address:', walletAddress);
+    return;
+  }
+
+  const accountId = addressResult[0].account_id;
+
+  // Update lobby status to 'in_progress'
+  yield* World.resolve(
+    startGame,
+    {
+      lobbyId: lobbyID,
+      hostAccountId: accountId
+    }
+  );
+
+  console.log(`✅ [startedGame] Game started for lobby ${lobbyID}`);
 });
 
 /**
