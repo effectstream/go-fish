@@ -233,6 +233,36 @@ export async function startGame(
 }
 
 /**
+ * Leave a lobby
+ */
+export async function leaveLobby(
+  lobbyId: string
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (!wallet) {
+    return { success: false, errorMessage: "Wallet not connected" };
+  }
+
+  try {
+    // Grammar expects: leftLobby|lobbyID
+    const params = ["leftLobby", lobbyId];
+    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+
+    if (!result.success) {
+      return { success: false, errorMessage: "Failed to leave lobby" };
+    }
+
+    console.log('Leave lobby transaction submitted:', result);
+    return { success: true };
+  } catch (error) {
+    console.error('Error leaving lobby:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
  * Get lobby state from Paima Engine API
  */
 export async function getLobbyState(
@@ -351,6 +381,7 @@ export const EffectstreamBridge = {
   joinLobby,
   toggleReady,
   startGame,
+  leaveLobby,
   getLobbyState,
   getOpenLobbies,
   getUserLobbies,

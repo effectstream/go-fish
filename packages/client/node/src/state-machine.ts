@@ -12,7 +12,7 @@ import {
   newAccount,
   updateAddressAccount
 } from "@paimaexample/db";
-import { createLobby, joinLobby, togglePlayerReady, startGame } from "@go-fish/database";
+import { createLobby, joinLobby, togglePlayerReady, startGame, leaveLobby } from "@go-fish/database";
 
 const stm = new PaimaSTM<typeof grammar, any>(grammar);
 
@@ -268,6 +268,40 @@ stm.addStateTransition("startedGame", function* (data) {
   );
 
   console.log(`✅ [startedGame] Game started for lobby ${lobbyID}`);
+});
+
+/**
+ * Handle leftLobby command - player leaves a lobby
+ */
+stm.addStateTransition("leftLobby", function* (data) {
+  const { lobbyID } = data.parsedInput;
+  const walletAddress = data.signerAddress;
+
+  console.log(`🎮 [leftLobby] Player leaving lobby ${lobbyID} with wallet ${walletAddress}`);
+
+  // Get account ID for this wallet address
+  const addressResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress! }
+  );
+
+  if (!addressResult || addressResult.length === 0 || addressResult[0].account_id === null) {
+    console.error('[leftLobby] No account found for address:', walletAddress);
+    return;
+  }
+
+  const accountId = addressResult[0].account_id;
+
+  // Remove player from lobby
+  yield* World.resolve(
+    leaveLobby,
+    {
+      lobbyId: lobbyID,
+      accountId: accountId
+    }
+  );
+
+  console.log(`✅ [leftLobby] Player left lobby ${lobbyID}`);
 });
 
 /**

@@ -167,9 +167,14 @@ export class LobbyScreen {
 
   private attachEventListeners() {
     // Leave lobby
-    document.getElementById('leave-lobby-btn')?.addEventListener('click', () => {
-      this.gameService.leaveLobby(this.lobbyId);
-      this.dispatchEvent('navigate', { screen: 'lobby-list' });
+    document.getElementById('leave-lobby-btn')?.addEventListener('click', async () => {
+      const result = await this.gameService.leaveLobby(this.lobbyId);
+      if (result) {
+        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+      } else {
+        console.error('Failed to leave lobby');
+        alert('Failed to leave lobby. Please try again.');
+      }
     });
 
     // Ready toggle

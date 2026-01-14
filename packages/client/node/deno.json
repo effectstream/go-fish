@@ -14,6 +14,10 @@
     "testnet": "EFFECTSTREAM_ENV=testnet NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.testnet.ts"
   },
   "imports": {
+    // Local packages
+    "@go-fish/database": "../database/src/mod.ts",
+    "@go-fish/data-types": "../../shared/data-types/src/mod.ts",
+
     // Paima packages
     "@paimaexample/concise": "jsr:@paimaexample/concise@0.3.128",
     "@paimaexample/config": "jsr:@paimaexample/config@0.3.128",

@@ -176,22 +176,17 @@ export class GoFishGameService {
     return true;
   }
 
-  leaveLobby(lobbyId: string): void {
-    const game = this.games.get(lobbyId);
-    const lobby = this.lobbies.get(lobbyId);
+  async leaveLobby(lobbyId: string): Promise<boolean> {
+    // Submit leave transaction to blockchain
+    const result = await EffectstreamBridge.leaveLobby(lobbyId);
 
-    if (!game || !lobby) return;
-
-    game.players = game.players.filter(p => p.id !== this.playerId);
-    lobby.playerCount = game.players.length;
-
-    this.addSystemMessage(lobbyId, `${this.playerName} left the game`);
-
-    if (game.players.length === 0) {
-      this.lobbies.delete(lobbyId);
-      this.games.delete(lobbyId);
-      this.chats.delete(lobbyId);
+    if (!result.success) {
+      console.error('Failed to leave lobby:', result.errorMessage);
+      return false;
     }
+
+    console.log('Leave lobby transaction submitted successfully');
+    return true;
   }
 
   toggleReady(lobbyId: string): void {
