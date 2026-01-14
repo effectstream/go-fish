@@ -1,0 +1,14 @@
+{
+    "name": "@go-fish/midnight-contracts",
+    "version": "0.1.0",
+    "exports": {
+        ".": "./src/mod.ts"
+    },
+    "tasks": {
+        "deploy": "echo 'deploy NYI'",
+        "test": "deno run -A example.test.ts"
+    },
+    "imports": {
+        "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1",
+    }
+}

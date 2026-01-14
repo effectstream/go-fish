@@ -1,0 +1,10 @@
+{
+    "name": "@go-fish/midnight-contract-go-fish",
+    "version": "0.1.0",
+    "exports": {
+        ".": "./managed/contract.js"
+    },
+    "tasks": {
+        "compile": "compact compile +0.27.0 --skip-zk src/game.compact managed"
+    }
+}

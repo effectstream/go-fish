@@ -1,0 +1,341 @@
+
+module Deck {
+    import CompactStandardLibrary;
+    import CompactStandardLibrary prefix std_;
+
+    // ============================================
+    // STATIC CARD MAPPINGS (shared across all games)
+    // ============================================
+    // Map CurvePoint to Card Value (0-51)
+    export ledger deckCurveToCard: Map<CurvePoint, Field>;
+    // Map Card Value to CurvePoint
+    export ledger reverseDeckCurveToCard: Map<Uint<32>, CurvePoint>;
+    // Track if static deck has been initialized
+    export ledger staticDeckInitialized: Boolean;
+
+    // ============================================
+    // PER-GAME STATE
+    // ============================================
+    // Player secret hash per game: maps (gameId, secretHash) -> playerId
+    export ledger gamePlayersKeysHashes: Map<Bytes<32>, Uint<64>>;
+    // Player secret inverse per game: maps (gameId, secretHash) -> inverseHash
+    export ledger gamePlayersKeysInverses: Map<Bytes<32>, Bytes<32>>;
+    // Shuffled deck per game: maps (gameId, cardIndex) -> CurvePoint
+    export ledger gameDeck: Map<Bytes<32>, CurvePoint>;
+    // Size of the deck per game
+    export ledger gameDeckSize: Map<Bytes<32>, Uint<64>>;
+    // Index of the top card per game
+    export ledger gameTopCardIndex: Map<Bytes<32>, Uint<32>>;
+    // Map from semi-encrypted (player's hand) to fully-encrypted (deck) points per game
+    export ledger gameSemiMaskedToFullyMasked: Map<Bytes<32>, CurvePoint>;
+
+    // Witnesses
+    witness getFieldInverse(x: Field): Field;
+    witness player_secret_key(gameId: Bytes<32>, player: Field): Field;
+    witness split_field_bits(f: Field): [Field, Uint<64>];
+    witness shuffle_seed(gameId: Bytes<32>, player: Field): Bytes<32>;
+    witness get_sorted_deck_witness(input: Vector<52, WeightedCard>): Vector<52, WeightedCard>;
+
+    // Used for shuffling the deck
+    struct WeightedCard {
+        point: CurvePoint,
+        weight: Uint<248>
+    }
+
+    // Helper to create composite key for deck cards
+    circuit makeDeckCardKey(gameId: Bytes<32>, cardIndex: Field): Bytes<32> {
+        const indexHash = std_persistentHash<Field>(cardIndex);
+        return std_persistentHash<Vector<2, Bytes<32>>>([disclose(gameId), indexHash]);
+    }
+
+    // Helper to create composite key for player keys
+    circuit makePlayerKeyHash(gameId: Bytes<32>, secretHash: Bytes<32>): Bytes<32> {
+        return std_persistentHash<Vector<2, Bytes<32>>>([disclose(gameId), disclose(secretHash)]);
+    }
+
+    // Helper to create composite key for semi-masked to fully-masked mapping
+    circuit makeSemiMaskedKey(gameId: Bytes<32>, semiMaskedPoint: CurvePoint): Bytes<32> {
+        const pointHash = std_persistentHash<CurvePoint>(semiMaskedPoint);
+        return std_persistentHash<Vector<2, Bytes<32>>>([disclose(gameId), pointHash]);
+    }
+
+    // Initialize static deck mappings (only needs to be called once, ever)
+    export circuit init_static_deck(): [] {
+        if (staticDeckInitialized) {
+            return [];
+        }
+        
+        for (const i of 0..52) { 
+            const cardPoint: CurvePoint = getPointFromValue(i);
+            deckCurveToCard.insert(cardPoint, (i) as Field);
+            reverseDeckCurveToCard.insert((i) as Uint<32>, cardPoint);
+        }
+        staticDeckInitialized = true;
+        return [];
+    }
+
+    // Initialize deck for a specific game
+    export circuit init_deck(gameId: Bytes<32>): [] {
+        const gid = disclose(gameId);
+        
+        // Ensure static deck is initialized
+        assert(staticDeckInitialized, "Static deck not initialized - call init_static_deck first");
+        
+        gameTopCardIndex.insert(gid, 0 as Uint<32>);
+        gameDeckSize.insert(gid, 52 as Uint<64>);
+        
+        // Copy base deck to game deck (unshuffled initially)
+        for (const i of 0..52) { 
+            const cardPoint = reverseDeckCurveToCard.lookup((i) as Uint<32>) as CurvePoint;
+            const deckKey = makeDeckCardKey(gid, (i) as Field);
+            gameDeck.insert(disclose(deckKey), cardPoint);
+        }
+        return [];
+    }
+
+    // Use this function to get the secret and inverse scalar for a player in a game
+    export circuit getSecretFromPlayerId(gameId: Bytes<32>, playerId: Uint<64>): [Field, Field] {
+        const gid = disclose(gameId);
+        const secret = player_secret_key(gid, playerId);
+        const secret_hash = std_persistentHash<Field>(secret);
+
+        const invScalar = getFieldInverse(disclose(secret));
+        const invScalar_hash = std_persistentHash<Field>(invScalar);
+        
+        const rawPoint = std_hashToCurve<Bytes<32>>(secret_hash);
+        const randomPoint = std_ecMul(rawPoint, 8 as Field);
+        const mappedPoint = std_ecMul(randomPoint, secret);
+        const verifyPoint = std_ecMul(mappedPoint, invScalar);
+        assert(verifyPoint == randomPoint, "Witness failed: Invalid Field inverse");
+        return [secret, invScalar];
+    }
+
+    // Get the secret hash for a player (for verification purposes)
+    export circuit getSecretHashForPlayer(gameId: Bytes<32>, playerId: Uint<64>): Bytes<32> {
+        const gid = disclose(gameId);
+        const secret = player_secret_key(gid, playerId);
+        return std_persistentHash<Field>(secret);
+    }
+
+    // This must be applied by each player for a specific game
+    export circuit apply_mask_to_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
+        const gid = disclose(gameId);
+        const [secret, invScalar] = getSecretFromPlayerId(gid, playerIndex);
+        const secret_hash = std_persistentHash<Field>(secret);
+        const invScalar_hash = std_persistentHash<Field>(invScalar);
+
+        // Create composite key for this game + secret hash
+        const playerKeyHash = makePlayerKeyHash(gid, disclose(secret_hash));
+
+        // Disallow multiple shuffles/masks with the same secret key in this game
+        assert(!gamePlayersKeysHashes.member(disclose(playerKeyHash)), "Player secret key already used in this game");
+        gamePlayersKeysHashes.insert(disclose(playerKeyHash), disclose(playerIndex));
+        gamePlayersKeysInverses.insert(disclose(playerKeyHash), disclose(invScalar_hash));
+        shuffle_deck(gid, playerIndex);
+    }
+
+    // Given a known CurvePoint, get the card value
+    export circuit getCardFromPoint(point: CurvePoint): Field {
+        const index = deckCurveToCard.lookup(disclose(point)) as Field;
+        return index;
+    }
+
+    // Get the top card index for a game
+    export circuit getTopCardIndex(gameId: Bytes<32>): Uint<32> {
+        const gid = disclose(gameId);
+        return gameTopCardIndex.lookup(gid) as Uint<32>;
+    }
+
+    // Get the deck size for a game
+    export circuit getDeckSize(gameId: Bytes<32>): Uint<64> {
+        const gid = disclose(gameId);
+        return gameDeckSize.lookup(gid) as Uint<64>;
+    }
+
+    // This function will remove the mask applied by playerId.
+    export circuit partial_decryption(gameId: Bytes<32>, point: CurvePoint, playerId: Uint<64>): CurvePoint {
+        const gid = disclose(gameId);
+        const disclosed_playerId = disclose(playerId);
+        const secret = player_secret_key(gid, disclosed_playerId);
+        const secret_hash = std_persistentHash<Field>(secret);
+        
+        // Create composite key for verification
+        const playerKeyHash = makePlayerKeyHash(gid, disclose(secret_hash));
+        assert(gamePlayersKeysHashes.member(disclose(playerKeyHash)), "Player secret key unknown in this game");
+
+        const invScalar = getFieldInverse(disclose(secret));
+        const invScalar_hash = std_persistentHash<Field>(invScalar);
+        const expected_invScalar_hash = gamePlayersKeysInverses.lookup(disclose(playerKeyHash)) as Bytes<32>;
+        assert(invScalar_hash == expected_invScalar_hash, "Witness failed: Invalid Field inverse");
+
+        const decrypted_point = std_ecMul(disclose(point), disclose(invScalar));
+        return decrypted_point;
+    }
+
+    export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): CurvePoint {
+        const gid = disclose(gameId);
+        const disclosed_playerId = disclose(_playerId);
+        
+        const topIndex = gameTopCardIndex.lookup(gid) as Uint<32>;
+        const deckKey = makeDeckCardKey(gid, disclose(topIndex) as Field);
+        const point = gameDeck.lookup(disclose(deckKey)) as CurvePoint;
+        
+        // Increment top card index
+        gameTopCardIndex.insert(gid, topIndex + 1 as Uint<32>);
+        const deckSize = gameDeckSize.lookup(gid) as Uint<64>;
+        assert(topIndex + 1 as Uint<32> <= deckSize as Uint<32>, "Top card index is greater than deck size");
+        
+        if (disclosed_playerId == 1 as Uint<64>) {
+            const masked_card = partial_decryption(gid, disclose(point), _playerId);
+            return masked_card;
+        }
+        else if (disclosed_playerId == 2 as Uint<64>) {
+            const masked_card = partial_decryption(gid, disclose(point), _playerId);
+            return masked_card;
+        }
+        else { 
+            assert(false, "Invalid player index");
+        }
+
+        return point;
+    }
+
+    // Get a card from the deck at a specific index without removing it
+    export circuit getDeckCard(gameId: Bytes<32>, cardIndex: Field): CurvePoint {
+        const gid = disclose(gameId);
+        const deckKey = makeDeckCardKey(gid, disclose(cardIndex));
+        return gameDeck.lookup(disclose(deckKey)) as CurvePoint;
+    }
+
+    // Store semi-masked to fully-masked mapping for a game
+    export circuit storeSemiMaskedMapping(gameId: Bytes<32>, semiMasked: CurvePoint, fullyMasked: CurvePoint): [] {
+        const gid = disclose(gameId);
+        const mappingKey = makeSemiMaskedKey(gid, disclose(semiMasked));
+        gameSemiMaskedToFullyMasked.insert(disclose(mappingKey), disclose(fullyMasked));
+        return [];
+    }
+
+    // Lookup fully-masked point from semi-masked for a game
+    export circuit lookupFullyMasked(gameId: Bytes<32>, semiMasked: CurvePoint): CurvePoint {
+        const gid = disclose(gameId);
+        const mappingKey = makeSemiMaskedKey(gid, disclose(semiMasked));
+        return gameSemiMaskedToFullyMasked.lookup(disclose(mappingKey)) as CurvePoint;
+    }
+
+    circuit field_to_uint64_safe(val: Field): Uint<64> {
+        const SHIFT: Field = 18446744073709551616 as Field; // 2^64
+
+        const parts = split_field_bits(val);
+        const high = parts[0];
+        const low = parts[1];
+        assert(val == high * SHIFT + (low as Field), "Safe truncation failed 1");
+
+        const parts2 = split_field_bits(high);
+        const h2 = parts2[0];
+        const l2 = parts2[1];
+        assert(high == h2 * SHIFT + (l2 as Field), "Safe truncation failed 2");
+
+        const parts3 = split_field_bits(h2);
+        const h3 = parts3[0];
+        const l3 = parts3[1];
+        assert(h2 == h3 * SHIFT + (l3 as Field), "Safe truncation failed 3");
+
+        const parts4 = split_field_bits(h3);
+        const h4 = parts4[0];
+        const l4 = parts4[1];
+        assert(h3 == h4 * SHIFT + (l4 as Field), "Safe truncation failed 4");
+
+        assert(h4 == 0 as Field, "High part too large - potential witness overflow");
+
+        return low;
+    }
+
+    circuit getPointFromValue(value: Field): CurvePoint {
+        const card_seed: Bytes<32> = std_persistentHash<Field>(value);
+        const raw_point: CurvePoint = std_hashToCurve<Bytes<32>>(card_seed);
+        return std_ecMul(raw_point, 8 as Field);
+    }
+
+    circuit applyMaskToPoint(gameId: Bytes<32>, point: CurvePoint, playerIndex: Uint<64>): CurvePoint {
+        const gid = disclose(gameId);
+        const secret = player_secret_key(gid, playerIndex);
+        return std_ecMul(disclose(point), disclose(secret));
+    }
+
+    export circuit shuffle_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
+        const gid = disclose(gameId);
+        const seed = shuffle_seed(gid, playerIndex);
+        
+        // TODO It might not be necessary to check if shuffled according to weights, if the cards are the same we are OK.
+        const INDICES_52: Vector<52, Uint<64>> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51];
+
+        const cards: Vector<52, WeightedCard> = map(
+            (idx) => make_weighted_masked_card(gid, idx as Uint<248>, seed, playerIndex),
+            INDICES_52
+        );
+
+        const sorted_cards = get_sorted_deck_witness(cards);
+
+        for (const i of 0..51) {
+            const w1 = sorted_cards[i].weight;
+            const w2 = sorted_cards[i + 1].weight;
+            assert(w1 <= w2, "Witness failed: Deck is not sorted");
+        }
+
+        // Verify Order
+        // const INDICES_51: Vector<51, Uint<64>> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50];
+        // const is_sorted = fold(
+        //     (ok, i) => {
+        //         const w1 = sorted_cards[i].weight;
+        //         const w2 = sorted_cards[i + 1].weight;
+        //         return ok && (w1 <= w2);
+        //     },
+        //     true,
+        //     INDICES_51
+        // );
+        // assert(is_sorted, "Witness failed: Deck is not sorted");
+        
+        // Compress cards to Field elements
+        const original_hashes = map((c) => hash_card_to_field(c), cards);
+        const sorted_hashes = map((c) => hash_card_to_field(c), sorted_cards);
+
+        // Generate random challenge 'gamma' (Fiat-Shamir)
+        const h1 = std_transientHash<Vector<52, Field>>(original_hashes);
+        const h2 = std_transientHash<Vector<52, Field>>(sorted_hashes);
+        const gamma = std_transientHash<Vector<2, Field>>([h1, h2]);
+
+        // const gamma = std_transientHash<Vector<52, Field>>(original_hashes);
+
+        // Compute Grand Products
+        const prod_original = fold((acc, h) => acc * (h + gamma), 1 as Field, original_hashes);
+        const prod_sorted   = fold((acc, h) => acc * (h + gamma), 1 as Field, sorted_hashes);
+
+        assert(prod_original == prod_sorted, "Witness failed: Cheating detected (cards modified)");
+
+        // Write back to game-specific deck
+        for (const i of 0..52) {
+            const deckKey = makeDeckCardKey(gid, disclose(i as Field));
+            gameDeck.insert(disclose(deckKey), disclose(sorted_cards[i].point));
+        }
+    }
+
+    circuit hash_card_to_field(card: WeightedCard): Field {
+        return std_transientHash<WeightedCard>(card);
+    }
+
+    circuit make_weighted_masked_card(gameId: Bytes<32>, index: Uint<248>, seed: Bytes<32>, playerIndex: Uint<64>): WeightedCard {
+        const gid = disclose(gameId);
+        const deckKey = makeDeckCardKey(gid, index as Field);
+        const original_point = gameDeck.lookup(disclose(deckKey)) as CurvePoint;
+        const masked_point = applyMaskToPoint(gid, original_point, playerIndex);
+        
+        const seed_field = std_degradeToTransient(seed);
+        const weight = std_transientHash<Vector<2, Field>>([seed_field, index as Field]);
+        const weight_uint = field_to_uint64_safe(weight);
+
+        return WeightedCard {
+            point: masked_point,
+            weight: weight_uint
+        };
+    }
+}
