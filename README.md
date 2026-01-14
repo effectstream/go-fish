@@ -45,7 +45,7 @@ Visit **http://localhost:3000**
 ├── client/
 │   ├── node/             # Paima engine node (state machine, APIs)
 │   ├── batcher/          # Transaction batching service
-│   └── database/         # PostgreSQL queries and schema
+│   └── database/         # PGLite queries and schema (pgtyped)
 └── shared/
     ├── contracts/
     │   ├── evm/          # Hardhat contracts for lobbies & stats (EVM)
@@ -54,18 +54,16 @@ Visit **http://localhost:3000**
     └── simulation/       # Game simulation logic
 ```
 
-All packages are properly configured and ready to use!
-
 ## Architecture
 
 This project follows a hybrid blockchain architecture:
 
 - **Frontend**: User interface with HTML5 Canvas/SVG rendering
 - **EVM Contracts**: Handle lobbies, player stats, matchmaking (Hardhat)
-- **Midnight Contracts**: Handle private game state and logic (stub for now)
+- **Midnight Contracts**: Handle private game state and logic
 - **Paima Node**: Processes blockchain transactions and maintains game state
 - **Batcher**: Batches user transactions to reduce on-chain costs
-- **Database**: PostgreSQL for game state storage
+- **Database**: PGLite (in-memory/WASM PostgreSQL) for game state storage
 - **Simulation**: Shared deterministic game logic (frontend + backend)
 
 ### Go Fish Game Features
@@ -114,26 +112,35 @@ deno task frontend:build # Build frontend from root
 
 ## Database Schema
 
-PostgreSQL tables for the Go Fish game:
+PGLite database tables for the Go Fish game:
 
-- **user_stats** - Player profiles, games played/won
 - **lobbies** - Active game lobbies with player counts
-- **games** - Game instances with status
-- **game_players** - Players in each game with their hands
-- **game_moves** - Move history (asks, matches, draws)
+- **lobby_players** - Players in each lobby with ready status
+- **games** - Game instances with status (planned for Midnight integration)
+- **effectstream.accounts** - Account management (Paima Effectstream)
+- **effectstream.addresses** - Address-to-account mapping (Paima Effectstream)
 
 All migrations are in [packages/client/database/src/mod.ts](packages/client/database/src/mod.ts)
 
+Queries are defined in SQL files and auto-generated using pgtyped:
+- [packages/client/database/src/lobby-queries.sql](packages/client/database/src/lobby-queries.sql)
+- Run `pgtyped -c pgtyped.config.json` to regenerate TypeScript query files
+
 ## Game Commands
 
-Blockchain commands (colon-separated format):
+Blockchain commands (Paima concise grammar format):
 
-- `setName:name` - Set display name
-- `createLobby:maxPlayers` - Create game lobby (EVM)
-- `joinLobby:lobbyId` - Join lobby (EVM)
-- `askForCard:gameId:playerId:rank` - Ask player for cards
-- `drawCard:gameId` - Draw from deck
-- `declareBook:gameId:rank` - Declare a completed book
+**Lobby Management (EVM):**
+- `createdLobby|playerName|maxPlayers` - Create game lobby
+- `joinedLobby|playerName|lobbyID` - Join lobby
+- `toggledReady|lobbyID` - Toggle ready status
+- `startedGame|lobbyID` - Start game (host only)
+- `leftLobby|lobbyID` - Leave lobby
+- `closedLobby|lobbyID` - Close lobby (host only)
+
+**Game Actions (Midnight - planned):**
+- `askedForCard|lobbyID|targetPlayerID|rank` - Ask player for cards
+- Game logic will be handled by Midnight contracts for privacy
 
 See [packages/shared/data-types/src/grammar.ts](packages/shared/data-types/src/grammar.ts)
 
@@ -141,7 +148,6 @@ See [packages/shared/data-types/src/grammar.ts](packages/shared/data-types/src/g
 
 - **Backend**: Deno, TypeScript, Paima Engine
 - **Frontend**: Vite, TypeScript, HTML5 Canvas/SVG
-- **Database**: PostgreSQL with typed queries
 - **Blockchain (EVM)**: Hardhat, Solidity (lobbies & stats)
 - **Blockchain (Midnight)**: Midnight contracts (game logic - stub)
 - **State Management**: Paima State Machine (PaimaSTM)

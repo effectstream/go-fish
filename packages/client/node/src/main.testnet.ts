@@ -4,7 +4,7 @@
 
 import { initPaima } from '@paimaexample/runtime';
 import { stateMachineDefinition } from './state-machine.ts';
-import { createRouter } from './api.game.ts';
+import { apiRouter } from './api.ts';
 import config from '@go-fish/data-types/config.testnet.ts';
 
 const PORT = 9999;
@@ -18,7 +18,7 @@ async function main() {
     await initPaima({
       config,
       stateMachine: stateMachineDefinition,
-      apiRouter: createRouter,
+      apiRouter: apiRouter,
       port: PORT,
     });
 
