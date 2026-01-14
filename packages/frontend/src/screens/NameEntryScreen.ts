@@ -3,7 +3,7 @@
  */
 
 import { GoFishGameService } from '../services/GoFishGameService';
-import * as PaimaMiddleware from '../paimaMiddleware';
+import * as EffectstreamBridge from '../effectstreamBridge';
 
 export class NameEntryScreen {
   private container: HTMLElement;
@@ -21,7 +21,7 @@ export class NameEntryScreen {
     await this.gameService.initializeWithWallet();
     this.render();
 
-    const address = PaimaMiddleware.getWalletAddress();
+    const address = EffectstreamBridge.getWalletAddress();
     if (this.walletDisplay && address) {
       this.walletDisplay.textContent = this.formatAddress(address);
     }

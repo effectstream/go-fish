@@ -1,6 +1,6 @@
 /**
- * Paima Middleware - Handles blockchain interactions and wallet management
- * Bridges the frontend to Paima Engine and smart contracts
+ * Effectstream Bridge - Handles blockchain interactions and wallet management
+ * Bridges the frontend to Paima Engine (Effectstream) and smart contracts
  */
 
 import {
@@ -342,8 +342,8 @@ export async function submitGameAction(
   }
 }
 
-// Export all functions as a single middleware object
-export const PaimaMiddleware = {
+// Export all functions as a single bridge object
+export const EffectstreamBridge = {
   userWalletLogin,
   getWalletAddress,
   isWalletConnected,
@@ -357,4 +357,4 @@ export const PaimaMiddleware = {
   submitGameAction,
 };
 
-export default PaimaMiddleware;
+export default EffectstreamBridge;

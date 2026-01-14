@@ -4,7 +4,7 @@
 
 import { GoFishGameService } from '../services/GoFishGameService';
 import type { GoFishGameState, GoFishPlayer } from '../../../shared/data-types/src/go-fish-types';
-import * as PaimaMiddleware from '../paimaMiddleware';
+import * as EffectstreamBridge from '../effectstreamBridge';
 
 export class LobbyScreen {
   private container: HTMLElement;
@@ -174,7 +174,7 @@ export class LobbyScreen {
 
     // Ready toggle
     document.getElementById('toggle-ready-btn')?.addEventListener('click', async () => {
-      const result = await PaimaMiddleware.toggleReady(this.lobbyId);
+      const result = await EffectstreamBridge.toggleReady(this.lobbyId);
       if (!result.success) {
         console.error('Failed to toggle ready:', result.errorMessage);
         alert('Failed to toggle ready status. Please try again.');
@@ -184,7 +184,7 @@ export class LobbyScreen {
 
     // Start game
     document.getElementById('start-game-btn')?.addEventListener('click', async () => {
-      const result = await PaimaMiddleware.startGame(this.lobbyId);
+      const result = await EffectstreamBridge.startGame(this.lobbyId);
       if (result.success) {
         // Game started - the lobby status will update to 'in_progress'
         // and the screen will automatically navigate when it refreshes

@@ -25,7 +25,7 @@ import {
   sortCards,
 } from '../../../shared/data-types/src/go-fish-types';
 
-import * as PaimaMiddleware from '../paimaMiddleware';
+import * as EffectstreamBridge from '../effectstreamBridge';
 
 export class GoFishGameService {
   private static instance: GoFishGameService;
@@ -44,8 +44,8 @@ export class GoFishGameService {
 
   // Initialize with wallet connection
   async initializeWithWallet(): Promise<boolean> {
-    if (PaimaMiddleware.isWalletConnected()) {
-      const address = PaimaMiddleware.getWalletAddress();
+    if (EffectstreamBridge.isWalletConnected()) {
+      const address = EffectstreamBridge.getWalletAddress();
       if (address) {
         this.playerId = address;
         return true;
@@ -77,7 +77,7 @@ export class GoFishGameService {
   // Lobby management
   async createLobby(name: string, maxPlayers: number): Promise<Lobby | null> {
     // Call blockchain middleware to create lobby
-    const result = await PaimaMiddleware.createLobby(name, maxPlayers);
+    const result = await EffectstreamBridge.createLobby(name, maxPlayers);
 
     if (!result.success) {
       console.error('Failed to create lobby:', result.errorMessage);
@@ -165,7 +165,7 @@ export class GoFishGameService {
 
   async joinLobby(lobbyId: string): Promise<boolean> {
     // Submit join transaction to blockchain
-    const result = await PaimaMiddleware.joinLobby(this.playerName, lobbyId);
+    const result = await EffectstreamBridge.joinLobby(this.playerName, lobbyId);
 
     if (!result.success) {
       console.error('Failed to join lobby:', result.errorMessage);

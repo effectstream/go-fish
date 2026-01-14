@@ -2,7 +2,7 @@
  * WalletScreen - Handles wallet connection before entering the game
  */
 
-import * as PaimaMiddleware from '../paimaMiddleware';
+import * as EffectstreamBridge from '../effectstreamBridge';
 import { WalletMode } from '@paimaexample/wallets';
 
 export class WalletScreen {
@@ -17,8 +17,8 @@ export class WalletScreen {
 
   async show() {
     // Check if already connected
-    if (PaimaMiddleware.isWalletConnected()) {
-      const address = PaimaMiddleware.getWalletAddress();
+    if (EffectstreamBridge.isWalletConnected()) {
+      const address = EffectstreamBridge.getWalletAddress();
       console.log('Already connected to wallet:', address);
       this.dispatchNavigate('name-entry');
       return;
@@ -186,13 +186,13 @@ export class WalletScreen {
 
     try {
       // Attempt to connect wallet
-      const result = await PaimaMiddleware.userWalletLogin({
+      const result = await EffectstreamBridge.userWalletLogin({
         mode: 0, // WalletMode.EvmInjected
         preferBatchedMode: false,
       });
 
       if (result.success) {
-        const address = PaimaMiddleware.getWalletAddress();
+        const address = EffectstreamBridge.getWalletAddress();
         console.log('Wallet connected successfully:', address);
 
         this.statusText.textContent = `Connected: ${this.formatAddress(address || '')}`;
