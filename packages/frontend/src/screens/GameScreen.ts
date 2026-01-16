@@ -34,6 +34,10 @@ export class GameScreen {
   private gameState: GameStateResponse | null = null;
   private walletAddress: string | null = null;
   private myDecryptedHand: Array<{ rank: number; suit: number }> = [];
+  private setupInProgress: boolean = false;
+  private setupCompleted: boolean = false;
+  private maskApplied: boolean = false;  // Track if we've applied mask (frontend-side cache)
+  private cardsDealt: boolean = false;   // Track if we've dealt cards (frontend-side cache)
 
   constructor(container: HTMLElement, lobbyId: string) {
     this.container = container;
@@ -46,7 +50,9 @@ export class GameScreen {
 
   show() {
     this.render();
-    this.refreshInterval = window.setInterval(() => this.render(), 1000);
+    // Poll every 2 seconds instead of 1 second to reduce database pressure
+    // This prevents mutex deadlocks during block processing and Midnight queries
+    this.refreshInterval = window.setInterval(() => this.render(), 2000);
   }
 
   hide() {
@@ -90,6 +96,10 @@ export class GameScreen {
 
     // Check if we're in setup/dealing phase
     if (this.gameState.phase === 'dealing') {
+      // Automatically run setup if not already completed
+      if (!this.setupCompleted && !this.setupInProgress) {
+        this.runAutomaticSetup();
+      }
       this.renderSetupPhase();
       return;
     }
@@ -247,8 +257,119 @@ export class GameScreen {
       .join('');
   }
 
+  /**
+   * Automatically run the setup sequence (applyMask + dealCards)
+   * Checks state before each operation to avoid race conditions
+   */
+  private async runAutomaticSetup() {
+    if (!this.gameState) return;
+
+    this.setupInProgress = true;
+
+    try {
+      console.log('[GameScreen] Starting automatic setup...');
+
+      // Check current setup status
+      const statusResponse = await fetch(
+        `http://localhost:9999/api/midnight/setup_status?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+      );
+      const status = await statusResponse.json();
+
+      console.log('[GameScreen] Setup status:', status);
+
+      // Step 1: Apply mask (only if not already applied)
+      // Use frontend-side cache to prevent duplicate attempts
+      if (!this.maskApplied && !status.hasMaskApplied) {
+        console.log('[GameScreen] Applying mask...');
+        const maskResponse = await fetch('http://localhost:9999/api/midnight/apply_mask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lobby_id: this.lobbyId,
+            player_id: this.gameState.playerId
+          })
+        });
+
+        const maskResult = await maskResponse.json();
+        if (!maskResult.success) {
+          // Check if error is "already applied" - treat as success and continue
+          if (maskResult.errorMessage?.includes('already applied')) {
+            console.log('[GameScreen] Mask already applied (detected via error) - continuing');
+            this.maskApplied = true;  // Mark as applied
+          } else {
+            throw new Error(`Apply mask failed: ${maskResult.errorMessage}`);
+          }
+        } else {
+          console.log('[GameScreen] Mask applied successfully');
+          this.maskApplied = true;  // Mark as applied
+        }
+      } else {
+        console.log('[GameScreen] Mask already applied, skipping');
+      }
+
+      // Step 2: Deal cards (only if both players have applied masks and we haven't dealt yet)
+      // Use frontend-side cache to prevent duplicate attempts
+      if (!this.cardsDealt && !status.hasDealt) {
+        // Check if opponent has applied mask
+        const updatedStatusResponse = await fetch(
+          `http://localhost:9999/api/midnight/setup_status?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+        );
+        const updatedStatus = await updatedStatusResponse.json();
+
+        if (updatedStatus.opponentHasMaskApplied) {
+          console.log('[GameScreen] Both players have masks applied, dealing cards...');
+          const dealResponse = await fetch('http://localhost:9999/api/midnight/deal_cards', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId
+            })
+          });
+
+          const dealResult = await dealResponse.json();
+          if (!dealResult.success) {
+            // Check if error is "already dealt" - treat as success
+            if (dealResult.errorMessage?.includes('Player 1 must apply mask')) {
+              console.log('[GameScreen] Opponent has not applied mask yet, will retry...');
+              return; // Don't mark as complete, retry later
+            } else if (dealResult.errorMessage?.includes('already dealt')) {
+              console.log('[GameScreen] Cards already dealt (detected via error) - continuing');
+              this.cardsDealt = true;  // Mark as dealt
+            } else {
+              throw new Error(`Deal cards failed: ${dealResult.errorMessage}`);
+            }
+          } else {
+            console.log('[GameScreen] Cards dealt successfully');
+            this.cardsDealt = true;  // Mark as dealt
+          }
+        } else {
+          console.log('[GameScreen] Waiting for opponent to apply mask...');
+          return; // Don't mark as complete, retry later
+        }
+      } else {
+        console.log('[GameScreen] Cards already dealt, skipping');
+      }
+
+      console.log('[GameScreen] Automatic setup complete!');
+      this.setupCompleted = true;
+    } catch (error: any) {
+      console.error('[GameScreen] Automatic setup failed:', error);
+      // Don't mark as completed so it can retry
+    } finally {
+      this.setupInProgress = false;
+    }
+  }
+
   private renderSetupPhase() {
     if (!this.gameState) return;
+
+    // Show simplified UI during automatic setup
+    const statusMessage = this.setupInProgress
+      ? 'Setting up your game... (applying cryptographic masks and dealing cards)'
+      : this.setupCompleted
+      ? 'Setup complete! Waiting for opponent to finish...'
+      : 'Initializing setup...';
 
     this.container.innerHTML = `
       <div class="game-screen">
@@ -261,104 +382,36 @@ export class GameScreen {
 
         <div class="game-content" style="display: flex; align-items: center; justify-content: center;">
           <div style="max-width: 600px; padding: 2rem; background-color: rgba(0, 0, 0, 0.5); border-radius: 1rem; text-align: center;">
-            <h2 style="margin-bottom: 1rem;">Game Setup Required</h2>
+            <h2 style="margin-bottom: 1rem;">🎴 Game Setup</h2>
             <p style="margin-bottom: 2rem; opacity: 0.9;">
-              Before the game can begin, each player needs to initialize their secret cards in the Midnight contract.
-              This is a one-time setup process that uses zero-knowledge proofs to ensure fair play.
+              Each player's secret cards are being initialized in the Midnight contract.
+              This uses zero-knowledge proofs to ensure fair play - no one can see your cards!
             </p>
 
-            <div style="margin-bottom: 2rem;">
-              <h3 style="margin-bottom: 1rem;">Setup Steps:</h3>
-              <ol style="text-align: left; margin-left: 2rem; line-height: 1.8;">
-                <li>Click "Apply Mask" to shuffle and encrypt the deck with your secret</li>
-                <li>Click "Deal Cards" to receive your initial hand</li>
-                <li>Wait for your opponent to complete their setup</li>
-              </ol>
+            <div style="margin: 2rem 0;">
+              <div class="spinner" style="margin: 0 auto 1rem; width: 50px; height: 50px; border: 4px solid rgba(255,255,255,0.1); border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+              <p style="font-size: 1.1rem; font-weight: 500;">
+                ${statusMessage}
+              </p>
             </div>
 
-            <div style="display: flex; gap: 1rem; justify-content: center; margin-bottom: 1rem;">
-              <button id="apply-mask-btn" class="btn-primary">
-                🎴 Apply Mask
-              </button>
-              <button id="deal-cards-btn" class="btn-primary">
-                🃏 Deal Cards
-              </button>
+            <div style="margin-top: 2rem; padding: 1rem; background-color: rgba(255,255,255,0.05); border-radius: 0.5rem;">
+              <p style="font-size: 0.9rem; opacity: 0.7;">
+                Setup happens automatically. Once both players complete setup, the game will begin!
+              </p>
             </div>
-
-            <p id="setup-status" style="margin-top: 1rem; font-size: 0.9rem; opacity: 0.8;">
-              Ready to begin setup...
-            </p>
           </div>
         </div>
       </div>
+
+      <style>
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      </style>
     `;
 
-    // Add event listeners
-    const applyMaskBtn = this.container.querySelector('#apply-mask-btn') as HTMLButtonElement;
-    const dealCardsBtn = this.container.querySelector('#deal-cards-btn') as HTMLButtonElement;
-    const statusText = this.container.querySelector('#setup-status') as HTMLParagraphElement;
-
-    if (applyMaskBtn) {
-      applyMaskBtn.addEventListener('click', async () => {
-        applyMaskBtn.disabled = true;
-        statusText.textContent = 'Applying mask to deck...';
-
-        try {
-          const response = await fetch('http://localhost:9999/api/midnight/apply_mask', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState!.playerId
-            })
-          });
-
-          const result = await response.json();
-
-          if (result.success) {
-            statusText.textContent = '✓ Mask applied successfully! Now deal cards.';
-            applyMaskBtn.style.opacity = '0.5';
-          } else {
-            statusText.textContent = `Error: ${result.errorMessage || 'Failed to apply mask'}`;
-            applyMaskBtn.disabled = false;
-          }
-        } catch (error: any) {
-          statusText.textContent = `Error: ${error.message}`;
-          applyMaskBtn.disabled = false;
-        }
-      });
-    }
-
-    if (dealCardsBtn) {
-      dealCardsBtn.addEventListener('click', async () => {
-        dealCardsBtn.disabled = true;
-        statusText.textContent = 'Dealing cards...';
-
-        try {
-          const response = await fetch('http://localhost:9999/api/midnight/deal_cards', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState!.playerId
-            })
-          });
-
-          const result = await response.json();
-
-          if (result.success) {
-            statusText.textContent = '✓ Cards dealt! Waiting for opponent...';
-            dealCardsBtn.style.opacity = '0.5';
-          } else {
-            statusText.textContent = `Error: ${result.errorMessage || 'Failed to deal cards'}`;
-            dealCardsBtn.disabled = false;
-          }
-        } catch (error: any) {
-          statusText.textContent = `Error: ${error.message}`;
-          dealCardsBtn.disabled = false;
-        }
-      });
-    }
+    // Setup now runs automatically - no manual buttons needed
   }
 
   private renderActionPanel(game: GoFishGameState, currentPlayer: GoFishPlayer): string {

@@ -39,6 +39,32 @@ let queryContract: Contract<PrivateState, Witnesses<PrivateState>> | null = null
 let queryContext: CircuitContext<PrivateState> | null = null;
 
 /**
+ * Sync query context with action context
+ * This must be called after any action that modifies contract state
+ * so that queries see the updated state
+ */
+export function syncQueryContextFromAction(actionContext: CircuitContext<PrivateState>) {
+  if (!queryContext) {
+    console.warn('[MidnightQuery] Cannot sync - query context not initialized');
+    return;
+  }
+
+  // Update query context with ALL state from action context
+  // Need to copy the entire context to get updated contract state
+  queryContext = {
+    currentPrivateState: actionContext.currentPrivateState,
+    currentZswapLocalState: actionContext.currentZswapLocalState,
+    currentQueryContext: actionContext.currentQueryContext,
+    costModel: actionContext.costModel,
+  };
+
+  // Invalidate cache so next query gets fresh data
+  gameStateCache.clear();
+
+  console.log('[MidnightQuery] Query context synced with action context and cache cleared');
+}
+
+/**
  * Initialize query contract (call once on server startup)
  */
 export async function initializeQueryContract(): Promise<void> {
@@ -92,6 +118,7 @@ function lobbyIdToGameId(lobbyId: string): Uint8Array {
 export async function queryGamePhase(lobbyId: string): Promise<number | null> {
   try {
     if (!queryContract || !queryContext) {
+      console.log('[MidnightQuery] queryGamePhase: contract not initialized');
       return null;
     }
 
@@ -99,11 +126,15 @@ export async function queryGamePhase(lobbyId: string): Promise<number | null> {
     const result = queryContract.impureCircuits.getGamePhase(queryContext, gameId);
     queryContext = result.context;
 
-    return Number(result.result);
+    const phase = Number(result.result);
+    console.log(`[MidnightQuery] queryGamePhase(${lobbyId}): ${phase}`);
+    return phase;
   } catch (error: any) {
     // "Game does not exist" is expected during setup phase - don't log as error
     if (!error?.message?.includes('Game does not exist')) {
       console.error('[MidnightQuery] queryGamePhase failed:', error);
+    } else {
+      console.log(`[MidnightQuery] queryGamePhase(${lobbyId}): Game does not exist yet`);
     }
     return null;
   }
@@ -256,10 +287,58 @@ function mapPhaseToString(phase: number | null): string {
 
 /**
  * Simple cache to prevent excessive queries that can cause database mutex deadlocks
- * Cache TTL: 500ms (frontend polls every 1000ms)
+ * Cache TTL: 1000ms (frontend polls every 2000ms)
  */
 const gameStateCache = new Map<string, { state: any; timestamp: number }>();
-const CACHE_TTL_MS = 500;
+const CACHE_TTL_MS = 1000;
+
+/**
+ * Query if player has applied their mask
+ */
+export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
+  try {
+    if (!queryContract || !queryContext) {
+      return false;
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = queryContract.impureCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
+    queryContext = result.context;
+
+    return result.result;
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryHasMaskApplied failed:', error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Query if player has dealt cards
+ * Uses getCardsDealt circuit - if result > 0, player has dealt
+ */
+export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
+  try {
+    if (!queryContract || !queryContext) {
+      return false;
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = queryContract.impureCircuits.getCardsDealt(queryContext, gameId, BigInt(playerId));
+    queryContext = result.context;
+
+    // If getCardsDealt returns > 0, the player has dealt cards
+    return Number(result.result) > 0;
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryHasDealt failed:', error);
+    }
+    return false;
+  }
+}
 
 /**
  * Get comprehensive game state for API endpoint

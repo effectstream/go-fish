@@ -20,7 +20,9 @@ export class LobbyScreen {
   async show(lobbyId: string) {
     this.lobbyId = lobbyId;
     await this.render();
-    this.refreshInterval = window.setInterval(() => this.render(), 1000);
+    // Poll every 2 seconds instead of 1 second to reduce database pressure
+    // This prevents mutex deadlocks during block processing
+    this.refreshInterval = window.setInterval(() => this.render(), 2000);
   }
 
   hide() {

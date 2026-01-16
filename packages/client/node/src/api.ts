@@ -6,7 +6,11 @@ import type { FastifyInstance } from "fastify";
 import type { StartConfigApiRouter } from "@paimaexample/runtime";
 import type { Pool } from "pg";
 import pg from "pg";
-import { getGameState as getMidnightGameState } from "./midnight-query.ts";
+import {
+  getGameState as getMidnightGameState,
+  queryHasMaskApplied,
+  queryHasDealt,
+} from "./midnight-query.ts";
 import {
   getPlayerHand as getMidnightPlayerHand,
   askForCard as midnightAskForCard,
@@ -382,6 +386,36 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
 
     const result = await midnightDealCards(lobby_id, playerId);
     return result;
+  });
+
+  // Check setup status (for automatic setup coordination)
+  server.get("/api/midnight/setup_status", async (request, reply) => {
+    const { lobby_id, player_id } = request.query as {
+      lobby_id: string;
+      player_id: string;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = parseInt(player_id) as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const hasMaskApplied = await queryHasMaskApplied(lobby_id, playerId);
+    const hasDealt = await queryHasDealt(lobby_id, playerId);
+
+    // Also check opponent's status for coordination
+    const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+    const opponentHasMaskApplied = await queryHasMaskApplied(lobby_id, opponentId);
+
+    return {
+      hasMaskApplied,
+      hasDealt,
+      opponentHasMaskApplied,
+    };
   });
 
   console.log("✓ Game API routes registered");

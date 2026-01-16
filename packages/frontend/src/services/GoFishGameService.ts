@@ -77,7 +77,8 @@ export class GoFishGameService {
   // Lobby management
   async createLobby(name: string, maxPlayers: number): Promise<Lobby | null> {
     // Call blockchain middleware to create lobby
-    const result = await EffectstreamBridge.createLobby(name, maxPlayers);
+    // Pass the player's name (not the lobby name) so it's stored correctly in lobby_players
+    const result = await EffectstreamBridge.createLobby(this.playerName, maxPlayers);
 
     if (!result.success) {
       console.error('Failed to create lobby:', result.errorMessage);
@@ -88,7 +89,7 @@ export class GoFishGameService {
     const lobbyId = result.lobbyId || `lobby_${Date.now()}`;
     const lobby: Lobby = {
       id: lobbyId,
-      name,
+      name,  // Use the lobby name from user input for local state
       hostId: this.playerId,
       hostName: this.playerName,
       playerCount: 0,

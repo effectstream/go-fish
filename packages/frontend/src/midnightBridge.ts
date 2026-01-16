@@ -1,6 +1,17 @@
 /**
  * Midnight Bridge - Frontend interface to Midnight Go Fish contract
  * Handles circuit calls, witness generation, and proof submission
+ *
+ * ✅ SECURITY: This is the CORRECT architecture
+ *
+ * Frontend responsibilities:
+ * - Generate player secrets locally (NEVER send to backend)
+ * - Execute ZK circuits in browser
+ * - Generate proofs
+ * - Submit proofs to backend for verification
+ *
+ * Currently: Secrets are generated here correctly, but circuits are executed
+ * on backend (INSECURE). See MIDNIGHT_SECURITY_ARCHITECTURE.md for migration plan.
  */
 
 import { Contract, type Witnesses, type Ledger } from '../../shared/contracts/midnight/go-fish-contract/managed/contract/index.js';

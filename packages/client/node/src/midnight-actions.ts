@@ -11,6 +11,7 @@ import {
   QueryContext,
   sampleContractAddress,
 } from '@midnight-ntwrk/compact-runtime';
+import { syncQueryContextFromAction } from './midnight-query.ts';
 
 // Private state type
 type PrivateState = Record<string, never>;
@@ -22,7 +23,22 @@ type PrivateState = Record<string, never>;
 const JUBJUB_SCALAR_FIELD_ORDER =
   6554484396890773809930967563523245729705921265872317281365359162392183254199n;
 
-// Map to store player secrets (in production, this should be encrypted in database)
+/**
+ * ⚠️ SECURITY WARNING ⚠️
+ *
+ * Backend should NEVER store or generate player secrets in production!
+ * This violates the Mental Poker protocol and breaks zero-knowledge properties.
+ *
+ * Current implementation (TESTING ONLY):
+ * - Backend generates secrets for both players
+ * - Backend can decrypt both players' hands
+ * - Server must be trusted (not truly zero-knowledge)
+ *
+ * Production implementation must:
+ * - Generate all secrets client-side (in browser)
+ * - Never send secrets to backend
+ * - Backend only handles proof verification and public state
+ */
 const playerSecrets = new Map<string, bigint>();
 
 // Singleton contract instance
@@ -52,6 +68,8 @@ const actionWitnesses: Witnesses<PrivateState> = {
   },
 
   player_secret_key: (context, gameId, player) => {
+    // ⚠️ INSECURE: Backend should NOT have access to player secrets!
+    // Following example.test.ts pattern but this is for TESTING ONLY
     const key = `${Buffer.from(gameId).toString('hex')}-${player}`;
 
     // Check if we already have a secret for this player/game
@@ -59,12 +77,11 @@ const actionWitnesses: Witnesses<PrivateState> = {
       return [context.privateState, playerSecrets.get(key)!];
     }
 
-    // Generate a random secret within valid range for Jubjub curve
+    // Generate a random secret (matches example.test.ts lines 24-28)
     // Secret must be in range [1, JUBJUB_SCALAR_FIELD_ORDER)
-    // In production, this should be derived from player's wallet signature
     const secret = BigInt(Math.floor(Math.random() * 1000000)) + 1n;
     playerSecrets.set(key, secret);
-    console.log(`[MidnightActions] Generated secret for player ${player}: ${secret}`);
+    console.log(`[MidnightActions] ⚠️  Generated secret for player ${player}: ${secret} (TESTING ONLY - NOT SECURE)`);
     return [context.privateState, secret];
   },
 
@@ -244,6 +261,9 @@ export async function askForCard(
     );
     actionContext = result.context;
 
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
+
     console.log('[MidnightActions] askForCard succeeded');
     return { success: true };
   } catch (error: any) {
@@ -273,6 +293,9 @@ export async function goFish(
       BigInt(playerId)
     );
     actionContext = result.context;
+
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
 
     console.log('[MidnightActions] goFish succeeded');
     return { success: true };
@@ -304,6 +327,9 @@ export async function applyMask(
     );
     actionContext = result.context;
 
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
+
     console.log('[MidnightActions] applyMask succeeded');
     return { success: true };
   } catch (error: any) {
@@ -333,6 +359,9 @@ export async function dealCards(
       BigInt(playerId)
     );
     actionContext = result.context;
+
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
 
     console.log('[MidnightActions] dealCards succeeded');
     return { success: true };
