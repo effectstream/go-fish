@@ -6,6 +6,38 @@ import { GoFishGameService } from '../services/GoFishGameService';
 import { CardComponent } from '../components/Card';
 import type { GoFishGameState, GoFishPlayer, Rank } from '../../../shared/data-types/src/go-fish-types';
 import { getUniqueRanks } from '../../../shared/data-types/src/go-fish-types';
+import { getWalletAddress } from '../effectstreamBridge';
+
+// Lazy load MidnightBridge to avoid blocking app startup
+let MidnightBridge: any = null;
+async function getMidnightBridge() {
+  if (!MidnightBridge) {
+    try {
+      const module = await import('../midnightBridge');
+      MidnightBridge = module.MidnightBridge;
+    } catch (error) {
+      console.error('[GameScreen] Failed to load MidnightBridge:', error);
+      return null;
+    }
+  }
+  return MidnightBridge;
+}
+
+// Type for API game state response
+interface GameStateResponse {
+  lobbyId: string;
+  playerId: number;
+  players: Array<{ accountId: number; name: string; walletAddress: string }>;
+  phase: string;
+  currentTurn: number;
+  scores: [number, number];
+  handSizes: [number, number];
+  deckCount: number;
+  isGameOver: boolean;
+  myHand: Array<{ x: bigint; y: bigint }>; // Semi-masked cards
+  myBooks: string[];
+  gameLog: string[];
+}
 
 export class GameScreen {
   private container: HTMLElement;
@@ -14,11 +46,16 @@ export class GameScreen {
   private refreshInterval?: number;
   private selectedRank: Rank | null = null;
   private selectedTargetId: string | null = null;
+  private gameState: GameStateResponse | null = null;
+  private walletAddress: string | null = null;
 
   constructor(container: HTMLElement, lobbyId: string) {
     this.container = container;
     this.lobbyId = lobbyId;
     this.gameService = GoFishGameService.getInstance();
+
+    // Get wallet address from effectstream bridge
+    this.walletAddress = getWalletAddress();
   }
 
   show() {
@@ -32,22 +69,44 @@ export class GameScreen {
     }
   }
 
-  private render() {
-    const game = this.gameService.getGameState(this.lobbyId);
-    const currentPlayer = this.gameService.getCurrentPlayer(this.lobbyId);
-
-    if (!game) {
-      this.dispatchEvent('navigate', { screen: 'lobby-list' });
+  private async render() {
+    // Fetch game state from API instead of local service
+    if (!this.walletAddress) {
+      this.container.innerHTML = '<div class="error">Wallet not connected</div>';
       return;
     }
 
-    if (game.phase === 'finished') {
+    try {
+      const response = await fetch(
+        `http://localhost:9999/game_state?lobby_id=${this.lobbyId}&wallet=${this.walletAddress}`
+      );
+
+      if (!response.ok) {
+        console.error('Failed to fetch game state:', response.status);
+        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+        return;
+      }
+
+      this.gameState = await response.json();
+    } catch (error) {
+      console.error('Error fetching game state:', error);
+      return;
+    }
+
+    if (!this.gameState) {
+      return;
+    }
+
+    if (this.gameState.isGameOver) {
       this.dispatchEvent('navigate', { screen: 'results', lobbyId: this.lobbyId });
       return;
     }
 
-    const isMyTurn = this.gameService.isMyTurn(this.lobbyId);
-    const currentTurnPlayer = this.gameService.getCurrentTurnPlayer(this.lobbyId);
+    const isMyTurn = this.gameState.currentTurn === this.gameState.playerId;
+    const currentTurnPlayer = this.gameState.players[this.gameState.currentTurn - 1];
+    const myHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
+    const myBooks = this.gameState.myBooks;
+    const myScore = this.gameState.scores[this.gameState.playerId - 1];
 
     this.container.innerHTML = `
       <div class="game-screen">
@@ -62,12 +121,15 @@ export class GameScreen {
               }
             </div>
             <div class="deck-info">
-              🃏 Deck: ${game.deckCount} cards
+              🃏 Deck: ${this.gameState.deckCount} cards remaining
+            </div>
+            <div class="scores-info">
+              📊 Scores: You (${myScore}) | Opponent (${this.gameState.scores[this.gameState.playerId === 1 ? 1 : 0]})
             </div>
           </div>
           <div class="player-books-header">
-            <h3>Your Books: ${currentPlayer?.books.length || 0}</h3>
-            ${this.renderBooks(currentPlayer?.books || [])}
+            <h3>Your Books: ${myBooks.length}</h3>
+            ${this.renderBooks(myBooks)}
           </div>
         </div>
 
@@ -76,29 +138,32 @@ export class GameScreen {
           <!-- Opponents -->
           <div class="opponents-container">
             <h3>Opponents</h3>
-            ${game.players
-              .filter(p => p.id !== this.gameService.getPlayerId())
-              .map(p => this.renderOpponent(p, game))
+            ${this.gameState.players
+              .filter((_p: any, index: number) => index + 1 !== this.gameState!.playerId)
+              .map((p: any, originalIndex: number) => this.renderOpponentFromAPI(p, originalIndex + 1))
               .join('')
             }
           </div>
 
           <!-- Your Hand -->
           <div class="player-area">
-            <h3>Your Hand (${currentPlayer?.hand.length || 0} cards)</h3>
-            ${currentPlayer && currentPlayer.hand.length > 0
-              ? CardComponent.renderHand(currentPlayer.hand, true, false)
+            <h3>Your Hand (${myHandSize} cards)</h3>
+            ${myHandSize > 0
+              ? `<div class="hand-info">Your hand is encrypted. In a full implementation, cards would be decrypted client-side.</div>
+                 <div class="card-placeholders">
+                   ${Array(myHandSize).fill(0).map(() => CardComponent.renderCardBack()).join('')}
+                 </div>`
               : '<div class="empty-hand">No cards in hand</div>'
             }
           </div>
 
           <!-- Actions Panel -->
-          ${isMyTurn ? this.renderActionPanel(game, currentPlayer!) : this.renderWaitingPanel()}
+          ${isMyTurn ? this.renderActionPanelFromAPI() : this.renderWaitingPanel()}
 
           <!-- Game Log -->
           <div class="game-log">
             <h3>Game Log</h3>
-            ${this.renderGameLog()}
+            ${this.renderGameLogFromAPI()}
           </div>
         </div>
       </div>
@@ -135,14 +200,14 @@ export class GameScreen {
     `;
   }
 
-  private renderBooks(books: Rank[]): string {
+  private renderBooks(books: Rank[] | string[]): string {
     if (books.length === 0) {
       return '<div class="no-books">None yet</div>';
     }
 
     return `
       <div class="books-container">
-        ${books.map(rank => CardComponent.renderBook(rank)).join('')}
+        ${books.map(rank => CardComponent.renderBook(rank as Rank)).join('')}
       </div>
     `;
   }
@@ -234,6 +299,122 @@ export class GameScreen {
       .join('');
   }
 
+  // New API-based render methods
+
+  private renderOpponentFromAPI(player: any, playerNum: number): string {
+    if (!this.gameState) return '';
+
+    const isCurrentTurn = this.gameState.currentTurn === playerNum;
+    const opponentHandSize = this.gameState.handSizes[playerNum - 1];
+    const opponentScore = this.gameState.scores[playerNum - 1];
+
+    return `
+      <div class="opponent-area ${isCurrentTurn ? 'current-turn' : ''}">
+        <div class="opponent-info">
+          <div class="opponent-name">
+            ${player.name} ${isCurrentTurn ? '👈' : ''}
+          </div>
+          <div class="opponent-stats">
+            🃏 ${opponentHandSize} cards | 📚 ${opponentScore} books
+          </div>
+        </div>
+        <div class="opponent-cards">
+          ${Array(Math.min(opponentHandSize, 10))
+            .fill(0)
+            .map(() => `<div class="card-wrapper-small">${CardComponent.renderCardBack()}</div>`)
+            .join('')
+          }
+          ${opponentHandSize > 10 ? `<span class="card-overflow">+${opponentHandSize - 10}</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderActionPanelFromAPI(): string {
+    if (!this.gameState) return '';
+
+    const myHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
+
+    if (myHandSize === 0) {
+      return `
+        <div class="ask-action-panel">
+          <p class="info-text">You have no cards. Click "Go Fish" to draw from the deck.</p>
+          <button id="go-fish-btn" class="btn btn-primary">🎣 Go Fish</button>
+        </div>
+      `;
+    }
+
+    const opponents = this.gameState.players.filter((_p: any, index: number) =>
+      index + 1 !== this.gameState!.playerId
+    );
+
+    return `
+      <div class="ask-action-panel">
+        <h3>Ask for a Card</h3>
+
+        <div class="instruction-text">
+          Select a rank to ask for (you must have it in your hand)
+        </div>
+
+        <div class="rank-selector">
+          ${['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'].map(rank => `
+            <button
+              class="rank-btn ${this.selectedRank === rank ? 'selected' : ''}"
+              data-rank="${rank}"
+            >
+              ${rank}
+            </button>
+          `).join('')}
+        </div>
+
+        <div class="instruction-text">
+          Select which player to ask
+        </div>
+
+        <div class="player-selector">
+          ${opponents.map((p: any, index: number) => {
+            const actualPlayerNum = this.gameState!.players.indexOf(p) + 1;
+            return `
+              <button
+                class="player-select-btn ${this.selectedTargetId === String(actualPlayerNum) ? 'selected' : ''}"
+                data-player-id="${actualPlayerNum}"
+              >
+                ${p.name} - ${this.gameState!.handSizes[actualPlayerNum - 1]} cards
+              </button>
+            `;
+          }).join('')}
+        </div>
+
+        <button
+          id="ask-btn"
+          class="btn btn-primary"
+          ${!this.selectedRank || !this.selectedTargetId ? 'disabled' : ''}
+        >
+          Ask for ${this.selectedRank || '?'} from ${this.selectedTargetId ? 'selected player' : '?'}
+        </button>
+      </div>
+    `;
+  }
+
+  private renderGameLogFromAPI(): string {
+    if (!this.gameState || !this.gameState.gameLog) {
+      return '<div class="empty-log">Game starting...</div>';
+    }
+
+    if (this.gameState.gameLog.length === 0) {
+      return '<div class="empty-log">No moves yet</div>';
+    }
+
+    return this.gameState.gameLog
+      .slice(-10)
+      .map(msg => `
+        <div class="log-entry">
+          ${msg}
+        </div>
+      `)
+      .join('');
+  }
+
   private attachEventListeners() {
     // Rank selection
     document.querySelectorAll('.rank-btn').forEach(btn => {
@@ -257,21 +438,68 @@ export class GameScreen {
       });
     });
 
-    // Ask action
-    document.getElementById('ask-btn')?.addEventListener('click', () => {
-      if (this.selectedRank && this.selectedTargetId) {
-        const success = this.gameService.askForCard(
-          this.lobbyId,
-          this.selectedTargetId,
-          this.selectedRank
-        );
+    // Ask action - now uses Midnight bridge
+    document.getElementById('ask-btn')?.addEventListener('click', async () => {
+      if (this.selectedRank && this.selectedTargetId && this.gameState) {
+        try {
+          // Convert rank string to number (A=1, 2-10=2-10, J=11, Q=12, K=13)
+          const rankMap: Record<string, number> = {
+            'A': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+            '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13
+          };
+          const targetRank = rankMap[this.selectedRank] || 0;
 
-        if (success) {
-          this.selectedRank = null;
-          this.selectedTargetId = null;
-          this.render();
-        } else {
-          alert('Failed to ask for card. Make sure you have that rank in your hand.');
+          const bridge = await getMidnightBridge();
+          if (!bridge) {
+            alert('Midnight contract not available. Please refresh the page.');
+            return;
+          }
+
+          const result = await bridge.askForCard(
+            this.lobbyId,
+            this.gameState.playerId as 1 | 2,
+            targetRank
+          );
+
+          if (result.success) {
+            this.selectedRank = null;
+            this.selectedTargetId = null;
+            console.log('[GameScreen] Ask for card succeeded');
+            // State will update on next poll
+          } else {
+            alert(`Failed to ask for card: ${result.errorMessage}`);
+          }
+        } catch (error) {
+          console.error('[GameScreen] Ask for card failed:', error);
+          alert('Failed to ask for card. Please try again.');
+        }
+      }
+    });
+
+    // Go Fish action - draw from deck
+    document.getElementById('go-fish-btn')?.addEventListener('click', async () => {
+      if (this.gameState) {
+        try {
+          const bridge = await getMidnightBridge();
+          if (!bridge) {
+            alert('Midnight contract not available. Please refresh the page.');
+            return;
+          }
+
+          const result = await bridge.goFish(
+            this.lobbyId,
+            this.gameState.playerId as 1 | 2
+          );
+
+          if (result.success) {
+            console.log('[GameScreen] Go Fish succeeded, drew card');
+            // State will update on next poll
+          } else {
+            alert(`Failed to draw card: ${result.errorMessage}`);
+          }
+        } catch (error) {
+          console.error('[GameScreen] Go Fish failed:', error);
+          alert('Failed to draw card. Please try again.');
         }
       }
     });
