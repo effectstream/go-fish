@@ -14,6 +14,7 @@ import { gameStateTransitions } from "./state-machine.ts";
 import { apiRouter } from "./api.ts";
 import { grammar } from "@go-fish/data-types/grammar";
 import { initializeQueryContract } from "./midnight-query.ts";
+import { initializeActionContract } from "./midnight-actions.ts";
 
 main(function* () {
   yield* init();
@@ -25,6 +26,14 @@ main(function* () {
     .catch((error) => {
       console.error("⚠ Failed to initialize Midnight query contract:", error);
       console.error("  Game state queries will return fallback values");
+    });
+
+  // Initialize Midnight action contract
+  initializeActionContract()
+    .then(() => console.log("✓ Midnight action contract initialized"))
+    .catch((error) => {
+      console.error("⚠ Failed to initialize Midnight action contract:", error);
+      console.error("  Midnight actions will not be available");
     });
 
   yield* withEffectstreamStaticConfig(config, function* () {

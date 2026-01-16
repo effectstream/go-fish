@@ -7,6 +7,13 @@ import type { StartConfigApiRouter } from "@paimaexample/runtime";
 import type { Pool } from "pg";
 import pg from "pg";
 import { getGameState as getMidnightGameState } from "./midnight-query.ts";
+import {
+  getPlayerHand as getMidnightPlayerHand,
+  askForCard as midnightAskForCard,
+  goFish as midnightGoFish,
+  applyMask as midnightApplyMask,
+  dealCards as midnightDealCards,
+} from "./midnight-actions.ts";
 
 // Global database connection pool
 let dbPool: Pool | null = null;
@@ -260,6 +267,108 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
         `Player ${midnightState.currentTurn}'s turn`,
       ],
     };
+  });
+
+  /**
+   * Midnight Actions API - Backend proxy for Midnight contract calls
+   */
+
+  // Get player's decrypted hand
+  server.get("/api/midnight/player_hand", async (request, reply) => {
+    const { lobby_id, player_id } = request.query as { lobby_id: string; player_id: string };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing lobby_id or player_id' });
+    }
+
+    const playerId = parseInt(player_id) as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const hand = await getMidnightPlayerHand(lobby_id, playerId);
+    return { hand };
+  });
+
+  // Ask for card action
+  server.post("/api/midnight/ask_for_card", async (request, reply) => {
+    const { lobby_id, player_id, rank } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      rank: number;
+    };
+
+    if (!lobby_id || !player_id || rank === undefined) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightAskForCard(lobby_id, playerId, rank);
+    return result;
+  });
+
+  // Go Fish action
+  server.post("/api/midnight/go_fish", async (request, reply) => {
+    const { lobby_id, player_id } = request.body as {
+      lobby_id: string;
+      player_id: number;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightGoFish(lobby_id, playerId);
+    return result;
+  });
+
+  // Apply Mask action (setup phase)
+  server.post("/api/midnight/apply_mask", async (request, reply) => {
+    const { lobby_id, player_id } = request.body as {
+      lobby_id: string;
+      player_id: number;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightApplyMask(lobby_id, playerId);
+    return result;
+  });
+
+  // Deal Cards action (setup phase)
+  server.post("/api/midnight/deal_cards", async (request, reply) => {
+    const { lobby_id, player_id } = request.body as {
+      lobby_id: string;
+      player_id: number;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightDealCards(lobby_id, playerId);
+    return result;
   });
 
   console.log("✓ Game API routes registered");

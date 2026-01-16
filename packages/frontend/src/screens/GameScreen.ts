@@ -8,21 +8,6 @@ import type { GoFishGameState, GoFishPlayer, Rank, Suit } from '../../../shared/
 import { getUniqueRanks } from '../../../shared/data-types/src/go-fish-types';
 import { getWalletAddress } from '../effectstreamBridge';
 
-// Lazy load MidnightBridge to avoid blocking app startup
-let MidnightBridge: any = null;
-async function getMidnightBridge() {
-  if (!MidnightBridge) {
-    try {
-      const module = await import('../midnightBridge');
-      MidnightBridge = module.MidnightBridge;
-    } catch (error) {
-      console.error('[GameScreen] Failed to load MidnightBridge:', error);
-      return null;
-    }
-  }
-  return MidnightBridge;
-}
-
 // Type for API game state response
 interface GameStateResponse {
   lobbyId: string;
@@ -103,6 +88,12 @@ export class GameScreen {
       return;
     }
 
+    // Check if we're in setup/dealing phase
+    if (this.gameState.phase === 'dealing') {
+      this.renderSetupPhase();
+      return;
+    }
+
     // Extract game state variables first
     const isMyTurn = this.gameState.currentTurn === this.gameState.playerId;
     const currentTurnPlayer = this.gameState.players[this.gameState.currentTurn - 1];
@@ -110,29 +101,27 @@ export class GameScreen {
     const myBooks = this.gameState.myBooks;
     const myScore = this.gameState.scores[this.gameState.playerId - 1];
 
-    // Decrypt player's hand from Midnight contract
-    const bridge = await getMidnightBridge();
-    if (bridge && this.gameState.playerId) {
+    // Decrypt player's hand via backend API
+    if (myHandSize > 0 && this.gameState.playerId) {
       try {
-        this.myDecryptedHand = await bridge.getPlayerHand(
-          this.lobbyId,
-          this.gameState.playerId as 1 | 2
+        const response = await fetch(
+          `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
         );
+
+        if (response.ok) {
+          const data = await response.json();
+          this.myDecryptedHand = data.hand || [];
+          console.log(`[GameScreen] Decrypted ${this.myDecryptedHand.length} cards from backend`);
+        } else {
+          console.error('[GameScreen] Failed to fetch hand from backend:', response.status);
+          this.myDecryptedHand = [];
+        }
       } catch (error) {
-        console.error('[GameScreen] Failed to decrypt hand:', error);
+        console.error('[GameScreen] Error fetching hand from backend:', error);
         this.myDecryptedHand = [];
       }
     } else {
-      // Fallback: Show dummy cards if Midnight not available
-      // This allows the UI to be tested without Midnight SDK working
-      if (myHandSize > 0 && this.myDecryptedHand.length === 0) {
-        console.warn('[GameScreen] Midnight bridge not available, showing placeholder cards');
-        // Generate placeholder cards (A♠, 2♥, 3♦, etc.)
-        this.myDecryptedHand = Array.from({ length: Math.min(myHandSize, 7) }, (_, i) => ({
-          rank: i % 13,
-          suit: i % 4
-        }));
-      }
+      this.myDecryptedHand = [];
     }
 
     this.container.innerHTML = `
@@ -256,6 +245,120 @@ export class GameScreen {
     return cards
       .map(card => `<div class="card-wrapper">${CardComponent.render(card, true)}</div>`)
       .join('');
+  }
+
+  private renderSetupPhase() {
+    if (!this.gameState) return;
+
+    this.container.innerHTML = `
+      <div class="game-screen">
+        <div class="game-header">
+          <div class="game-info">
+            <h1>🎣 Go Fish - Setup Phase</h1>
+            <p>Initializing the Midnight contract for this game...</p>
+          </div>
+        </div>
+
+        <div class="game-content" style="display: flex; align-items: center; justify-content: center;">
+          <div style="max-width: 600px; padding: 2rem; background-color: rgba(0, 0, 0, 0.5); border-radius: 1rem; text-align: center;">
+            <h2 style="margin-bottom: 1rem;">Game Setup Required</h2>
+            <p style="margin-bottom: 2rem; opacity: 0.9;">
+              Before the game can begin, each player needs to initialize their secret cards in the Midnight contract.
+              This is a one-time setup process that uses zero-knowledge proofs to ensure fair play.
+            </p>
+
+            <div style="margin-bottom: 2rem;">
+              <h3 style="margin-bottom: 1rem;">Setup Steps:</h3>
+              <ol style="text-align: left; margin-left: 2rem; line-height: 1.8;">
+                <li>Click "Apply Mask" to shuffle and encrypt the deck with your secret</li>
+                <li>Click "Deal Cards" to receive your initial hand</li>
+                <li>Wait for your opponent to complete their setup</li>
+              </ol>
+            </div>
+
+            <div style="display: flex; gap: 1rem; justify-content: center; margin-bottom: 1rem;">
+              <button id="apply-mask-btn" class="btn-primary">
+                🎴 Apply Mask
+              </button>
+              <button id="deal-cards-btn" class="btn-primary">
+                🃏 Deal Cards
+              </button>
+            </div>
+
+            <p id="setup-status" style="margin-top: 1rem; font-size: 0.9rem; opacity: 0.8;">
+              Ready to begin setup...
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Add event listeners
+    const applyMaskBtn = this.container.querySelector('#apply-mask-btn') as HTMLButtonElement;
+    const dealCardsBtn = this.container.querySelector('#deal-cards-btn') as HTMLButtonElement;
+    const statusText = this.container.querySelector('#setup-status') as HTMLParagraphElement;
+
+    if (applyMaskBtn) {
+      applyMaskBtn.addEventListener('click', async () => {
+        applyMaskBtn.disabled = true;
+        statusText.textContent = 'Applying mask to deck...';
+
+        try {
+          const response = await fetch('http://localhost:9999/api/midnight/apply_mask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState!.playerId
+            })
+          });
+
+          const result = await response.json();
+
+          if (result.success) {
+            statusText.textContent = '✓ Mask applied successfully! Now deal cards.';
+            applyMaskBtn.style.opacity = '0.5';
+          } else {
+            statusText.textContent = `Error: ${result.errorMessage || 'Failed to apply mask'}`;
+            applyMaskBtn.disabled = false;
+          }
+        } catch (error: any) {
+          statusText.textContent = `Error: ${error.message}`;
+          applyMaskBtn.disabled = false;
+        }
+      });
+    }
+
+    if (dealCardsBtn) {
+      dealCardsBtn.addEventListener('click', async () => {
+        dealCardsBtn.disabled = true;
+        statusText.textContent = 'Dealing cards...';
+
+        try {
+          const response = await fetch('http://localhost:9999/api/midnight/deal_cards', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState!.playerId
+            })
+          });
+
+          const result = await response.json();
+
+          if (result.success) {
+            statusText.textContent = '✓ Cards dealt! Waiting for opponent...';
+            dealCardsBtn.style.opacity = '0.5';
+          } else {
+            statusText.textContent = `Error: ${result.errorMessage || 'Failed to deal cards'}`;
+            dealCardsBtn.disabled = false;
+          }
+        } catch (error: any) {
+          statusText.textContent = `Error: ${error.message}`;
+          dealCardsBtn.disabled = false;
+        }
+      });
+    }
   }
 
   private renderActionPanel(game: GoFishGameState, currentPlayer: GoFishPlayer): string {
@@ -484,7 +587,7 @@ export class GameScreen {
       });
     });
 
-    // Ask action - now uses Midnight bridge
+    // Ask action - now uses backend API
     document.getElementById('ask-btn')?.addEventListener('click', async () => {
       if (this.selectedRank && this.selectedTargetId && this.gameState) {
         try {
@@ -495,17 +598,17 @@ export class GameScreen {
           };
           const targetRank = rankMap[this.selectedRank] || 0;
 
-          const bridge = await getMidnightBridge();
-          if (!bridge) {
-            alert('Midnight contract not available. Please refresh the page.');
-            return;
-          }
+          const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId,
+              rank: targetRank
+            })
+          });
 
-          const result = await bridge.askForCard(
-            this.lobbyId,
-            this.gameState.playerId as 1 | 2,
-            targetRank
-          );
+          const result = await response.json();
 
           if (result.success) {
             this.selectedRank = null;
@@ -522,20 +625,20 @@ export class GameScreen {
       }
     });
 
-    // Go Fish action - draw from deck
+    // Go Fish action - draw from deck (now uses backend API)
     document.getElementById('go-fish-btn')?.addEventListener('click', async () => {
       if (this.gameState) {
         try {
-          const bridge = await getMidnightBridge();
-          if (!bridge) {
-            alert('Midnight contract not available. Please refresh the page.');
-            return;
-          }
+          const response = await fetch('http://localhost:9999/api/midnight/go_fish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId
+            })
+          });
 
-          const result = await bridge.goFish(
-            this.lobbyId,
-            this.gameState.playerId as 1 | 2
-          );
+          const result = await response.json();
 
           if (result.success) {
             console.log('[GameScreen] Go Fish succeeded, drew card');

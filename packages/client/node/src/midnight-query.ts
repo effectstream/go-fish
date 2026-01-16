@@ -92,7 +92,6 @@ function lobbyIdToGameId(lobbyId: string): Uint8Array {
 export async function queryGamePhase(lobbyId: string): Promise<number | null> {
   try {
     if (!queryContract || !queryContext) {
-      console.warn('[MidnightQuery] Contract not initialized, returning null');
       return null;
     }
 
@@ -101,8 +100,11 @@ export async function queryGamePhase(lobbyId: string): Promise<number | null> {
     queryContext = result.context;
 
     return Number(result.result);
-  } catch (error) {
-    console.error('[MidnightQuery] queryGamePhase failed:', error);
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryGamePhase failed:', error);
+    }
     return null;
   }
 }
@@ -113,7 +115,6 @@ export async function queryGamePhase(lobbyId: string): Promise<number | null> {
 export async function queryScores(lobbyId: string): Promise<[number, number] | null> {
   try {
     if (!queryContract || !queryContext) {
-      console.warn('[MidnightQuery] Contract not initialized, returning null');
       return null;
     }
 
@@ -123,8 +124,11 @@ export async function queryScores(lobbyId: string): Promise<[number, number] | n
 
     const [score1, score2] = result.result;
     return [Number(score1), Number(score2)];
-  } catch (error) {
-    console.error('[MidnightQuery] queryScores failed:', error);
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryScores failed:', error);
+    }
     return null;
   }
 }
@@ -135,7 +139,6 @@ export async function queryScores(lobbyId: string): Promise<[number, number] | n
 export async function queryCurrentTurn(lobbyId: string): Promise<number | null> {
   try {
     if (!queryContract || !queryContext) {
-      console.warn('[MidnightQuery] Contract not initialized, returning null');
       return null;
     }
 
@@ -144,8 +147,11 @@ export async function queryCurrentTurn(lobbyId: string): Promise<number | null> 
     queryContext = result.context;
 
     return Number(result.result);
-  } catch (error) {
-    console.error('[MidnightQuery] queryCurrentTurn failed:', error);
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryCurrentTurn failed:', error);
+    }
     return null;
   }
 }
@@ -156,7 +162,6 @@ export async function queryCurrentTurn(lobbyId: string): Promise<number | null> 
 export async function queryIsGameOver(lobbyId: string): Promise<boolean> {
   try {
     if (!queryContract || !queryContext) {
-      console.warn('[MidnightQuery] Contract not initialized, returning false');
       return false;
     }
 
@@ -165,8 +170,11 @@ export async function queryIsGameOver(lobbyId: string): Promise<boolean> {
     queryContext = result.context;
 
     return result.result;
-  } catch (error) {
-    console.error('[MidnightQuery] queryIsGameOver failed:', error);
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryIsGameOver failed:', error);
+    }
     return false;
   }
 }
@@ -177,7 +185,6 @@ export async function queryIsGameOver(lobbyId: string): Promise<boolean> {
 export async function queryHandSizes(lobbyId: string): Promise<[number, number] | null> {
   try {
     if (!queryContract || !queryContext) {
-      console.warn('[MidnightQuery] Contract not initialized, returning null');
       return null;
     }
 
@@ -187,8 +194,11 @@ export async function queryHandSizes(lobbyId: string): Promise<[number, number] 
 
     const [size1, size2] = result.result;
     return [Number(size1), Number(size2)];
-  } catch (error) {
-    console.error('[MidnightQuery] queryHandSizes failed:', error);
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryHandSizes failed:', error);
+    }
     return null;
   }
 }
@@ -199,7 +209,6 @@ export async function queryHandSizes(lobbyId: string): Promise<[number, number] 
 export async function queryDeckCount(lobbyId: string): Promise<number | null> {
   try {
     if (!queryContract || !queryContext) {
-      console.warn('[MidnightQuery] Contract not initialized, returning null');
       return null;
     }
 
@@ -215,9 +224,33 @@ export async function queryDeckCount(lobbyId: string): Promise<number | null> {
     const topCardIndex = Number(topCardResult.result);
 
     return deckSize - topCardIndex;
-  } catch (error) {
-    console.error('[MidnightQuery] queryDeckCount failed:', error);
+  } catch (error: any) {
+    // "Game does not exist" is expected during setup phase - don't log as error
+    if (!error?.message?.includes('Game does not exist') &&
+        !error?.message?.includes('expected a cell, received null')) {
+      console.error('[MidnightQuery] queryDeckCount failed:', error);
+    }
     return null;
+  }
+}
+
+/**
+ * Map Midnight GamePhase enum to string for frontend
+ * 0 = Setup, 1 = TurnStart, 2 = WaitForResponse, 3 = WaitForTransfer,
+ * 4 = WaitForDraw, 5 = WaitForDrawCheck, 6 = GameOver
+ */
+function mapPhaseToString(phase: number | null): string {
+  if (phase === null) return 'dealing'; // No game exists yet, show setup UI
+
+  switch (phase) {
+    case 0: return 'dealing'; // Setup phase - players need to initialize
+    case 1: return 'playing'; // TurnStart - gameplay active
+    case 2: return 'playing'; // WaitForResponse
+    case 3: return 'playing'; // WaitForTransfer
+    case 4: return 'playing'; // WaitForDraw
+    case 5: return 'playing'; // WaitForDrawCheck
+    case 6: return 'finished'; // GameOver
+    default: return 'dealing';
   }
 }
 
@@ -233,7 +266,7 @@ export async function getGameState(lobbyId: string) {
   const deckCount = await queryDeckCount(lobbyId);
 
   return {
-    phase: phase ?? 'Setup',
+    phase: mapPhaseToString(phase),
     currentTurn: currentTurn ?? 1,
     scores: scores ?? [0, 0],
     handSizes: handSizes ?? [7, 7],
