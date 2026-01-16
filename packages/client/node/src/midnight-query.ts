@@ -255,9 +255,26 @@ function mapPhaseToString(phase: number | null): string {
 }
 
 /**
+ * Simple cache to prevent excessive queries that can cause database mutex deadlocks
+ * Cache TTL: 500ms (frontend polls every 1000ms)
+ */
+const gameStateCache = new Map<string, { state: any; timestamp: number }>();
+const CACHE_TTL_MS = 500;
+
+/**
  * Get comprehensive game state for API endpoint
+ * Uses caching to prevent database mutex deadlocks from excessive queries
  */
 export async function getGameState(lobbyId: string) {
+  // Check cache first
+  const cached = gameStateCache.get(lobbyId);
+  const now = Date.now();
+
+  if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
+    return cached.state;
+  }
+
+  // Query Midnight contract (this is CPU-intensive and can cause mutex issues)
   const phase = await queryGamePhase(lobbyId);
   const scores = await queryScores(lobbyId);
   const currentTurn = await queryCurrentTurn(lobbyId);
@@ -265,7 +282,7 @@ export async function getGameState(lobbyId: string) {
   const handSizes = await queryHandSizes(lobbyId);
   const deckCount = await queryDeckCount(lobbyId);
 
-  return {
+  const state = {
     phase: mapPhaseToString(phase),
     currentTurn: currentTurn ?? 1,
     scores: scores ?? [0, 0],
@@ -273,4 +290,18 @@ export async function getGameState(lobbyId: string) {
     deckCount: deckCount ?? 38,
     isGameOver: isGameOver ?? false,
   };
+
+  // Update cache
+  gameStateCache.set(lobbyId, { state, timestamp: now });
+
+  // Clean up old cache entries (prevent memory leak)
+  if (gameStateCache.size > 100) {
+    for (const [key, value] of gameStateCache.entries()) {
+      if (now - value.timestamp > CACHE_TTL_MS * 10) {
+        gameStateCache.delete(key);
+      }
+    }
+  }
+
+  return state;
 }

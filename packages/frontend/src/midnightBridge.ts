@@ -3,7 +3,7 @@
  * Handles circuit calls, witness generation, and proof submission
  */
 
-import { Contract, ledger, type Witnesses, type Ledger } from '../../shared/contracts/midnight/go-fish-contract/managed/contract/index.js';
+import { Contract, type Witnesses, type Ledger } from '../../shared/contracts/midnight/go-fish-contract/managed/contract/index.js';
 import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-runtime';
 import {
   QueryContext,
@@ -67,12 +67,13 @@ export function isMidnightConnected(): boolean {
 }
 
 /**
- * Generate player secret key (deterministic from seed)
+ * Generate player secret key (random within valid Jubjub scalar field range)
  */
 function generatePlayerSecret(): bigint {
   // In production, this should derive from wallet signature or secure random
-  // For now, generate a random secret
-  const secret = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+  // Secret must be in range [1, JUBJUB_SCALAR_FIELD_ORDER)
+  // Using smaller range for simplicity (but still secure for testing)
+  const secret = BigInt(Math.floor(Math.random() * 1000000)) + 1n;
   privateState.playerSecretKey = secret;
   return secret;
 }
@@ -88,9 +89,13 @@ function generateShuffleSeed(): Uint8Array {
 }
 
 /**
- * Calculate modular multiplicative inverse
+ * Calculate modular multiplicative inverse using extended Euclidean algorithm
  */
 function modInverse(a: bigint, n: bigint): bigint {
+  if (a === 0n) {
+    throw new Error('Cannot invert zero');
+  }
+
   let t = 0n;
   let newT = 1n;
   let r = n;
@@ -142,8 +147,8 @@ export const witnesses: Witnesses<PrivateState> = {
 
   player_secret_key: (
     context: WitnessContext<Ledger, PrivateState>,
-    gameId: Uint8Array,
-    player: bigint
+    _gameId: Uint8Array,
+    _player: bigint
   ): [PrivateState, bigint] => {
     // Return stored secret or generate new one
     if (!privateState.playerSecretKey) {
@@ -161,8 +166,8 @@ export const witnesses: Witnesses<PrivateState> = {
 
   shuffle_seed: (
     context: WitnessContext<Ledger, PrivateState>,
-    gameId: Uint8Array,
-    player: bigint
+    _gameId: Uint8Array,
+    _player: bigint
   ): [PrivateState, Uint8Array] => {
     // Return stored seed or generate new one
     if (!privateState.shuffleSeed) {

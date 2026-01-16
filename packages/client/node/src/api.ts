@@ -231,8 +231,21 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       return reply.code(403).send({ error: 'Player not in this game' });
     }
 
-    // Query Midnight contract for actual game state
-    const midnightState = await getMidnightGameState(lobby_id);
+    // Only query Midnight contract if game has started (prevents mutex deadlocks during lobby creation)
+    let midnightState;
+    if (lobby.status === 'in_progress') {
+      midnightState = await getMidnightGameState(lobby_id);
+    } else {
+      // Use default values for lobby that hasn't started yet
+      midnightState = {
+        phase: 'waiting',
+        currentTurn: 1,
+        scores: [0, 0],
+        handSizes: [0, 0],
+        deckCount: 52,
+        isGameOver: false,
+      };
+    }
 
     return {
       lobbyId: lobby_id,

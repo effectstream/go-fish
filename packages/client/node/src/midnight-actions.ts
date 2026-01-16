@@ -15,6 +15,13 @@ import {
 // Private state type
 type PrivateState = Record<string, never>;
 
+/**
+ * Jubjub curve scalar field order (embedded in BLS12-381)
+ * This is the correct modulus for Midnight's elliptic curve operations
+ */
+const JUBJUB_SCALAR_FIELD_ORDER =
+  6554484396890773809930967563523245729705921265872317281365359162392183254199n;
+
 // Map to store player secrets (in production, this should be encrypted in database)
 const playerSecrets = new Map<string, bigint>();
 
@@ -37,9 +44,11 @@ function splitFieldBits(fieldValue: bigint): [bigint, bigint] {
  */
 const actionWitnesses: Witnesses<PrivateState> = {
   getFieldInverse: (context, x) => {
-    // Modular inverse calculation
-    const FIELD_MODULUS = BigInt('0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001');
-    return [context.privateState, modInverse(x, FIELD_MODULUS)];
+    // Modular inverse calculation using Jubjub scalar field order
+    if (x === 0n) {
+      throw new Error('Cannot invert zero');
+    }
+    return [context.privateState, modInverse(x, JUBJUB_SCALAR_FIELD_ORDER)];
   },
 
   player_secret_key: (context, gameId, player) => {
@@ -50,10 +59,10 @@ const actionWitnesses: Witnesses<PrivateState> = {
       return [context.privateState, playerSecrets.get(key)!];
     }
 
-    // TEMPORARY: Use very small value for testing
-    // The secret must be a valid scalar for BN254 curve
+    // Generate a random secret within valid range for Jubjub curve
+    // Secret must be in range [1, JUBJUB_SCALAR_FIELD_ORDER)
     // In production, this should be derived from player's wallet signature
-    const secret = player; // Just use player ID (1 or 2) for now
+    const secret = BigInt(Math.floor(Math.random() * 1000000)) + 1n;
     playerSecrets.set(key, secret);
     console.log(`[MidnightActions] Generated secret for player ${player}: ${secret}`);
     return [context.privateState, secret];
