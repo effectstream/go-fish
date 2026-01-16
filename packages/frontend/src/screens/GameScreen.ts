@@ -4,7 +4,7 @@
 
 import { GoFishGameService } from '../services/GoFishGameService';
 import { CardComponent } from '../components/Card';
-import type { GoFishGameState, GoFishPlayer, Rank } from '../../../shared/data-types/src/go-fish-types';
+import type { GoFishGameState, GoFishPlayer, Rank, Suit } from '../../../shared/data-types/src/go-fish-types';
 import { getUniqueRanks } from '../../../shared/data-types/src/go-fish-types';
 import { getWalletAddress } from '../effectstreamBridge';
 
@@ -48,6 +48,7 @@ export class GameScreen {
   private selectedTargetId: string | null = null;
   private gameState: GameStateResponse | null = null;
   private walletAddress: string | null = null;
+  private myDecryptedHand: Array<{ rank: number; suit: number }> = [];
 
   constructor(container: HTMLElement, lobbyId: string) {
     this.container = container;
@@ -102,11 +103,37 @@ export class GameScreen {
       return;
     }
 
+    // Extract game state variables first
     const isMyTurn = this.gameState.currentTurn === this.gameState.playerId;
     const currentTurnPlayer = this.gameState.players[this.gameState.currentTurn - 1];
     const myHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
     const myBooks = this.gameState.myBooks;
     const myScore = this.gameState.scores[this.gameState.playerId - 1];
+
+    // Decrypt player's hand from Midnight contract
+    const bridge = await getMidnightBridge();
+    if (bridge && this.gameState.playerId) {
+      try {
+        this.myDecryptedHand = await bridge.getPlayerHand(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2
+        );
+      } catch (error) {
+        console.error('[GameScreen] Failed to decrypt hand:', error);
+        this.myDecryptedHand = [];
+      }
+    } else {
+      // Fallback: Show dummy cards if Midnight not available
+      // This allows the UI to be tested without Midnight SDK working
+      if (myHandSize > 0 && this.myDecryptedHand.length === 0) {
+        console.warn('[GameScreen] Midnight bridge not available, showing placeholder cards');
+        // Generate placeholder cards (A♠, 2♥, 3♦, etc.)
+        this.myDecryptedHand = Array.from({ length: Math.min(myHandSize, 7) }, (_, i) => ({
+          rank: i % 13,
+          suit: i % 4
+        }));
+      }
+    }
 
     this.container.innerHTML = `
       <div class="game-screen">
@@ -149,10 +176,14 @@ export class GameScreen {
           <div class="player-area">
             <h3>Your Hand (${myHandSize} cards)</h3>
             ${myHandSize > 0
-              ? `<div class="hand-info">Your hand is encrypted. In a full implementation, cards would be decrypted client-side.</div>
-                 <div class="card-placeholders">
-                   ${Array(myHandSize).fill(0).map(() => CardComponent.renderCardBack()).join('')}
-                 </div>`
+              ? this.myDecryptedHand.length > 0
+                ? `<div class="card-placeholders">
+                     ${this.renderDecryptedHand()}
+                   </div>`
+                : `<div class="hand-info">Decrypting cards...</div>
+                   <div class="card-placeholders">
+                     ${Array(myHandSize).fill(0).map(() => CardComponent.renderCardBack()).join('')}
+                   </div>`
               : '<div class="empty-hand">No cards in hand</div>'
             }
           </div>
@@ -210,6 +241,21 @@ export class GameScreen {
         ${books.map(rank => CardComponent.renderBook(rank as Rank)).join('')}
       </div>
     `;
+  }
+
+  private renderDecryptedHand(): string {
+    // Convert numeric rank/suit to Card objects
+    const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+
+    const cards = this.myDecryptedHand.map(({ rank, suit }) => ({
+      rank: rankNames[rank],
+      suit: suitNames[suit]
+    }));
+
+    return cards
+      .map(card => `<div class="card-wrapper">${CardComponent.render(card, true)}</div>`)
+      .join('');
   }
 
   private renderActionPanel(game: GoFishGameState, currentPlayer: GoFishPlayer): string {

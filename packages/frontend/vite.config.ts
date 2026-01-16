@@ -24,7 +24,17 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@midnight-ntwrk/onchain-runtime-v1', '@midnight-ntwrk/compact-runtime'],
+    exclude: [
+      '@midnight-ntwrk/onchain-runtime-v1',
+      '@midnight-ntwrk/compact-runtime',
+      'object-inspect',
+      'side-channel',
+      'call-bind',
+      'get-intrinsic',
+      'has-symbols',
+      'has-proto',
+      'function-bind',
+    ],
     esbuildOptions: {
       target: 'esnext',
     },

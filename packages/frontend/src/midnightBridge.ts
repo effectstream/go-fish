@@ -536,6 +536,60 @@ export async function getScores(lobbyId: string): Promise<[number, number] | nul
   }
 }
 
+/**
+ * Get and decrypt player's hand
+ * Returns array of {rank, suit} objects for cards in player's hand
+ */
+export async function getPlayerHand(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<Array<{ rank: number; suit: number }>> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      console.warn('[MidnightBridge] Contract not initialized, returning empty hand');
+      return [];
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    console.log(`[MidnightBridge] getPlayerHand(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    const hand: Array<{ rank: number; suit: number }> = [];
+
+    // Iterate through all 52 cards (13 ranks × 4 suits)
+    // Card index = rank + (suit * 13)
+    for (let rank = 0; rank < 13; rank++) {
+      for (let suit = 0; suit < 4; suit++) {
+        const cardIndex = rank + suit * 13;
+
+        try {
+          // Check if player owns this semi-masked card
+          const checkResult = contract.impureCircuits.doesPlayerHaveSpecificCard(
+            circuitContext,
+            gameId,
+            BigInt(playerId),
+            BigInt(cardIndex)
+          );
+          circuitContext = checkResult.context;
+
+          if (checkResult.result) {
+            // Player has this card!
+            hand.push({ rank, suit });
+          }
+        } catch (error) {
+          // Card not in hand, continue
+          continue;
+        }
+      }
+    }
+
+    console.log(`[MidnightBridge] Found ${hand.length} cards in player ${playerId}'s hand`);
+    return hand;
+  } catch (error) {
+    console.error('[MidnightBridge] getPlayerHand failed:', error);
+    return [];
+  }
+}
+
 // Export all functions as a single bridge object
 export const MidnightBridge = {
   initializeMidnightContract,
@@ -549,6 +603,7 @@ export const MidnightBridge = {
   checkAndScoreBook,
   getGamePhase,
   getScores,
+  getPlayerHand,
   lobbyIdToGameId,
 };
 
