@@ -216,26 +216,121 @@ button {
 .game-content {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  grid-template-rows: auto 1fr;
+  grid-template-columns: 1.5fr 1fr 1fr;
   gap: 1rem;
   overflow: hidden;
 }
 
-.opponents-container {
-  grid-column: 1;
-  grid-row: 1 / 3;
-  background-color: rgba(0, 0, 0, 0.3);
+/* Left Panel - Game Info + Your Hand */
+.left-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.game-info-panel {
+  background-color: rgba(0, 0, 0, 0.4);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.game-info-panel h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.turn-indicator {
+  font-size: 1.1rem;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  margin-bottom: 0.75rem;
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.turn-indicator.your-turn {
+  background-color: rgba(72, 187, 120, 0.3);
+  border: 1px solid var(--success-color);
+}
+
+.game-stats {
+  margin-bottom: 0.75rem;
+}
+
+.stat-item {
+  font-size: 0.9rem;
+  opacity: 0.9;
+  margin: 0.25rem 0;
+}
+
+.player-books-section {
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.player-books-section h4 {
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+}
+
+.player-hand-panel {
+  flex: 1;
+  background-color: rgba(0, 0, 0, 0.4);
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-y: auto;
 }
 
-.opponents-container h3 {
+.player-hand-panel h3 {
   font-size: 1.1rem;
   margin-bottom: 0.75rem;
 }
 
+.card-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Center Panel - Actions */
+.center-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Right Panel - Opponent + Game Log */
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.opponent-panel {
+  background-color: rgba(0, 0, 0, 0.4);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.opponent-panel h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+.game-log-panel {
+  flex: 1;
+  background-color: rgba(0, 0, 0, 0.4);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.game-log-panel h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Opponent styles - keeping these */
 .opponent-area {
   padding: 0.75rem;
   background-color: rgba(255, 255, 255, 0.05);
@@ -269,9 +364,8 @@ button {
   align-items: center;
 }
 
+/* Legacy player-area styles - keeping for compatibility */
 .player-area {
-  grid-column: 2;
-  grid-row: 1;
   background-color: rgba(0, 0, 0, 0.3);
   border-radius: 0.5rem;
   padding: 1rem;
@@ -421,9 +515,8 @@ button {
   font-size: 0.95rem;
 }
 
+/* Legacy game-log styles - kept for compatibility */
 .game-log {
-  grid-column: 3;
-  grid-row: 1 / 3;
   background-color: rgba(0, 0, 0, 0.3);
   border-radius: 0.5rem;
   padding: 1rem;
@@ -435,7 +528,17 @@ button {
   margin-bottom: 0.75rem;
 }
 
+/* Log entry styles - works with both .game-log and .game-log-panel */
 .log-entry {
+  padding: 0.5rem;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 0.25rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.game-log-panel .log-entry,
+.game-log .log-entry {
   padding: 0.5rem;
   background-color: rgba(255, 255, 255, 0.05);
   border-radius: 0.25rem;

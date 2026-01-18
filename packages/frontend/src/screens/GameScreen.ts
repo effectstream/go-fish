@@ -136,64 +136,66 @@ export class GameScreen {
 
     this.container.innerHTML = `
       <div class="game-screen">
-        <!-- Game Header -->
-        <div class="game-header">
-          <div class="game-info">
-            <h1>🎣 Go Fish</h1>
-            <div class="turn-indicator">
-              ${isMyTurn
-                ? '<strong>🎯 Your Turn!</strong>'
-                : `Waiting for ${currentTurnPlayer?.name || 'player'}...`
+        <!-- Main Game Area - 3 column layout -->
+        <div class="game-content">
+          <!-- Left Panel: Game Info + Your Hand -->
+          <div class="left-panel">
+            <div class="game-info-panel">
+              <h1>🎣 Go Fish</h1>
+              <div class="turn-indicator ${isMyTurn ? 'your-turn' : ''}">
+                ${isMyTurn
+                  ? '<strong>🎯 Your Turn!</strong>'
+                  : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`
+                }
+              </div>
+              <div class="game-stats">
+                <div class="stat-item">🃏 Deck: ${this.gameState.deckCount} cards</div>
+                <div class="stat-item">📊 You: ${myScore} books | Opponent: ${this.gameState.scores[this.gameState.playerId === 1 ? 1 : 0]} books</div>
+              </div>
+              <div class="player-books-section">
+                <h4>Your Books (${myBooks.length})</h4>
+                ${this.renderBooks(myBooks)}
+              </div>
+            </div>
+
+            <!-- Your Hand -->
+            <div class="player-hand-panel">
+              <h3>Your Hand (${myHandSize} cards)</h3>
+              ${myHandSize > 0
+                ? this.myDecryptedHand.length > 0
+                  ? `<div class="card-grid">
+                       ${this.renderDecryptedHand()}
+                     </div>`
+                  : `<div class="hand-info">Decrypting cards...</div>
+                     <div class="card-grid">
+                       ${Array(myHandSize).fill(0).map(() => `<div class="card-wrapper">${CardComponent.renderCardBack()}</div>`).join('')}
+                     </div>`
+                : '<div class="empty-hand">No cards in hand</div>'
               }
             </div>
-            <div class="deck-info">
-              🃏 Deck: ${this.gameState.deckCount} cards remaining
+          </div>
+
+          <!-- Center Panel: Actions -->
+          <div class="center-panel">
+            ${isMyTurn ? this.renderActionPanelFromAPI() : this.renderWaitingPanel()}
+          </div>
+
+          <!-- Right Panel: Opponent + Game Log -->
+          <div class="right-panel">
+            <div class="opponent-panel">
+              <h3>Opponent</h3>
+              ${this.gameState.players
+                .map((p: any, index: number) => ({ player: p, playerNum: index + 1 }))
+                .filter(({ playerNum }) => playerNum !== this.gameState!.playerId)
+                .map(({ player, playerNum }) => this.renderOpponentFromAPI(player, playerNum))
+                .join('')
+              }
             </div>
-            <div class="scores-info">
-              📊 Scores: You (${myScore}) | Opponent (${this.gameState.scores[this.gameState.playerId === 1 ? 1 : 0]})
+
+            <div class="game-log-panel">
+              <h3>Game Log</h3>
+              ${this.renderGameLogFromAPI()}
             </div>
-          </div>
-          <div class="player-books-header">
-            <h3>Your Books: ${myBooks.length}</h3>
-            ${this.renderBooks(myBooks)}
-          </div>
-        </div>
-
-        <!-- Main Game Area -->
-        <div class="game-content">
-          <!-- Opponents -->
-          <div class="opponents-container">
-            <h3>Opponents</h3>
-            ${this.gameState.players
-              .filter((_p: any, index: number) => index + 1 !== this.gameState!.playerId)
-              .map((p: any, originalIndex: number) => this.renderOpponentFromAPI(p, originalIndex + 1))
-              .join('')
-            }
-          </div>
-
-          <!-- Your Hand -->
-          <div class="player-area">
-            <h3>Your Hand (${myHandSize} cards)</h3>
-            ${myHandSize > 0
-              ? this.myDecryptedHand.length > 0
-                ? `<div class="card-placeholders">
-                     ${this.renderDecryptedHand()}
-                   </div>`
-                : `<div class="hand-info">Decrypting cards...</div>
-                   <div class="card-placeholders">
-                     ${Array(myHandSize).fill(0).map(() => CardComponent.renderCardBack()).join('')}
-                   </div>`
-              : '<div class="empty-hand">No cards in hand</div>'
-            }
-          </div>
-
-          <!-- Actions Panel -->
-          ${isMyTurn ? this.renderActionPanelFromAPI() : this.renderWaitingPanel()}
-
-          <!-- Game Log -->
-          <div class="game-log">
-            <h3>Game Log</h3>
-            ${this.renderGameLogFromAPI()}
           </div>
         </div>
       </div>
