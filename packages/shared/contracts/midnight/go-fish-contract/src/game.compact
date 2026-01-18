@@ -715,3 +715,10 @@ export circuit getCardsDealt(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
 export circuit doesGameExist(gameId: Bytes<32>): Boolean {
     return go_fish_doesGameExist(disclose(gameId));
 }
+
+// Check if a player has dealt cards (called dealCards)
+export circuit hasDealt(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
+    const gid = disclose(gameId);
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    return go_fish_hasDealt(gid, playerId);
+}

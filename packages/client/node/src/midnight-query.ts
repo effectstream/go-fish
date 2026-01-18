@@ -49,6 +49,10 @@ export function syncQueryContextFromAction(actionContext: CircuitContext<Private
     return;
   }
 
+  console.log('[MidnightQuery] Syncing contexts...');
+  console.log('[MidnightQuery] Action context QueryContext:', actionContext.currentQueryContext);
+  console.log('[MidnightQuery] Old query context QueryContext:', queryContext.currentQueryContext);
+
   // Update query context with ALL state from action context
   // Need to copy the entire context to get updated contract state
   queryContext = {
@@ -57,6 +61,8 @@ export function syncQueryContextFromAction(actionContext: CircuitContext<Private
     currentQueryContext: actionContext.currentQueryContext,
     costModel: actionContext.costModel,
   };
+
+  console.log('[MidnightQuery] New query context QueryContext:', queryContext.currentQueryContext);
 
   // Invalidate cache so next query gets fresh data
   gameStateCache.clear();
@@ -316,8 +322,9 @@ export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Pro
 }
 
 /**
- * Query if player has dealt cards
- * Uses getCardsDealt circuit - if result > 0, player has dealt
+ * Query if player has dealt cards (called dealCards)
+ * Uses hasDealt circuit - returns true if player has called dealCards
+ * Note: This is different from getCardsDealt which returns cards RECEIVED by the player
  */
 export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
   try {
@@ -326,11 +333,13 @@ export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<b
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getCardsDealt(queryContext, gameId, BigInt(playerId));
+    // Use hasDealt circuit (checks if player called dealCards) not getCardsDealt (cards received)
+    const result = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
     queryContext = result.context;
 
-    // If getCardsDealt returns > 0, the player has dealt cards
-    return Number(result.result) > 0;
+    const hasDealt = Boolean(result.result);
+    console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt}`);
+    return hasDealt;
   } catch (error: any) {
     // "Game does not exist" is expected during setup phase - don't log as error
     if (!error?.message?.includes('Game does not exist')) {

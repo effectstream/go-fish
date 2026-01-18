@@ -308,44 +308,54 @@ export class GameScreen {
       }
 
       // Step 2: Deal cards (only if both players have applied masks and we haven't dealt yet)
+      // IMPORTANT: Contract requires Player 1 to deal FIRST, then Player 2
       // Use frontend-side cache to prevent duplicate attempts
       if (!this.cardsDealt && !status.hasDealt) {
-        // Check if opponent has applied mask
+        // Re-fetch status to get latest opponent info
         const updatedStatusResponse = await fetch(
           `http://localhost:9999/api/midnight/setup_status?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
         );
         const updatedStatus = await updatedStatusResponse.json();
 
-        if (updatedStatus.opponentHasMaskApplied) {
-          console.log('[GameScreen] Both players have masks applied, dealing cards...');
-          const dealResponse = await fetch('http://localhost:9999/api/midnight/deal_cards', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId
-            })
-          });
-
-          const dealResult = await dealResponse.json();
-          if (!dealResult.success) {
-            // Check if error is "already dealt" - treat as success
-            if (dealResult.errorMessage?.includes('Player 1 must apply mask')) {
-              console.log('[GameScreen] Opponent has not applied mask yet, will retry...');
-              return; // Don't mark as complete, retry later
-            } else if (dealResult.errorMessage?.includes('already dealt')) {
-              console.log('[GameScreen] Cards already dealt (detected via error) - continuing');
-              this.cardsDealt = true;  // Mark as dealt
-            } else {
-              throw new Error(`Deal cards failed: ${dealResult.errorMessage}`);
-            }
-          } else {
-            console.log('[GameScreen] Cards dealt successfully');
-            this.cardsDealt = true;  // Mark as dealt
-          }
-        } else {
+        if (!updatedStatus.opponentHasMaskApplied) {
           console.log('[GameScreen] Waiting for opponent to apply mask...');
           return; // Don't mark as complete, retry later
+        }
+
+        // Check dealing order - Player 1 must deal first, then Player 2
+        const myPlayerId = this.gameState.playerId;
+
+        // Player 2 must wait for Player 1 to deal first
+        if (myPlayerId === 2 && !updatedStatus.opponentHasDealt) {
+          console.log('[GameScreen] Player 2 waiting for Player 1 to deal first...');
+          return; // Don't deal yet, retry later
+        }
+
+        console.log(`[GameScreen] Player ${myPlayerId} dealing cards...`);
+        const dealResponse = await fetch('http://localhost:9999/api/midnight/deal_cards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lobby_id: this.lobbyId,
+            player_id: this.gameState.playerId
+          })
+        });
+
+        const dealResult = await dealResponse.json();
+        if (!dealResult.success) {
+          // Check if error is "already dealt" - treat as success
+          if (dealResult.errorMessage?.includes('Player 1 must apply mask')) {
+            console.log('[GameScreen] Opponent has not applied mask yet, will retry...');
+            return; // Don't mark as complete, retry later
+          } else if (dealResult.errorMessage?.includes('already dealt')) {
+            console.log('[GameScreen] Cards already dealt (detected via error) - continuing');
+            this.cardsDealt = true;  // Mark as dealt
+          } else {
+            throw new Error(`Deal cards failed: ${dealResult.errorMessage}`);
+          }
+        } else {
+          console.log('[GameScreen] Cards dealt successfully');
+          this.cardsDealt = true;  // Mark as dealt
         }
       } else {
         console.log('[GameScreen] Cards already dealt, skipping');

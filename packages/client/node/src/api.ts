@@ -410,11 +410,13 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     // Also check opponent's status for coordination
     const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
     const opponentHasMaskApplied = await queryHasMaskApplied(lobby_id, opponentId);
+    const opponentHasDealt = await queryHasDealt(lobby_id, opponentId);
 
     return {
       hasMaskApplied,
       hasDealt,
       opponentHasMaskApplied,
+      opponentHasDealt,
     };
   });
 

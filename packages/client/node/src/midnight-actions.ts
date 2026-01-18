@@ -360,6 +360,16 @@ export async function dealCards(
     );
     actionContext = result.context;
 
+    // Query the phase from the action context immediately after dealCards
+    // to verify the state was actually updated
+    try {
+      const phaseCheck = actionContract.impureCircuits.getGamePhase(actionContext, gameId);
+      console.log(`[MidnightActions] dealCards - phase in action context BEFORE sync: ${phaseCheck.result}`);
+      actionContext = phaseCheck.context;
+    } catch (e) {
+      console.log('[MidnightActions] dealCards - could not query phase from action context:', e);
+    }
+
     // Sync query context so queries see the updated state
     syncQueryContextFromAction(actionContext);
 
