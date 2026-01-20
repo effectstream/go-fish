@@ -382,6 +382,52 @@ export function isMidnightLocked(): boolean {
 }
 
 /**
+ * Query the last asked rank (for game log display)
+ * Returns 255 if no pending request, otherwise 0-12 for rank
+ */
+export async function queryLastAskedRank(lobbyId: string): Promise<number | null> {
+  try {
+    if (!queryContract || !queryContext) {
+      return null;
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = queryContract.impureCircuits.getLastAskedRank(queryContext, gameId);
+    queryContext = result.context;
+
+    return Number(result.result);
+  } catch (error: any) {
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryLastAskedRank failed:', error);
+    }
+    return null;
+  }
+}
+
+/**
+ * Query the last asking player (for game log display)
+ * Returns 1 or 2 for the player who last asked for cards
+ */
+export async function queryLastAskingPlayer(lobbyId: string): Promise<number | null> {
+  try {
+    if (!queryContract || !queryContext) {
+      return null;
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = queryContract.impureCircuits.getLastAskingPlayer(queryContext, gameId);
+    queryContext = result.context;
+
+    return Number(result.result);
+  } catch (error: any) {
+    if (!error?.message?.includes('Game does not exist')) {
+      console.error('[MidnightQuery] queryLastAskingPlayer failed:', error);
+    }
+    return null;
+  }
+}
+
+/**
  * Query if player has applied their mask
  * Uses queue to prevent concurrent operations
  */
@@ -467,6 +513,8 @@ export async function getGameState(lobbyId: string) {
     const isGameOver = await queryIsGameOver(lobbyId);
     const handSizes = await queryHandSizes(lobbyId);
     const deckCount = await queryDeckCount(lobbyId);
+    const lastAskedRank = await queryLastAskedRank(lobbyId);
+    const lastAskingPlayer = await queryLastAskingPlayer(lobbyId);
 
     const newState = {
       phase: mapPhaseToString(phase),
@@ -475,6 +523,8 @@ export async function getGameState(lobbyId: string) {
       handSizes: handSizes ?? [7, 7],
       deckCount: deckCount ?? 38,
       isGameOver: isGameOver ?? false,
+      lastAskedRank: lastAskedRank !== null && lastAskedRank !== 255 ? lastAskedRank : null,
+      lastAskingPlayer: lastAskingPlayer ?? null,
     };
 
     // Update cache

@@ -543,3 +543,40 @@ export async function respondToAsk(
     return { success: true, hasCards: Boolean(hasCards), cardCount: Number(cardCount) };
   });
 }
+
+/**
+ * Execute afterGoFish action (complete the Go Fish turn)
+ * This is called after a player draws from the deck to check if they got the requested card
+ * @param drewRequestedCard - whether the drawn card matches what was asked for
+ */
+export async function afterGoFish(
+  lobbyId: string,
+  playerId: 1 | 2,
+  drewRequestedCard: boolean
+): Promise<{ success: boolean; errorMessage?: string }> {
+  return enqueueAction(async () => {
+    if (!actionContract || !actionContext) {
+      return { success: false, errorMessage: 'Contract not initialized' };
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    console.log(`[MidnightActions] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drewRequestedCard: ${drewRequestedCard})`);
+
+    const result = actionContract.impureCircuits.afterGoFish(
+      actionContext,
+      gameId,
+      BigInt(playerId),
+      drewRequestedCard
+    );
+    actionContext = result.context;
+
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
+
+    // Invalidate hand cache since turn changed
+    invalidateHandCache(lobbyId);
+
+    console.log('[MidnightActions] afterGoFish succeeded');
+    return { success: true };
+  });
+}

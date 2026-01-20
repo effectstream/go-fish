@@ -809,11 +809,20 @@ export class GameScreen {
       }
     });
 
-    // Go Fish action - draw from deck (now uses backend API)
+    // Go Fish action - draw from deck and complete turn
     document.getElementById('go-fish-btn')?.addEventListener('click', async () => {
       if (this.gameState) {
         try {
-          const response = await fetch('http://localhost:9999/api/midnight/go_fish', {
+          // Step 1: Get hand before drawing to compare later
+          const handBeforeResponse = await fetch(
+            `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+          );
+          const handBeforeData = await handBeforeResponse.json();
+          const handBefore = handBeforeData.hand || [];
+          console.log('[GameScreen] Hand before Go Fish:', handBefore);
+
+          // Step 2: Draw card from deck
+          const goFishResponse = await fetch('http://localhost:9999/api/midnight/go_fish', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -822,13 +831,71 @@ export class GameScreen {
             })
           });
 
-          const result = await response.json();
+          const goFishResult = await goFishResponse.json();
 
-          if (result.success) {
-            console.log('[GameScreen] Go Fish succeeded, drew card');
+          if (!goFishResult.success) {
+            alert(`Failed to draw card: ${goFishResult.errorMessage}`);
+            return;
+          }
+
+          console.log('[GameScreen] Go Fish draw succeeded');
+
+          // Step 3: Get hand after drawing to find the new card
+          const handAfterResponse = await fetch(
+            `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+          );
+          const handAfterData = await handAfterResponse.json();
+          const handAfter = handAfterData.hand || [];
+          console.log('[GameScreen] Hand after Go Fish:', handAfter);
+
+          // Step 4: Find the new card by comparing hands
+          // Cards are {rank, suit} objects - find the card in handAfter not in handBefore
+          let drewRequestedCard = false;
+
+          if (this.selectedRank !== null) {
+            // Convert selectedRank to number (ranks are 0-12 for A-K)
+            const askedRankNum = this.selectedRank;
+
+            // Find any new card by looking for cards in handAfter not in handBefore
+            for (const cardAfter of handAfter) {
+              const existsInBefore = handBefore.some(
+                (cardBefore: {rank: number; suit: number}) =>
+                  cardBefore.rank === cardAfter.rank && cardBefore.suit === cardAfter.suit
+              );
+              if (!existsInBefore) {
+                // This is the new card - check if it matches the asked rank
+                console.log(`[GameScreen] Drew card: rank=${cardAfter.rank}, suit=${cardAfter.suit}, asked for rank=${askedRankNum}`);
+                if (cardAfter.rank === askedRankNum) {
+                  drewRequestedCard = true;
+                  console.log('[GameScreen] Drew the requested card! Player gets another turn.');
+                }
+                break;
+              }
+            }
+          }
+
+          // Step 5: Call afterGoFish to complete the turn
+          console.log(`[GameScreen] Calling afterGoFish with drewRequestedCard=${drewRequestedCard}`);
+          const afterGoFishResponse = await fetch('http://localhost:9999/api/midnight/after_go_fish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId,
+              drew_requested_card: drewRequestedCard
+            })
+          });
+
+          const afterGoFishResult = await afterGoFishResponse.json();
+
+          if (afterGoFishResult.success) {
+            console.log('[GameScreen] afterGoFish succeeded, turn complete');
+            // Clear selected rank since turn is complete
+            this.selectedRank = null;
             // State will update on next poll
           } else {
-            alert(`Failed to draw card: ${result.errorMessage}`);
+            console.error('[GameScreen] afterGoFish failed:', afterGoFishResult.errorMessage);
+            alert(`Failed to complete turn: ${afterGoFishResult.errorMessage}`);
           }
         } catch (error) {
           console.error('[GameScreen] Go Fish failed:', error);

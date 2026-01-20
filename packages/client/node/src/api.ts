@@ -18,6 +18,7 @@ import {
   applyMask as midnightApplyMask,
   dealCards as midnightDealCards,
   respondToAsk as midnightRespondToAsk,
+  afterGoFish as midnightAfterGoFish,
 } from "./midnight-actions.ts";
 
 // Global database connection pool
@@ -31,6 +32,82 @@ function getDB(): Pool {
     dbPool = new pg.Pool({ connectionString: dbUrl });
   }
   return dbPool;
+}
+
+// Rank names for display
+const RANK_NAMES = ['Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King'];
+
+/**
+ * Build dynamic game log based on current game state
+ */
+function buildGameLog(
+  midnightState: {
+    phase: string;
+    currentTurn: number;
+    scores: [number, number];
+    lastAskedRank: number | null;
+    lastAskingPlayer: number | null;
+    isGameOver: boolean;
+  },
+  players: Array<{ account_id: number; player_name: string }>
+): string[] {
+  const log: string[] = ['Game started'];
+
+  // Get player names (default to "Player 1" / "Player 2" if not found)
+  const player1Name = players[0]?.player_name || 'Player 1';
+  const player2Name = players[1]?.player_name || 'Player 2';
+  const getPlayerName = (id: number) => id === 1 ? player1Name : player2Name;
+  const getOpponentName = (id: number) => id === 1 ? player2Name : player1Name;
+
+  // Add phase-specific log entries
+  if (midnightState.lastAskedRank !== null && midnightState.lastAskingPlayer !== null) {
+    const askerName = getPlayerName(midnightState.lastAskingPlayer);
+    const targetName = getOpponentName(midnightState.lastAskingPlayer);
+    const rankName = RANK_NAMES[midnightState.lastAskedRank] || `rank ${midnightState.lastAskedRank}`;
+
+    switch (midnightState.phase) {
+      case 'wait_response':
+        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
+        log.push(`Waiting for ${targetName} to respond...`);
+        break;
+      case 'wait_transfer':
+        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
+        log.push(`${targetName} has ${rankName}s! Transferring cards...`);
+        break;
+      case 'wait_draw':
+        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
+        log.push(`${targetName} says "Go Fish!"`);
+        log.push(`${askerName} is drawing from the deck...`);
+        break;
+      case 'wait_draw_check':
+        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
+        log.push(`${targetName} says "Go Fish!"`);
+        log.push(`${askerName} drew a card. Checking if it matches...`);
+        break;
+      case 'turn_start':
+        // If there's a last asked rank, show what happened last turn
+        if (midnightState.currentTurn !== midnightState.lastAskingPlayer) {
+          // Turn switched, so the last ask didn't get the card from draw
+          log.push(`${askerName} asked for ${rankName}s but didn't get any`);
+        }
+        log.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
+        break;
+      default:
+        log.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
+    }
+  } else {
+    // No pending ask, just show whose turn it is
+    if (midnightState.phase === 'finished') {
+      const winner = midnightState.scores[0] > midnightState.scores[1] ? player1Name :
+                     midnightState.scores[1] > midnightState.scores[0] ? player2Name : 'Tie';
+      log.push(`Game Over! ${winner === 'Tie' ? "It's a tie!" : `${winner} wins!`}`);
+      log.push(`Final scores: ${player1Name}: ${midnightState.scores[0]}, ${player2Name}: ${midnightState.scores[1]}`);
+    } else if (midnightState.phase !== 'dealing') {
+      log.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
+    }
+  }
+
+  return log;
 }
 
 export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
@@ -281,11 +358,8 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       myHand: [], // TODO: Query player's semi-masked cards from contract
       myBooks: [], // TODO: Calculate from player's completed books
 
-      // Public game log (TODO: build from game_moves table or Midnight events)
-      gameLog: [
-        'Game started',
-        `Player ${midnightState.currentTurn}'s turn`,
-      ],
+      // Dynamic game log based on current state
+      gameLog: buildGameLog(midnightState, players),
     };
   });
 
@@ -408,6 +482,27 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     }
 
     const result = await midnightRespondToAsk(lobby_id, playerId);
+    return result;
+  });
+
+  // After Go Fish action (complete the draw turn)
+  server.post("/api/midnight/after_go_fish", async (request, reply) => {
+    const { lobby_id, player_id, drew_requested_card } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      drew_requested_card: boolean;
+    };
+
+    if (!lobby_id || !player_id || drew_requested_card === undefined) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightAfterGoFish(lobby_id, playerId, drew_requested_card);
     return result;
   });
 
