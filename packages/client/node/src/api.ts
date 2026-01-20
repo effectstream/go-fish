@@ -17,6 +17,7 @@ import {
   goFish as midnightGoFish,
   applyMask as midnightApplyMask,
   dealCards as midnightDealCards,
+  respondToAsk as midnightRespondToAsk,
 } from "./midnight-actions.ts";
 
 // Global database connection pool
@@ -63,7 +64,9 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
         l.max_players,
         l.status,
         l.created_at,
-        (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count
+        l.host_account_id,
+        (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count,
+        (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name
       FROM lobbies l
       WHERE l.status = 'open'
       ORDER BY l.created_at DESC
@@ -385,6 +388,26 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     }
 
     const result = await midnightDealCards(lobby_id, playerId);
+    return result;
+  });
+
+  // Respond to ask action (opponent responds to card request)
+  server.post("/api/midnight/respond_to_ask", async (request, reply) => {
+    const { lobby_id, player_id } = request.body as {
+      lobby_id: string;
+      player_id: number;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightRespondToAsk(lobby_id, playerId);
     return result;
   });
 

@@ -11,10 +11,86 @@ import {
   QueryContext,
   sampleContractAddress,
 } from '@midnight-ntwrk/compact-runtime';
-import { syncQueryContextFromAction } from './midnight-query.ts';
+import {
+  syncQueryContextFromAction,
+  acquireMidnightLock,
+  releaseMidnightLock,
+  isMidnightLocked,
+} from './midnight-query.ts';
 
 // Private state type
 type PrivateState = Record<string, never>;
+
+/**
+ * Minimum gap between operations to let Paima sync processes run
+ */
+const MIN_OPERATION_GAP_MS = 50;
+let lastActionEndTime = 0;
+
+/**
+ * Yield to event loop - critical for preventing mutex deadlocks
+ */
+async function yieldToEventLoop(): Promise<void> {
+  return new Promise(r => setTimeout(r, 1));
+}
+
+/**
+ * Action queue to prevent concurrent Midnight operations that can cause mutex deadlocks
+ * Uses shared lock with query module to prevent actions and queries from running simultaneously
+ */
+let isActionInProgress = false;
+const actionQueue: Array<{ resolve: (value: any) => void; fn: () => Promise<any> }> = [];
+
+async function enqueueAction<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise((resolve) => {
+    actionQueue.push({ resolve, fn });
+    processActionQueue();
+  });
+}
+
+async function processActionQueue() {
+  if (isActionInProgress || actionQueue.length === 0) return;
+
+  // Check if query module has the lock
+  if (isMidnightLocked()) {
+    // Wait and retry
+    setTimeout(processActionQueue, MIN_OPERATION_GAP_MS);
+    return;
+  }
+
+  // Ensure minimum gap between operations
+  const timeSinceLastOp = Date.now() - lastActionEndTime;
+  if (timeSinceLastOp < MIN_OPERATION_GAP_MS) {
+    setTimeout(processActionQueue, MIN_OPERATION_GAP_MS - timeSinceLastOp);
+    return;
+  }
+
+  // Try to acquire global lock
+  if (!acquireMidnightLock()) {
+    setTimeout(processActionQueue, MIN_OPERATION_GAP_MS);
+    return;
+  }
+
+  isActionInProgress = true;
+  const item = actionQueue.shift()!;
+
+  try {
+    // Yield to event loop before running action to prevent blocking Paima sync
+    await yieldToEventLoop();
+    const result = await item.fn();
+    item.resolve(result);
+  } catch (error: any) {
+    item.resolve({ success: false, errorMessage: error.message });
+  } finally {
+    lastActionEndTime = Date.now();
+    isActionInProgress = false;
+    releaseMidnightLock();
+    // Process next item if any (with delay to let sync run)
+    if (actionQueue.length > 0) {
+      setTimeout(processActionQueue, MIN_OPERATION_GAP_MS);
+    }
+  }
+}
 
 /**
  * Jubjub curve scalar field order (embedded in BLS12-381)
@@ -188,13 +264,40 @@ export async function initializeActionContract(): Promise<void> {
 }
 
 /**
+ * Cache for player hands to reduce circuit calls
+ * Key format: `${lobbyId}-${playerId}`
+ */
+const playerHandCache = new Map<string, { hand: Array<{ rank: number; suit: number }>; timestamp: number }>();
+const HAND_CACHE_TTL_MS = 2000;
+
+/**
  * Get player's decrypted hand
+ * Uses action queue to prevent concurrent operations that can cause mutex deadlocks
+ * IMPORTANT: This function checks all 52 cards which is very CPU-intensive
+ * Uses caching to reduce the frequency of these checks
  */
 export async function getPlayerHand(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<Array<{ rank: number; suit: number }>> {
-  try {
+  // Check cache first
+  const cacheKey = `${lobbyId}-${playerId}`;
+  const cached = playerHandCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && (now - cached.timestamp) < HAND_CACHE_TTL_MS) {
+    console.log(`[MidnightActions] getPlayerHand cache hit for ${cacheKey}`);
+    return cached.hand;
+  }
+
+  return enqueueAction(async () => {
+    // Re-check cache in case another request populated it while we were queued
+    const cachedAgain = playerHandCache.get(cacheKey);
+    const nowAgain = Date.now();
+    if (cachedAgain && (nowAgain - cachedAgain.timestamp) < HAND_CACHE_TTL_MS) {
+      return cachedAgain.hand;
+    }
+
     if (!actionContract || !actionContext) {
       console.warn('[MidnightActions] Contract not initialized');
       return [];
@@ -206,7 +309,13 @@ export async function getPlayerHand(
     const hand: Array<{ rank: number; suit: number }> = [];
 
     // Iterate through all 52 cards (13 ranks × 4 suits)
+    // Yield to event loop periodically to prevent blocking Paima sync
     for (let rank = 0; rank < 13; rank++) {
+      // Yield every 13 cards (once per rank) to let other processes run
+      if (rank > 0 && rank % 4 === 0) {
+        await yieldToEventLoop();
+      }
+
       for (let suit = 0; suit < 4; suit++) {
         const cardIndex = rank + suit * 13;
 
@@ -230,10 +339,33 @@ export async function getPlayerHand(
     }
 
     console.log(`[MidnightActions] Found ${hand.length} cards in player ${playerId}'s hand`);
+
+    // Update cache
+    playerHandCache.set(cacheKey, { hand, timestamp: Date.now() });
+
+    // Clean up old cache entries
+    if (playerHandCache.size > 20) {
+      for (const [key, value] of playerHandCache.entries()) {
+        if (Date.now() - value.timestamp > HAND_CACHE_TTL_MS * 5) {
+          playerHandCache.delete(key);
+        }
+      }
+    }
+
     return hand;
-  } catch (error) {
-    console.error('[MidnightActions] getPlayerHand failed:', error);
-    return [];
+  });
+}
+
+/**
+ * Invalidate hand cache for a player (call after actions that modify hands)
+ */
+export function invalidateHandCache(lobbyId: string, playerId?: 1 | 2): void {
+  if (playerId) {
+    playerHandCache.delete(`${lobbyId}-${playerId}`);
+  } else {
+    // Invalidate both players
+    playerHandCache.delete(`${lobbyId}-1`);
+    playerHandCache.delete(`${lobbyId}-2`);
   }
 }
 
@@ -245,7 +377,7 @@ export async function askForCard(
   playerId: 1 | 2,
   rank: number
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  try {
+  return enqueueAction(async () => {
     if (!actionContract || !actionContext) {
       return { success: false, errorMessage: 'Contract not initialized' };
     }
@@ -266,10 +398,7 @@ export async function askForCard(
 
     console.log('[MidnightActions] askForCard succeeded');
     return { success: true };
-  } catch (error: any) {
-    console.error('[MidnightActions] askForCard failed:', error);
-    return { success: false, errorMessage: error.message };
-  }
+  });
 }
 
 /**
@@ -279,7 +408,7 @@ export async function goFish(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  try {
+  return enqueueAction(async () => {
     if (!actionContract || !actionContext) {
       return { success: false, errorMessage: 'Contract not initialized' };
     }
@@ -297,12 +426,12 @@ export async function goFish(
     // Sync query context so queries see the updated state
     syncQueryContextFromAction(actionContext);
 
+    // Invalidate hand cache since player drew a card
+    invalidateHandCache(lobbyId, playerId);
+
     console.log('[MidnightActions] goFish succeeded');
     return { success: true };
-  } catch (error: any) {
-    console.error('[MidnightActions] goFish failed:', error);
-    return { success: false, errorMessage: error.message };
-  }
+  });
 }
 
 /**
@@ -312,7 +441,7 @@ export async function applyMask(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  try {
+  return enqueueAction(async () => {
     if (!actionContract || !actionContext) {
       return { success: false, errorMessage: 'Contract not initialized' };
     }
@@ -332,10 +461,7 @@ export async function applyMask(
 
     console.log('[MidnightActions] applyMask succeeded');
     return { success: true };
-  } catch (error: any) {
-    console.error('[MidnightActions] applyMask failed:', error);
-    return { success: false, errorMessage: error.message };
-  }
+  });
 }
 
 /**
@@ -345,7 +471,7 @@ export async function dealCards(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  try {
+  return enqueueAction(async () => {
     if (!actionContract || !actionContext) {
       return { success: false, errorMessage: 'Contract not initialized' };
     }
@@ -373,10 +499,47 @@ export async function dealCards(
     // Sync query context so queries see the updated state
     syncQueryContextFromAction(actionContext);
 
+    // Invalidate hand cache since cards were dealt
+    invalidateHandCache(lobbyId);
+
     console.log('[MidnightActions] dealCards succeeded');
     return { success: true };
-  } catch (error: any) {
-    console.error('[MidnightActions] dealCards failed:', error);
-    return { success: false, errorMessage: error.message };
-  }
+  });
+}
+
+/**
+ * Execute respondToAsk action (opponent responds to an ask)
+ * Returns whether cards were transferred and how many
+ */
+export async function respondToAsk(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<{ success: boolean; hasCards: boolean; cardCount: number; errorMessage?: string }> {
+  return enqueueAction(async () => {
+    if (!actionContract || !actionContext) {
+      return { success: false, hasCards: false, cardCount: 0, errorMessage: 'Contract not initialized' };
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    console.log(`[MidnightActions] respondToAsk(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    const result = actionContract.impureCircuits.respondToAsk(
+      actionContext,
+      gameId,
+      BigInt(playerId)
+    );
+    actionContext = result.context;
+
+    // respondToAsk returns [Boolean, Uint<8>] - whether cards transferred and count
+    const [hasCards, cardCount] = result.result;
+
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
+
+    // Invalidate hand cache for both players since cards may have been transferred
+    invalidateHandCache(lobbyId);
+
+    console.log(`[MidnightActions] respondToAsk succeeded: hasCards=${hasCards}, cardCount=${cardCount}`);
+    return { success: true, hasCards: Boolean(hasCards), cardCount: Number(cardCount) };
+  });
 }

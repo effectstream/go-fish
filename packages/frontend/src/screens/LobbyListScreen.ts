@@ -17,8 +17,9 @@ export class LobbyListScreen {
 
   async show() {
     await this.render();
-    // Refresh lobby list every 2 seconds
-    this.refreshInterval = window.setInterval(() => this.render(), 2000);
+    // Refresh lobby list every 4 seconds to reduce database pressure
+    // The lobby list doesn't need to be super responsive
+    this.refreshInterval = window.setInterval(() => this.render(), 4000);
   }
 
   hide() {

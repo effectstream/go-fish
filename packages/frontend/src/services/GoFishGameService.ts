@@ -75,10 +75,10 @@ export class GoFishGameService {
   }
 
   // Lobby management
-  async createLobby(name: string, maxPlayers: number): Promise<Lobby | null> {
+  async createLobby(lobbyName: string, maxPlayers: number): Promise<Lobby | null> {
     // Call blockchain middleware to create lobby
-    // Pass the player's name (not the lobby name) so it's stored correctly in lobby_players
-    const result = await EffectstreamBridge.createLobby(this.playerName, maxPlayers);
+    // Pass both player name and lobby name
+    const result = await EffectstreamBridge.createLobby(this.playerName, lobbyName, maxPlayers);
 
     if (!result.success) {
       console.error('Failed to create lobby:', result.errorMessage);
@@ -89,7 +89,7 @@ export class GoFishGameService {
     const lobbyId = result.lobbyId || `lobby_${Date.now()}`;
     const lobby: Lobby = {
       id: lobbyId,
-      name,  // Use the lobby name from user input for local state
+      name: lobbyName,  // Use the lobby name from user input for local state
       hostId: this.playerId,
       hostName: this.playerName,
       playerCount: 0,
@@ -139,9 +139,9 @@ export class GoFishGameService {
       // Convert API response to Lobby objects
       const lobbies: Lobby[] = (data.lobbies || []).map((apiLobby: any) => ({
         id: apiLobby.lobby_id,
-        name: apiLobby.lobby_name,
+        name: apiLobby.lobby_name || 'Unnamed Lobby',
         hostId: apiLobby.host_account_id?.toString() || '',
-        hostName: '', // API doesn't return host name currently
+        hostName: apiLobby.host_name || 'Unknown',
         playerCount: parseInt(apiLobby.player_count) || 0,
         maxPlayers: apiLobby.max_players,
         status: apiLobby.status === 'open' ? 'waiting' as const : 'in_progress' as const,

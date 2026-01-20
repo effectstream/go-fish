@@ -399,13 +399,8 @@ button {
 .card {
   width: 60px !important;
   height: 84px !important;
-  cursor: pointer;
-  transition: transform 0.2s;
   display: block;
-}
-
-.card:hover {
-  transform: translateY(-5px);
+  pointer-events: none; /* Let the wrapper handle clicks */
 }
 
 .card-wrapper {
@@ -413,6 +408,30 @@ button {
   width: 60px;
   height: 84px;
   flex-shrink: 0;
+  border-radius: 8px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Clickable cards during your turn */
+.card-wrapper.clickable {
+  cursor: pointer;
+}
+
+.card-wrapper.clickable:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* Selected card highlight - stays elevated and has orange glow */
+.card-wrapper.selected {
+  transform: translateY(-12px);
+  box-shadow: 0 0 0 3px var(--accent-color), 0 12px 20px rgba(237, 137, 54, 0.5);
+  background-color: rgba(237, 137, 54, 0.1);
+}
+
+.card-wrapper.clickable.selected:hover {
+  transform: translateY(-14px);
+  box-shadow: 0 0 0 4px var(--accent-color), 0 16px 24px rgba(237, 137, 54, 0.6);
 }
 
 .card-wrapper-small {
@@ -451,6 +470,50 @@ button {
   opacity: 0.8;
 }
 
+/* Selection display for showing selected card rank */
+.selection-display {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.selection-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.selection-label {
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
+.selected-rank {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--accent-color);
+  background-color: rgba(237, 137, 54, 0.2);
+  padding: 0.25rem 0.75rem;
+  border-radius: 0.25rem;
+  border: 2px solid var(--accent-color);
+}
+
+.no-selection {
+  font-size: 0.9rem;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* Ask button styling */
+.ask-button {
+  width: 100%;
+  padding: 1rem;
+  font-size: 1.1rem;
+  margin-top: 1rem;
+}
+
+/* Legacy rank selector styles - kept for compatibility */
 .rank-selector {
   display: flex;
   gap: 0.5rem;
@@ -581,4 +644,102 @@ button {
   padding: 1rem;
   text-align: center;
   font-size: 1.1rem;
+}
+
+/* Lobby List Screen Styles */
+.lobby-list-screen {
+  padding: 2rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.lobby-list-screen .title {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.lobby-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.lobby-card {
+  background-color: rgba(0, 0, 0, 0.4);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-color);
+}
+
+.lobby-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.lobby-card * {
+  color: inherit;
+}
+
+.lobby-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.lobby-header h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #e2e8f0 !important;
+  margin: 0;
+}
+
+.lobby-status {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  text-transform: capitalize;
+}
+
+.lobby-status.waiting {
+  background-color: rgba(72, 187, 120, 0.2);
+  color: #48bb78;
+}
+
+.lobby-status.in_progress {
+  background-color: rgba(237, 137, 54, 0.2);
+  color: var(--accent-color);
+}
+
+.lobby-info {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+  color: #e2e8f0;
+}
+
+.lobby-info .info-item {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.lobby-info .label {
+  opacity: 0.7;
+  color: #a0aec0;
+}
+
+.lobby-info .value {
+  font-weight: 500;
+  color: #e2e8f0;
+}
+
+.join-btn {
+  width: 100%;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  opacity: 0.6;
+  font-style: italic;
 }

@@ -281,11 +281,11 @@ function mapPhaseToString(phase: number | null): string {
 
   switch (phase) {
     case 0: return 'dealing'; // Setup phase - players need to initialize
-    case 1: return 'playing'; // TurnStart - gameplay active
-    case 2: return 'playing'; // WaitForResponse
-    case 3: return 'playing'; // WaitForTransfer
-    case 4: return 'playing'; // WaitForDraw
-    case 5: return 'playing'; // WaitForDrawCheck
+    case 1: return 'turn_start'; // TurnStart - current player can ask for cards
+    case 2: return 'wait_response'; // WaitForResponse - opponent needs to respond
+    case 3: return 'wait_transfer'; // WaitForTransfer - cards being transferred
+    case 4: return 'wait_draw'; // WaitForDraw - player needs to draw (Go Fish)
+    case 5: return 'wait_draw_check'; // WaitForDrawCheck - checking drawn card
     case 6: return 'finished'; // GameOver
     default: return 'dealing';
   }
@@ -293,65 +293,154 @@ function mapPhaseToString(phase: number | null): string {
 
 /**
  * Simple cache to prevent excessive queries that can cause database mutex deadlocks
- * Cache TTL: 1000ms (frontend polls every 2000ms)
+ * Cache TTL: 3000ms (longer than frontend poll interval to ensure cache hits)
  */
 const gameStateCache = new Map<string, { state: any; timestamp: number }>();
-const CACHE_TTL_MS = 1000;
+const CACHE_TTL_MS = 3000;
+
+/**
+ * Setup status cache - separate from game state cache since it's polled frequently during setup
+ */
+const setupStatusCache = new Map<string, { status: any; timestamp: number }>();
+const SETUP_CACHE_TTL_MS = 1000;
+
+/**
+ * Yield to event loop - critical for preventing mutex deadlocks
+ * Gives Paima's sync processes a chance to run
+ */
+async function yieldToEventLoop(): Promise<void> {
+  return new Promise(r => setTimeout(r, 1));
+}
+
+/**
+ * Global lock for ALL Midnight operations (queries AND actions share this)
+ * This prevents our operations from running during Paima's sync cycles
+ */
+let isMidnightOperationInProgress = false;
+let lastOperationEndTime = 0;
+const MIN_OPERATION_GAP_MS = 50; // Minimum gap between operations to let sync run
+
+/**
+ * Request queue to prevent concurrent Midnight queries that can cause mutex deadlocks
+ * Only one query operation runs at a time
+ */
+const queryQueue: Array<{ resolve: (value: any) => void; fn: () => Promise<any> }> = [];
+
+async function enqueueQuery<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise((resolve) => {
+    queryQueue.push({ resolve, fn });
+    processQueryQueue();
+  });
+}
+
+async function processQueryQueue() {
+  if (isMidnightOperationInProgress || queryQueue.length === 0) return;
+
+  // Ensure minimum gap between operations
+  const timeSinceLastOp = Date.now() - lastOperationEndTime;
+  if (timeSinceLastOp < MIN_OPERATION_GAP_MS) {
+    setTimeout(processQueryQueue, MIN_OPERATION_GAP_MS - timeSinceLastOp);
+    return;
+  }
+
+  isMidnightOperationInProgress = true;
+  const item = queryQueue.shift()!;
+
+  try {
+    // Yield to event loop before running query to prevent blocking Paima sync
+    await yieldToEventLoop();
+    const result = await item.fn();
+    item.resolve(result);
+  } catch (error) {
+    item.resolve(null);
+  } finally {
+    lastOperationEndTime = Date.now();
+    isMidnightOperationInProgress = false;
+    // Process next item if any (with delay)
+    if (queryQueue.length > 0) {
+      setTimeout(processQueryQueue, MIN_OPERATION_GAP_MS);
+    }
+  }
+}
+
+/**
+ * Export the lock state for actions module to use
+ */
+export function acquireMidnightLock(): boolean {
+  if (isMidnightOperationInProgress) return false;
+  isMidnightOperationInProgress = true;
+  return true;
+}
+
+export function releaseMidnightLock(): void {
+  lastOperationEndTime = Date.now();
+  isMidnightOperationInProgress = false;
+}
+
+export function isMidnightLocked(): boolean {
+  return isMidnightOperationInProgress;
+}
 
 /**
  * Query if player has applied their mask
+ * Uses queue to prevent concurrent operations
  */
 export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
-  try {
-    if (!queryContract || !queryContext) {
+  return enqueueQuery(async () => {
+    try {
+      if (!queryContract || !queryContext) {
+        return false;
+      }
+
+      const gameId = lobbyIdToGameId(lobbyId);
+      const result = queryContract.impureCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
+      queryContext = result.context;
+
+      return result.result;
+    } catch (error: any) {
+      // "Game does not exist" is expected during setup phase - don't log as error
+      if (!error?.message?.includes('Game does not exist')) {
+        console.error('[MidnightQuery] queryHasMaskApplied failed:', error);
+      }
       return false;
     }
-
-    const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
-    queryContext = result.context;
-
-    return result.result;
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
-      console.error('[MidnightQuery] queryHasMaskApplied failed:', error);
-    }
-    return false;
-  }
+  });
 }
 
 /**
  * Query if player has dealt cards (called dealCards)
  * Uses hasDealt circuit - returns true if player has called dealCards
  * Note: This is different from getCardsDealt which returns cards RECEIVED by the player
+ * Uses queue to prevent concurrent operations
  */
 export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
-  try {
-    if (!queryContract || !queryContext) {
+  return enqueueQuery(async () => {
+    try {
+      if (!queryContract || !queryContext) {
+        return false;
+      }
+
+      const gameId = lobbyIdToGameId(lobbyId);
+      // Use hasDealt circuit (checks if player called dealCards) not getCardsDealt (cards received)
+      const result = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
+      queryContext = result.context;
+
+      const hasDealt = Boolean(result.result);
+      console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt}`);
+      return hasDealt;
+    } catch (error: any) {
+      // "Game does not exist" is expected during setup phase - don't log as error
+      if (!error?.message?.includes('Game does not exist')) {
+        console.error('[MidnightQuery] queryHasDealt failed:', error);
+      }
       return false;
     }
-
-    const gameId = lobbyIdToGameId(lobbyId);
-    // Use hasDealt circuit (checks if player called dealCards) not getCardsDealt (cards received)
-    const result = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
-    queryContext = result.context;
-
-    const hasDealt = Boolean(result.result);
-    console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt}`);
-    return hasDealt;
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
-      console.error('[MidnightQuery] queryHasDealt failed:', error);
-    }
-    return false;
-  }
+  });
 }
 
 /**
  * Get comprehensive game state for API endpoint
- * Uses caching to prevent database mutex deadlocks from excessive queries
+ * Uses caching and request queuing to prevent database mutex deadlocks
  */
 export async function getGameState(lobbyId: string) {
   // Check cache first
@@ -362,25 +451,37 @@ export async function getGameState(lobbyId: string) {
     return cached.state;
   }
 
-  // Query Midnight contract (this is CPU-intensive and can cause mutex issues)
-  const phase = await queryGamePhase(lobbyId);
-  const scores = await queryScores(lobbyId);
-  const currentTurn = await queryCurrentTurn(lobbyId);
-  const isGameOver = await queryIsGameOver(lobbyId);
-  const handSizes = await queryHandSizes(lobbyId);
-  const deckCount = await queryDeckCount(lobbyId);
+  // Use query queue to prevent concurrent Midnight operations
+  const state = await enqueueQuery(async () => {
+    // Re-check cache in case another request already populated it while we were queued
+    const cachedAgain = gameStateCache.get(lobbyId);
+    const nowAgain = Date.now();
+    if (cachedAgain && (nowAgain - cachedAgain.timestamp) < CACHE_TTL_MS) {
+      return cachedAgain.state;
+    }
 
-  const state = {
-    phase: mapPhaseToString(phase),
-    currentTurn: currentTurn ?? 1,
-    scores: scores ?? [0, 0],
-    handSizes: handSizes ?? [7, 7],
-    deckCount: deckCount ?? 38,
-    isGameOver: isGameOver ?? false,
-  };
+    // Query Midnight contract (this is CPU-intensive)
+    const phase = await queryGamePhase(lobbyId);
+    const scores = await queryScores(lobbyId);
+    const currentTurn = await queryCurrentTurn(lobbyId);
+    const isGameOver = await queryIsGameOver(lobbyId);
+    const handSizes = await queryHandSizes(lobbyId);
+    const deckCount = await queryDeckCount(lobbyId);
 
-  // Update cache
-  gameStateCache.set(lobbyId, { state, timestamp: now });
+    const newState = {
+      phase: mapPhaseToString(phase),
+      currentTurn: currentTurn ?? 1,
+      scores: scores ?? [0, 0],
+      handSizes: handSizes ?? [7, 7],
+      deckCount: deckCount ?? 38,
+      isGameOver: isGameOver ?? false,
+    };
+
+    // Update cache
+    gameStateCache.set(lobbyId, { state: newState, timestamp: Date.now() });
+
+    return newState;
+  });
 
   // Clean up old cache entries (prevent memory leak)
   if (gameStateCache.size > 100) {

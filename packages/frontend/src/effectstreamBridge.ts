@@ -85,7 +85,8 @@ export function isWalletConnected(): boolean {
  * Create a new game lobby on-chain
  */
 export async function createLobby(
-  name: string,
+  playerName: string,
+  lobbyName: string,
   maxPlayers: number
 ): Promise<{ success: boolean; lobbyId?: string; errorMessage?: string }> {
   if (!wallet) {
@@ -94,8 +95,8 @@ export async function createLobby(
 
   try {
     // Submit transaction to Paima L2 contract
-    // Format: createdLobby command with playerName and maxPlayers
-    const params = ["createdLobby", name, maxPlayers];
+    // Format: createdLobby command with playerName, lobbyName, and maxPlayers
+    const params = ["createdLobby", playerName, lobbyName, maxPlayers];
 
     // Send transaction without waiting for processing (to avoid timeout)
     const result = await sendTransaction(wallet, params, paimaEngineConfig, "no-wait");

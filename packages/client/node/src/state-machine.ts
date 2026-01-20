@@ -20,10 +20,10 @@ const stm = new PaimaSTM<typeof grammar, any>(grammar);
  * Handle createdLobby command - create a new game lobby
  */
 stm.addStateTransition("createdLobby", function* (data) {
-  const { playerName, maxPlayers } = data.parsedInput;
+  const { playerName, lobbyName, maxPlayers } = data.parsedInput;
   const walletAddress = data.signerAddress;
 
-  console.log(`🎮 [createdLobby] Creating lobby - Player: ${playerName}, Max Players: ${maxPlayers}, Wallet: ${walletAddress}`);
+  console.log(`🎮 [createdLobby] Creating lobby "${lobbyName}" - Player: ${playerName}, Max Players: ${maxPlayers}, Wallet: ${walletAddress}`);
 
   // Generate unique lobby ID based on block height and timestamp
   const lobbyId = `lobby_${data.blockHeight}_${Date.now()}`;
@@ -98,7 +98,7 @@ stm.addStateTransition("createdLobby", function* (data) {
     createLobby,
     {
       lobbyId: lobbyId,
-      lobbyName: `${playerName}'s Lobby`,
+      lobbyName: lobbyName,
       hostAccountId: accountId,
       maxPlayers: maxPlayers
     }

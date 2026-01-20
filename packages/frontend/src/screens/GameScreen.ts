@@ -50,9 +50,10 @@ export class GameScreen {
 
   show() {
     this.render();
-    // Poll every 2 seconds instead of 1 second to reduce database pressure
-    // This prevents mutex deadlocks during block processing and Midnight queries
-    this.refreshInterval = window.setInterval(() => this.render(), 2000);
+    // Poll every 3 seconds to reduce database pressure and prevent mutex deadlocks
+    // The Paima sync process needs time to complete, and concurrent Midnight queries
+    // can block the event loop causing sync protocols to timeout waiting for mutex
+    this.refreshInterval = window.setInterval(() => this.render(), 3000);
   }
 
   hide() {
@@ -177,7 +178,7 @@ export class GameScreen {
 
           <!-- Center Panel: Actions -->
           <div class="center-panel">
-            ${isMyTurn ? this.renderActionPanelFromAPI() : this.renderWaitingPanel()}
+            ${this.renderCenterPanel(isMyTurn)}
           </div>
 
           <!-- Right Panel: Opponent + Game Log -->
@@ -254,8 +255,22 @@ export class GameScreen {
       suit: suitNames[suit]
     }));
 
+    // Check if it's the player's turn to make cards clickable
+    const isMyTurn = this.gameState?.currentTurn === this.gameState?.playerId;
+
     return cards
-      .map(card => `<div class="card-wrapper">${CardComponent.render(card, true)}</div>`)
+      .map(card => {
+        const isSelected = this.selectedRank === card.rank;
+        const clickableClass = isMyTurn ? 'clickable' : '';
+        const selectedClass = isSelected ? 'selected' : '';
+        return `
+          <div class="card-wrapper ${clickableClass} ${selectedClass}"
+               data-rank="${card.rank}"
+               data-suit="${card.suit}">
+            ${CardComponent.render(card, true)}
+          </div>
+        `;
+      })
       .join('');
   }
 
@@ -485,13 +500,116 @@ export class GameScreen {
     `;
   }
 
-  private renderWaitingPanel(): string {
+  private renderCenterPanel(isMyTurn: boolean): string {
+    if (!this.gameState) return '';
+
+    const phase = this.gameState.phase;
+    const myPlayerId = this.gameState.playerId;
+    const currentTurn = this.gameState.currentTurn;
+
+    // Handle different game phases
+    switch (phase) {
+      case 'turn_start':
+        // Current player can ask for cards
+        if (isMyTurn) {
+          return this.renderActionPanelFromAPI();
+        } else {
+          return this.renderWaitingPanel(`Waiting for ${this.gameState.players[currentTurn - 1]?.name || 'opponent'} to ask for cards...`);
+        }
+
+      case 'wait_response':
+        // The opponent (non-current-turn player) needs to respond
+        if (!isMyTurn) {
+          // I'm the one who needs to respond
+          return this.renderRespondPanel();
+        } else {
+          // I asked, waiting for opponent to respond
+          return this.renderWaitingPanel('Waiting for opponent to check their cards...');
+        }
+
+      case 'wait_transfer':
+        // Cards are being transferred
+        return this.renderWaitingPanel('Transferring cards...');
+
+      case 'wait_draw':
+        // Current player needs to draw (Go Fish!)
+        if (isMyTurn) {
+          return this.renderGoFishPanel();
+        } else {
+          return this.renderWaitingPanel('Opponent is drawing a card...');
+        }
+
+      case 'wait_draw_check':
+        // Checking if drawn card matches
+        return this.renderWaitingPanel('Checking drawn card...');
+
+      case 'finished':
+        return this.renderGameOverPanel();
+
+      default:
+        if (isMyTurn) {
+          return this.renderActionPanelFromAPI();
+        } else {
+          return this.renderWaitingPanel(`Waiting for ${this.gameState.players[currentTurn - 1]?.name || 'opponent'}...`);
+        }
+    }
+  }
+
+  private renderWaitingPanel(message?: string): string {
     return `
       <div class="ask-action-panel">
         <div class="waiting-indicator">
-          <h3>⏳ Waiting for your turn...</h3>
+          <h3>⏳ ${message || 'Waiting for your turn...'}</h3>
           <p>Watch the game log to see what happens!</p>
         </div>
+      </div>
+    `;
+  }
+
+  private renderRespondPanel(): string {
+    return `
+      <div class="ask-action-panel">
+        <h3>🔍 Opponent Asked for Cards!</h3>
+        <p class="info-text">Your opponent is asking if you have any cards of the requested rank.</p>
+        <p class="info-text">Click the button below to check your hand and respond.</p>
+        <button id="respond-btn" class="btn btn-primary ask-button">
+          Check My Hand & Respond
+        </button>
+      </div>
+    `;
+  }
+
+  private renderGoFishPanel(): string {
+    return `
+      <div class="ask-action-panel">
+        <h3>🎣 Go Fish!</h3>
+        <p class="info-text">Your opponent doesn't have the cards you asked for.</p>
+        <p class="info-text">Draw a card from the deck!</p>
+        <button id="go-fish-btn" class="btn btn-primary ask-button">
+          🎣 Draw from Deck
+        </button>
+      </div>
+    `;
+  }
+
+  private renderGameOverPanel(): string {
+    if (!this.gameState) return '';
+
+    const myScore = this.gameState.scores[this.gameState.playerId - 1];
+    const opponentScore = this.gameState.scores[this.gameState.playerId === 1 ? 1 : 0];
+    const isWinner = myScore > opponentScore;
+    const isTie = myScore === opponentScore;
+
+    return `
+      <div class="ask-action-panel game-over-panel">
+        <h2>${isTie ? '🤝 It\'s a Tie!' : isWinner ? '🎉 You Won!' : '😔 You Lost'}</h2>
+        <div class="final-scores">
+          <p>Your Books: ${myScore}</p>
+          <p>Opponent's Books: ${opponentScore}</p>
+        </div>
+        <button id="back-to-lobby-btn" class="btn btn-primary">
+          Back to Lobby List
+        </button>
       </div>
     `;
   }
@@ -562,23 +680,19 @@ export class GameScreen {
       index + 1 !== this.gameState!.playerId
     );
 
+    const selectedRankDisplay = this.selectedRank
+      ? `<span class="selected-rank">${this.selectedRank}</span>`
+      : '<span class="no-selection">Click a card in your hand</span>';
+
     return `
       <div class="ask-action-panel">
         <h3>Ask for a Card</h3>
 
-        <div class="instruction-text">
-          Select a rank to ask for (you must have it in your hand)
-        </div>
-
-        <div class="rank-selector">
-          ${['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'].map(rank => `
-            <button
-              class="rank-btn ${this.selectedRank === rank ? 'selected' : ''}"
-              data-rank="${rank}"
-            >
-              ${rank}
-            </button>
-          `).join('')}
+        <div class="selection-display">
+          <div class="selection-item">
+            <span class="selection-label">Selected Rank:</span>
+            ${selectedRankDisplay}
+          </div>
         </div>
 
         <div class="instruction-text">
@@ -586,7 +700,7 @@ export class GameScreen {
         </div>
 
         <div class="player-selector">
-          ${opponents.map((p: any, index: number) => {
+          ${opponents.map((p: any) => {
             const actualPlayerNum = this.gameState!.players.indexOf(p) + 1;
             return `
               <button
@@ -601,10 +715,12 @@ export class GameScreen {
 
         <button
           id="ask-btn"
-          class="btn btn-primary"
+          class="btn btn-primary ask-button"
           ${!this.selectedRank || !this.selectedTargetId ? 'disabled' : ''}
         >
-          Ask for ${this.selectedRank || '?'} from ${this.selectedTargetId ? 'selected player' : '?'}
+          ${this.selectedRank && this.selectedTargetId
+            ? `Ask for ${this.selectedRank}s`
+            : 'Select a card and player'}
         </button>
       </div>
     `;
@@ -630,13 +746,15 @@ export class GameScreen {
   }
 
   private attachEventListeners() {
-    // Rank selection
-    document.querySelectorAll('.rank-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
+    // Card selection - click on cards in your hand to select the rank
+    document.querySelectorAll('.card-wrapper.clickable').forEach(wrapper => {
+      wrapper.addEventListener('click', (e) => {
+        const target = e.currentTarget as HTMLElement;
         const rank = target.dataset.rank as Rank;
-        this.selectedRank = rank;
-        this.render();
+        if (rank) {
+          this.selectedRank = rank;
+          this.render();
+        }
       });
     });
 
@@ -656,12 +774,13 @@ export class GameScreen {
     document.getElementById('ask-btn')?.addEventListener('click', async () => {
       if (this.selectedRank && this.selectedTargetId && this.gameState) {
         try {
-          // Convert rank string to number (A=1, 2-10=2-10, J=11, Q=12, K=13)
+          // Convert rank string to number (0-indexed: A=0, 2=1, ..., K=12)
+          // Contract uses 0-12 for ranks, matching the card index pattern
           const rankMap: Record<string, number> = {
-            'A': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
-            '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13
+            'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
+            '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
           };
-          const targetRank = rankMap[this.selectedRank] || 0;
+          const targetRank = rankMap[this.selectedRank] ?? 0;
 
           const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
             method: 'POST',
@@ -716,6 +835,39 @@ export class GameScreen {
           alert('Failed to draw card. Please try again.');
         }
       }
+    });
+
+    // Respond to ask action - check hand and respond
+    document.getElementById('respond-btn')?.addEventListener('click', async () => {
+      if (this.gameState) {
+        try {
+          const response = await fetch('http://localhost:9999/api/midnight/respond_to_ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId
+            })
+          });
+
+          const result = await response.json();
+
+          if (result.success) {
+            console.log('[GameScreen] Respond to ask succeeded:', result);
+            // State will update on next poll
+          } else {
+            alert(`Failed to respond: ${result.errorMessage}`);
+          }
+        } catch (error) {
+          console.error('[GameScreen] Respond to ask failed:', error);
+          alert('Failed to respond. Please try again.');
+        }
+      }
+    });
+
+    // Back to lobby list button (game over)
+    document.getElementById('back-to-lobby-btn')?.addEventListener('click', () => {
+      this.dispatchEvent('navigate', { screen: 'lobby-list' });
     });
   }
 

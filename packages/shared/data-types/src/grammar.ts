@@ -8,6 +8,7 @@ import { Type } from "@sinclair/typebox";
 
 // Custom types for Go Fish
 const PlayerName = Type.String({ minLength: 1, maxLength: 20 });
+const LobbyName = Type.String({ minLength: 1, maxLength: 30 });
 const LobbyID = Type.String({ minLength: 1, maxLength: 100 });
 const PlayerID = Type.String({ minLength: 1, maxLength: 100 });
 const Rank = Type.Union([
@@ -28,11 +29,12 @@ const Rank = Type.Union([
 
 export const goFishL2Grammar = {
   /**
-   * Create Lobby: c|playerName|maxPlayers
-   * Example: c|Alice|4
+   * Create Lobby: c|playerName|lobbyName|maxPlayers
+   * Example: c|Alice|Alice's Game|4
    */
   createdLobby: [
     ['playerName', PlayerName],
+    ['lobbyName', LobbyName],
     ['maxPlayers', Type.Number({ minimum: 2, maximum: 6 })],
   ],
 
