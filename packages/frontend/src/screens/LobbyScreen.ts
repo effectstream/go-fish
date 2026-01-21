@@ -6,11 +6,27 @@ import { GoFishGameService } from '../services/GoFishGameService';
 import type { GoFishGameState, GoFishPlayer } from '../../../shared/data-types/src/go-fish-types';
 import * as EffectstreamBridge from '../effectstreamBridge';
 
+// Type for lobby state response
+interface LobbyStateResponse {
+  players: Array<{
+    wallet_address: string;
+    account_id: number;
+    player_name: string;
+    is_ready: boolean;
+  }>;
+  max_players: number;
+  host_account_id: number;
+  lobby_name: string;
+  status: string;
+}
+
 export class LobbyScreen {
   private container: HTMLElement;
   private gameService: GoFishGameService;
   private lobbyId: string = '';
   private refreshInterval?: number;
+  private previousLobbyState: LobbyStateResponse | null = null;
+  private hasRenderedOnce: boolean = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -19,6 +35,8 @@ export class LobbyScreen {
 
   async show(lobbyId: string) {
     this.lobbyId = lobbyId;
+    this.hasRenderedOnce = false;
+    this.previousLobbyState = null;
     await this.render();
     // Poll every 3 seconds to reduce database pressure
     // This prevents mutex deadlocks during block processing and Midnight queries
@@ -40,7 +58,7 @@ export class LobbyScreen {
       return;
     }
 
-    const lobbyData = await response.json();
+    const lobbyData: LobbyStateResponse = await response.json();
     if (!lobbyData) {
       this.dispatchEvent('navigate', { screen: 'lobby-list' });
       return;
@@ -69,6 +87,48 @@ export class LobbyScreen {
 
     // Check if all players are ready and there are at least 2 players
     const allReady = playerCount >= 2 && players.every((p: any) => p.is_ready || p.account_id === hostAccountId);
+
+    // Check if we need a full render or can do selective updates
+    if (!this.hasRenderedOnce || this.needsFullRender(lobbyData)) {
+      this.fullRender(players, playerCount, maxPlayers, hostAccountId, lobbyName, currentPlayer, isHost ?? false, allReady);
+      this.hasRenderedOnce = true;
+    } else {
+      this.selectiveUpdate(players, playerCount, maxPlayers, hostAccountId, currentPlayer, isHost ?? false, allReady);
+    }
+
+    // Store for comparison on next render
+    this.previousLobbyState = lobbyData;
+  }
+
+  /**
+   * Check if state changes require a full re-render
+   */
+  private needsFullRender(currentState: LobbyStateResponse): boolean {
+    if (!this.previousLobbyState) return true;
+
+    // Full render needed if player count changed
+    if (this.previousLobbyState.players.length !== currentState.players.length) return true;
+
+    // Full render needed if host status changed (shouldn't happen but just in case)
+    if (this.previousLobbyState.host_account_id !== currentState.host_account_id) return true;
+
+    return false;
+  }
+
+  /**
+   * Perform a full DOM render
+   */
+  private fullRender(
+    players: any[],
+    playerCount: number,
+    maxPlayers: number,
+    hostAccountId: number,
+    lobbyName: string,
+    currentPlayer: any,
+    isHost: boolean,
+    allReady: boolean
+  ) {
+    const myWalletAddress = this.gameService.getPlayerId();
 
     this.container.innerHTML = `
       <div class="lobby-screen">
@@ -129,6 +189,56 @@ export class LobbyScreen {
     `;
 
     this.attachEventListeners();
+  }
+
+  /**
+   * Perform selective DOM updates (preserves existing DOM structure)
+   */
+  private selectiveUpdate(
+    players: any[],
+    playerCount: number,
+    maxPlayers: number,
+    hostAccountId: number,
+    currentPlayer: any,
+    isHost: boolean,
+    allReady: boolean
+  ) {
+    const myWalletAddress = this.gameService.getPlayerId();
+
+    // Update player count header
+    const playersHeader = this.container.querySelector('.players-panel h2');
+    if (playersHeader) {
+      playersHeader.textContent = `Players (${playerCount}/${maxPlayers})`;
+    }
+
+    // Update players list
+    const playersList = this.container.querySelector('.players-list');
+    if (playersList) {
+      playersList.innerHTML = players.map((p: any) => this.renderPlayerFromAPI(p, hostAccountId, myWalletAddress)).join('');
+    }
+
+    // Update ready button state
+    const readyBtn = document.getElementById('toggle-ready-btn') as HTMLButtonElement;
+    if (readyBtn && !isHost) {
+      readyBtn.className = `btn ${currentPlayer?.is_ready ? 'btn-secondary' : 'btn-primary'}`;
+      readyBtn.textContent = currentPlayer?.is_ready ? 'Not Ready' : 'Ready Up!';
+      readyBtn.disabled = false;
+    }
+
+    // Update host section info text
+    if (isHost) {
+      const infoText = this.container.querySelector('.host-section .info-text');
+      if (infoText) {
+        infoText.textContent = allReady
+          ? 'All players are ready!'
+          : `Need ${playerCount < 2 ? (2 - playerCount) + ' more player(s) and ' : ''}all players to ready up`;
+      }
+
+      const startBtn = document.getElementById('start-game-btn') as HTMLButtonElement;
+      if (startBtn) {
+        startBtn.disabled = !allReady;
+      }
+    }
   }
 
   private renderPlayer(player: GoFishPlayer, game: GoFishGameState): string {

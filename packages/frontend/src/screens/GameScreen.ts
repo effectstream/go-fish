@@ -43,6 +43,7 @@ export class GameScreen {
   private isHidden: boolean = false;     // Track if screen has been hidden to prevent stale renders
   private errorCount: number = 0;        // Track consecutive errors before navigating away
   private hasRenderedOnce: boolean = false; // Track if initial render has happened
+  private showActionModal: boolean = false; // Track if action modal is visible
   private static readonly MAX_ERRORS = 3; // Navigate away after this many consecutive errors
 
   constructor(container: HTMLElement, lobbyId: string) {
@@ -186,6 +187,9 @@ export class GameScreen {
     // Full render needed if phase changed
     if (this.previousGameState.phase !== this.gameState.phase) return true;
 
+    // Full render needed if turn changed (cards clickable state depends on whose turn it is)
+    if (this.previousGameState.currentTurn !== this.gameState.currentTurn) return true;
+
     // Full render needed if hand size changed (cards added/removed)
     const prevHandSize = this.previousGameState.handSizes[this.previousGameState.playerId - 1];
     const currHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
@@ -224,7 +228,7 @@ export class GameScreen {
   ) {
     this.container.innerHTML = `
       <div class="game-screen">
-        <!-- Main Game Area - 3 column layout -->
+        <!-- Main Game Area - 2 column layout -->
         <div class="game-content">
           <!-- Left Panel: Your Hand + Books -->
           <div class="left-panel">
@@ -232,7 +236,7 @@ export class GameScreen {
               <h1>🎣 Go Fish</h1>
               <div id="turn-indicator" class="turn-indicator ${isMyTurn ? 'your-turn' : ''}">
                 ${isMyTurn
-                  ? '<strong>🎯 Your Turn!</strong>'
+                  ? '<strong>🎯 Your Turn!</strong> Click a card to ask for it.'
                   : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`
                 }
               </div>
@@ -259,11 +263,11 @@ export class GameScreen {
               }
               </div>
             </div>
-          </div>
 
-          <!-- Center Panel: Actions -->
-          <div id="center-panel" class="center-panel">
-            ${this.renderCenterPanel(isMyTurn)}
+            <!-- Non-modal action panels (respond, go fish, waiting) -->
+            <div id="inline-action-panel">
+              ${this.renderInlineActionPanel(isMyTurn)}
+            </div>
           </div>
 
           <!-- Right Panel: Stats + Opponent + Game Log -->
@@ -308,6 +312,11 @@ export class GameScreen {
           </div>
         </div>
       </div>
+
+      <!-- Action Modal (shown when card is clicked during turn_start) -->
+      <div id="action-modal-container">
+        ${this.showActionModal ? this.renderActionModal() : ''}
+      </div>
     `;
 
     this.attachEventListeners();
@@ -328,7 +337,7 @@ export class GameScreen {
     if (turnIndicator) {
       turnIndicator.className = `turn-indicator ${isMyTurn ? 'your-turn' : ''}`;
       turnIndicator.innerHTML = isMyTurn
-        ? '<strong>🎯 Your Turn!</strong>'
+        ? '<strong>🎯 Your Turn!</strong> Click a card to ask for it.'
         : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`;
     }
 
@@ -339,10 +348,16 @@ export class GameScreen {
     this.updateTextContent('books-header', `Your Books (${myBooks.length})`);
     this.updateTextContent('hand-header', `Your Hand (${myHandSize} cards)`);
 
-    // Update center panel (actions) - this changes based on phase/turn
-    const centerPanel = document.getElementById('center-panel');
-    if (centerPanel) {
-      centerPanel.innerHTML = this.renderCenterPanel(isMyTurn);
+    // Update inline action panel (respond, go fish, waiting, etc.)
+    const inlineActionPanel = document.getElementById('inline-action-panel');
+    if (inlineActionPanel) {
+      inlineActionPanel.innerHTML = this.renderInlineActionPanel(isMyTurn);
+    }
+
+    // Update action modal container
+    const modalContainer = document.getElementById('action-modal-container');
+    if (modalContainer) {
+      modalContainer.innerHTML = this.showActionModal ? this.renderActionModal() : '';
     }
 
     // Update game log
@@ -373,6 +388,26 @@ export class GameScreen {
     if (el && el.textContent !== text) {
       el.textContent = text;
     }
+  }
+
+  /**
+   * Update just the modal container without full re-render
+   */
+  private updateModalContainer() {
+    const modalContainer = document.getElementById('action-modal-container');
+    if (modalContainer) {
+      modalContainer.innerHTML = this.showActionModal ? this.renderActionModal() : '';
+    }
+  }
+
+  /**
+   * Close the action modal
+   */
+  private closeActionModal() {
+    this.showActionModal = false;
+    this.selectedRank = null;
+    this.selectedTargetId = null;
+    this.updateModalContainer();
   }
 
   private renderOpponent(player: GoFishPlayer, game: GoFishGameState): string {
@@ -425,13 +460,20 @@ export class GameScreen {
       suit: suitNames[suit]
     }));
 
-    // Check if it's the player's turn to make cards clickable
+    // Check if it's the player's turn AND in turn_start phase to make cards clickable
+    // Cards should only be clickable when it's time to ask for a card
     const isMyTurn = this.gameState?.currentTurn === this.gameState?.playerId;
+    const canAskForCard = isMyTurn && this.gameState?.phase === 'turn_start';
+
+    // Debug logging when cards should be clickable but something might be wrong
+    if (isMyTurn && !canAskForCard) {
+      console.log(`[GameScreen] Cards not clickable: isMyTurn=${isMyTurn}, phase=${this.gameState?.phase}`);
+    }
 
     return cards
       .map(card => {
         const isSelected = this.selectedRank === card.rank;
-        const clickableClass = isMyTurn ? 'clickable' : '';
+        const clickableClass = canAskForCard ? 'clickable' : '';
         const selectedClass = isSelected ? 'selected' : '';
         return `
           <div class="card-wrapper ${clickableClass} ${selectedClass}"
@@ -569,34 +611,22 @@ export class GameScreen {
       : 'Initializing setup...';
 
     this.container.innerHTML = `
-      <div class="game-screen">
-        <div class="game-header">
-          <div class="game-info">
-            <h1>🎣 Go Fish - Setup Phase</h1>
-            <p>Initializing the Midnight contract for this game...</p>
+      <div class="game-setup-screen">
+        <div class="setup-container">
+          <h1>🎣 Go Fish</h1>
+          <h2>🎴 Game Setup</h2>
+          <p class="setup-description">
+            Each player's secret cards are being initialized in the Midnight contract.
+            This uses zero-knowledge proofs to ensure fair play - no one can see your cards!
+          </p>
+
+          <div class="setup-spinner-section">
+            <div class="spinner"></div>
+            <p class="setup-status">${statusMessage}</p>
           </div>
-        </div>
 
-        <div class="game-content" style="display: flex; align-items: center; justify-content: center;">
-          <div style="max-width: 600px; padding: 2rem; background-color: rgba(0, 0, 0, 0.5); border-radius: 1rem; text-align: center;">
-            <h2 style="margin-bottom: 1rem;">🎴 Game Setup</h2>
-            <p style="margin-bottom: 2rem; opacity: 0.9;">
-              Each player's secret cards are being initialized in the Midnight contract.
-              This uses zero-knowledge proofs to ensure fair play - no one can see your cards!
-            </p>
-
-            <div style="margin: 2rem 0;">
-              <div class="spinner" style="margin: 0 auto 1rem; width: 50px; height: 50px; border: 4px solid rgba(255,255,255,0.1); border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-              <p style="font-size: 1.1rem; font-weight: 500;">
-                ${statusMessage}
-              </p>
-            </div>
-
-            <div style="margin-top: 2rem; padding: 1rem; background-color: rgba(255,255,255,0.05); border-radius: 0.5rem;">
-              <p style="font-size: 0.9rem; opacity: 0.7;">
-                Setup happens automatically. Once both players complete setup, the game will begin!
-              </p>
-            </div>
+          <div class="setup-info">
+            <p>Setup happens automatically. Once both players complete setup, the game will begin!</p>
           </div>
         </div>
       </div>
@@ -731,6 +761,119 @@ export class GameScreen {
         <div class="waiting-indicator">
           <h3>⏳ ${message || 'Waiting for your turn...'}</h3>
           <p>Watch the game log to see what happens!</p>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render inline action panels (non-modal: respond, go fish, waiting, game over)
+   * The "ask for card" action is handled via modal instead
+   */
+  private renderInlineActionPanel(isMyTurn: boolean): string {
+    if (!this.gameState) return '';
+
+    const phase = this.gameState.phase;
+    const currentTurn = this.gameState.currentTurn;
+
+    // Handle different game phases - only show inline panels for non-ask actions
+    switch (phase) {
+      case 'turn_start':
+        // Don't show anything inline - asking is done via modal after clicking card
+        if (isMyTurn) {
+          return ''; // Modal handles the ask action
+        } else {
+          return this.renderWaitingPanel(`Waiting for ${this.gameState.players[currentTurn - 1]?.name || 'opponent'} to ask for cards...`);
+        }
+
+      case 'wait_response':
+        // The opponent (non-current-turn player) needs to respond
+        if (!isMyTurn) {
+          // I'm the one who needs to respond
+          return this.renderRespondPanel();
+        } else {
+          // I asked, waiting for opponent to respond
+          return this.renderWaitingPanel('Waiting for opponent to check their cards...');
+        }
+
+      case 'wait_transfer':
+        // Cards are being transferred
+        return this.renderWaitingPanel('Transferring cards...');
+
+      case 'wait_draw':
+        // Current player needs to draw (Go Fish!)
+        if (isMyTurn) {
+          return this.renderGoFishPanel();
+        } else {
+          return this.renderWaitingPanel('Opponent is drawing a card...');
+        }
+
+      case 'wait_draw_check':
+        // Checking if drawn card matches
+        return this.renderWaitingPanel('Checking drawn card...');
+
+      case 'finished':
+        return this.renderGameOverPanel();
+
+      default:
+        if (!isMyTurn) {
+          return this.renderWaitingPanel(`Waiting for ${this.gameState.players[currentTurn - 1]?.name || 'opponent'}...`);
+        }
+        return '';
+    }
+  }
+
+  /**
+   * Render the action modal for asking for cards
+   */
+  private renderActionModal(): string {
+    if (!this.gameState || !this.selectedRank) return '';
+
+    const opponents = this.gameState.players.filter((_p: any, index: number) =>
+      index + 1 !== this.gameState!.playerId
+    );
+
+    return `
+      <div class="game-action-modal-overlay" id="action-modal-overlay">
+        <div class="game-action-modal">
+          <div class="modal-header">
+            <h3>Ask for Cards</h3>
+            <button class="modal-close-btn" id="modal-close-btn">&times;</button>
+          </div>
+
+          <div class="selected-card-display">
+            <div class="rank-display">${this.selectedRank}</div>
+            <div class="label">Selected Rank</div>
+          </div>
+
+          <div class="instruction-text">
+            Select which player to ask for ${this.selectedRank}s:
+          </div>
+
+          <div class="player-selector">
+            ${opponents.map((p: any) => {
+              const actualPlayerNum = this.gameState!.players.indexOf(p) + 1;
+              return `
+                <button
+                  class="player-select-btn ${this.selectedTargetId === String(actualPlayerNum) ? 'selected' : ''}"
+                  data-player-id="${actualPlayerNum}"
+                >
+                  ${p.name} - ${this.gameState!.handSizes[actualPlayerNum - 1]} cards
+                </button>
+              `;
+            }).join('')}
+          </div>
+
+          <button
+            id="ask-btn"
+            class="btn btn-primary ask-button"
+            style="width: 100%; margin-top: 16px;"
+            ${!this.selectedTargetId ? 'disabled' : ''}
+          >
+            ${this.selectedTargetId
+              ? `Ask for ${this.selectedRank}s`
+              : 'Select a player above'}
+          </button>
         </div>
       </div>
     `;
@@ -916,71 +1059,42 @@ export class GameScreen {
   }
 
   private attachEventListeners() {
-    // Card selection - click on cards in your hand to select the rank
+    // Card selection - click on cards in your hand to select the rank and open modal
     document.querySelectorAll('.card-wrapper.clickable').forEach(wrapper => {
       wrapper.addEventListener('click', (e) => {
         const target = e.currentTarget as HTMLElement;
         const rank = target.dataset.rank as Rank;
         if (rank) {
           this.selectedRank = rank;
-          this.render();
+          this.selectedTargetId = null; // Reset target when selecting new card
+          this.showActionModal = true;
+          this.updateModalContainer();
+          this.attachModalEventListeners();
         }
       });
     });
 
-    // Player selection
-    document.querySelectorAll('.player-select-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        const playerId = target.dataset.playerId;
-        if (playerId) {
-          this.selectedTargetId = playerId;
-          this.render();
-        }
-      });
-    });
+    // Attach modal event listeners if modal is showing
+    if (this.showActionModal) {
+      this.attachModalEventListeners();
+    }
 
-    // Ask action - now uses backend API
-    document.getElementById('ask-btn')?.addEventListener('click', async () => {
-      if (this.selectedRank && this.selectedTargetId && this.gameState) {
-        try {
-          // Convert rank string to number (0-indexed: A=0, 2=1, ..., K=12)
-          // Contract uses 0-12 for ranks, matching the card index pattern
-          const rankMap: Record<string, number> = {
-            'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
-            '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
-          };
-          const targetRank = rankMap[this.selectedRank] ?? 0;
+    // Attach inline action panel event listeners
+    this.attachInlineActionListeners();
+  }
 
-          const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId,
-              rank: targetRank
-            })
-          });
-
-          const result = await response.json();
-
-          if (result.success) {
-            this.selectedRank = null;
-            this.selectedTargetId = null;
-            console.log('[GameScreen] Ask for card succeeded');
-            // State will update on next poll
-          } else {
-            alert(`Failed to ask for card: ${result.errorMessage}`);
-          }
-        } catch (error) {
-          console.error('[GameScreen] Ask for card failed:', error);
-          alert('Failed to ask for card. Please try again.');
-        }
-      }
-    });
-
+  /**
+   * Attach event listeners for inline action panels (respond, go fish, back to lobby)
+   */
+  private attachInlineActionListeners() {
     // Go Fish action - draw from deck and complete turn
     document.getElementById('go-fish-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('go-fish-btn') as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Drawing...';
+      }
+
       if (this.gameState) {
         try {
           // Step 1: Get hand before drawing to compare later
@@ -1005,6 +1119,11 @@ export class GameScreen {
 
           if (!goFishResult.success) {
             alert(`Failed to draw card: ${goFishResult.errorMessage}`);
+            // Re-enable button on error
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = '🎣 Draw from Deck';
+            }
             return;
           }
 
@@ -1070,12 +1189,23 @@ export class GameScreen {
         } catch (error) {
           console.error('[GameScreen] Go Fish failed:', error);
           alert('Failed to draw card. Please try again.');
+          // Re-enable button on error
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🎣 Draw from Deck';
+          }
         }
       }
     });
 
     // Respond to ask action - check hand and respond
     document.getElementById('respond-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('respond-btn') as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+      }
+
       if (this.gameState) {
         try {
           const response = await fetch('http://localhost:9999/api/midnight/respond_to_ask', {
@@ -1094,10 +1224,20 @@ export class GameScreen {
             // State will update on next poll
           } else {
             alert(`Failed to respond: ${result.errorMessage}`);
+            // Re-enable button on error
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = 'Check My Hand & Respond';
+            }
           }
         } catch (error) {
           console.error('[GameScreen] Respond to ask failed:', error);
           alert('Failed to respond. Please try again.');
+          // Re-enable button on error
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Check My Hand & Respond';
+          }
         }
       }
     });
@@ -1105,6 +1245,74 @@ export class GameScreen {
     // Back to lobby list button (game over)
     document.getElementById('back-to-lobby-btn')?.addEventListener('click', () => {
       this.dispatchEvent('navigate', { screen: 'lobby-list' });
+    });
+  }
+
+  /**
+   * Attach event listeners specific to the modal
+   */
+  private attachModalEventListeners() {
+    // Modal close button
+    document.getElementById('modal-close-btn')?.addEventListener('click', () => {
+      this.closeActionModal();
+    });
+
+    // Close modal on overlay click
+    document.getElementById('action-modal-overlay')?.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).id === 'action-modal-overlay') {
+        this.closeActionModal();
+      }
+    });
+
+    // Player selection in modal
+    document.querySelectorAll('.player-select-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const playerId = target.dataset.playerId;
+        if (playerId) {
+          this.selectedTargetId = playerId;
+          this.updateModalContainer();
+          this.attachModalEventListeners();
+        }
+      });
+    });
+
+    // Ask action - now uses backend API
+    document.getElementById('ask-btn')?.addEventListener('click', async () => {
+      if (this.selectedRank && this.selectedTargetId && this.gameState) {
+        try {
+          // Convert rank string to number (0-indexed: A=0, 2=1, ..., K=12)
+          // Contract uses 0-12 for ranks, matching the card index pattern
+          const rankMap: Record<string, number> = {
+            'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
+            '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
+          };
+          const targetRank = rankMap[this.selectedRank] ?? 0;
+
+          const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId,
+              rank: targetRank
+            })
+          });
+
+          const result = await response.json();
+
+          if (result.success) {
+            console.log('[GameScreen] Ask for card succeeded');
+            this.closeActionModal(); // Close modal and reset selections
+            // State will update on next poll
+          } else {
+            alert(`Failed to ask for card: ${result.errorMessage}`);
+          }
+        } catch (error) {
+          console.error('[GameScreen] Ask for card failed:', error);
+          alert('Failed to ask for card. Please try again.');
+        }
+      }
     });
   }
 

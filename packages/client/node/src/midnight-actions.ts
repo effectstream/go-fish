@@ -605,6 +605,8 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
   if (!actionContract || !actionContext) return;
 
   console.log(`[MidnightActions] Checking for books for player ${playerId}...`);
+  const rankNames = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  let booksFound = 0;
 
   // Check all 13 ranks for possible books
   for (let rank = 0; rank < 13; rank++) {
@@ -618,11 +620,16 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
       actionContext = result.context;
 
       if (result.result) {
-        const rankNames = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-        console.log(`[MidnightActions] Player ${playerId} completed a book of ${rankNames[rank]}s!`);
+        booksFound++;
+        console.log(`[MidnightActions] ✓ Player ${playerId} completed a book of ${rankNames[rank]}s!`);
       }
-    } catch (error) {
-      // Errors are expected for ranks the player doesn't have all 4 of
+    } catch (error: any) {
+      // Log unexpected errors (not just "doesn't have all 4")
+      const errorMsg = error?.message || String(error);
+      // Only log if it's not a simple "no book" error (contract returns false, not throws)
+      if (!errorMsg.includes('assertion') && !errorMsg.includes('Circuit failed')) {
+        console.warn(`[MidnightActions] checkAndScoreBook error for rank ${rankNames[rank]}:`, errorMsg);
+      }
       continue;
     }
 
@@ -631,6 +638,8 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
       await yieldToEventLoop();
     }
   }
+
+  console.log(`[MidnightActions] Book check complete for player ${playerId}: ${booksFound} books scored`);
 }
 
 /**
