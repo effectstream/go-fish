@@ -84,15 +84,6 @@ export class LobbyListScreen {
           <button id="refresh-btn" class="btn btn-secondary">Refresh</button>
         </div>
 
-        <h2>Available Lobbies (${lobbies.length})</h2>
-
-        <div class="lobby-list">
-          ${lobbies.length === 0
-            ? '<div class="empty-state">No lobbies available. Create one!</div>'
-            : lobbies.map(lobby => this.renderLobby(lobby)).join('')
-          }
-        </div>
-
         <!-- Create Lobby Modal -->
         <div id="create-lobby-modal" class="modal" style="display: none;">
           <div class="modal-content">
@@ -116,6 +107,15 @@ export class LobbyListScreen {
               <button id="cancel-create-btn" class="btn btn-secondary">Cancel</button>
             </div>
           </div>
+        </div>
+
+        <h2>Available Lobbies (${lobbies.length})</h2>
+
+        <div class="lobby-list">
+          ${lobbies.length === 0
+            ? '<div class="empty-state">No lobbies available. Create one!</div>'
+            : lobbies.map(lobby => this.renderLobby(lobby)).join('')
+          }
         </div>
       </div>
     `;

@@ -23,15 +23,17 @@ type PrivateState = Record<string, never>;
 
 /**
  * Minimum gap between operations to let Paima sync processes run
+ * Increased to 200ms to give sync processes more time between our CPU-intensive operations
  */
-const MIN_OPERATION_GAP_MS = 50;
+const MIN_OPERATION_GAP_MS = 200;
 let lastActionEndTime = 0;
 
 /**
  * Yield to event loop - critical for preventing mutex deadlocks
+ * Uses a longer delay (10ms) to give Paima sync a real chance to run
  */
 async function yieldToEventLoop(): Promise<void> {
-  return new Promise(r => setTimeout(r, 1));
+  return new Promise(r => setTimeout(r, 10));
 }
 
 /**
@@ -266,9 +268,10 @@ export async function initializeActionContract(): Promise<void> {
 /**
  * Cache for player hands to reduce circuit calls
  * Key format: `${lobbyId}-${playerId}`
+ * Increased TTL to 5 seconds to reduce frequency of expensive hand checks
  */
 const playerHandCache = new Map<string, { hand: Array<{ rank: number; suit: number }>; timestamp: number }>();
-const HAND_CACHE_TTL_MS = 2000;
+const HAND_CACHE_TTL_MS = 5000;
 
 /**
  * Get player's decrypted hand
@@ -309,14 +312,17 @@ export async function getPlayerHand(
     const hand: Array<{ rank: number; suit: number }> = [];
 
     // Iterate through all 52 cards (13 ranks × 4 suits)
-    // Yield to event loop periodically to prevent blocking Paima sync
+    // Yield to event loop frequently to prevent blocking Paima sync
+    // Each circuit call is CPU-intensive WASM, so we yield often
+    let cardCount = 0;
     for (let rank = 0; rank < 13; rank++) {
-      // Yield every 13 cards (once per rank) to let other processes run
-      if (rank > 0 && rank % 4 === 0) {
-        await yieldToEventLoop();
-      }
-
       for (let suit = 0; suit < 4; suit++) {
+        // Yield every 4 cards to give sync processes a chance to run
+        if (cardCount > 0 && cardCount % 4 === 0) {
+          await yieldToEventLoop();
+        }
+        cardCount++;
+
         const cardIndex = rank + suit * 13;
 
         try {
@@ -533,6 +539,13 @@ export async function respondToAsk(
     // respondToAsk returns [Boolean, Uint<8>] - whether cards transferred and count
     const [hasCards, cardCount] = result.result;
 
+    // If cards were transferred, check if the asking player (not responding player) now has a book
+    // The asking player is the opponent of the responding player
+    if (hasCards) {
+      const askingPlayerId: 1 | 2 = playerId === 1 ? 2 : 1;
+      await checkAndScoreBooksInternal(gameId, askingPlayerId);
+    }
+
     // Sync query context so queries see the updated state
     syncQueryContextFromAction(actionContext);
 
@@ -570,6 +583,9 @@ export async function afterGoFish(
     );
     actionContext = result.context;
 
+    // After drawing, check for books (player might have completed a book)
+    await checkAndScoreBooksInternal(gameId, playerId);
+
     // Sync query context so queries see the updated state
     syncQueryContextFromAction(actionContext);
 
@@ -578,5 +594,99 @@ export async function afterGoFish(
 
     console.log('[MidnightActions] afterGoFish succeeded');
     return { success: true };
+  });
+}
+
+/**
+ * Internal helper to check all ranks for books (called after hand changes)
+ * This is NOT queued since it runs inside an already queued action
+ */
+async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): Promise<void> {
+  if (!actionContract || !actionContext) return;
+
+  console.log(`[MidnightActions] Checking for books for player ${playerId}...`);
+
+  // Check all 13 ranks for possible books
+  for (let rank = 0; rank < 13; rank++) {
+    try {
+      const result = actionContract.impureCircuits.checkAndScoreBook(
+        actionContext,
+        gameId,
+        BigInt(playerId),
+        BigInt(rank)
+      );
+      actionContext = result.context;
+
+      if (result.result) {
+        const rankNames = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+        console.log(`[MidnightActions] Player ${playerId} completed a book of ${rankNames[rank]}s!`);
+      }
+    } catch (error) {
+      // Errors are expected for ranks the player doesn't have all 4 of
+      continue;
+    }
+
+    // Yield occasionally to prevent blocking
+    if (rank % 4 === 3) {
+      await yieldToEventLoop();
+    }
+  }
+}
+
+/**
+ * Check and score books for a player (public API)
+ * Called after actions that might result in a book
+ */
+export async function checkAndScoreBooks(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<{ success: boolean; booksScored: number; errorMessage?: string }> {
+  return enqueueAction(async () => {
+    if (!actionContract || !actionContext) {
+      return { success: false, booksScored: 0, errorMessage: 'Contract not initialized' };
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    console.log(`[MidnightActions] checkAndScoreBooks(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    let booksScored = 0;
+
+    // Check all 13 ranks for possible books
+    for (let rank = 0; rank < 13; rank++) {
+      try {
+        const result = actionContract.impureCircuits.checkAndScoreBook(
+          actionContext,
+          gameId,
+          BigInt(playerId),
+          BigInt(rank)
+        );
+        actionContext = result.context;
+
+        if (result.result) {
+          booksScored++;
+          const rankNames = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+          console.log(`[MidnightActions] Player ${playerId} completed a book of ${rankNames[rank]}s!`);
+        }
+      } catch (error) {
+        // Errors are expected for ranks the player doesn't have all 4 of
+        continue;
+      }
+
+      // Yield occasionally to prevent blocking
+      if (rank % 4 === 3) {
+        await yieldToEventLoop();
+      }
+    }
+
+    // Sync query context so queries see the updated state
+    syncQueryContextFromAction(actionContext);
+
+    // Invalidate hand cache since cards may have been removed for books
+    if (booksScored > 0) {
+      invalidateHandCache(lobbyId, playerId);
+    }
+
+    console.log(`[MidnightActions] checkAndScoreBooks completed: ${booksScored} books scored`);
+    return { success: true, booksScored };
   });
 }

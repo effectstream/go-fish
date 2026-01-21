@@ -306,6 +306,38 @@ button {
   overflow-y: auto;
 }
 
+.game-stats-panel {
+  background-color: rgba(0, 0, 0, 0.4);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.game-stats-panel h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+.stats-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.95rem;
+}
+
+.stat-row .stat-label {
+  opacity: 0.8;
+}
+
+.stat-row .stat-value {
+  font-weight: 600;
+}
+
 .opponent-panel {
   background-color: rgba(0, 0, 0, 0.4);
   border-radius: 0.5rem;

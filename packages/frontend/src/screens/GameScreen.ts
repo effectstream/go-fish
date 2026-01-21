@@ -32,12 +32,18 @@ export class GameScreen {
   private selectedRank: Rank | null = null;
   private selectedTargetId: string | null = null;
   private gameState: GameStateResponse | null = null;
+  private previousGameState: GameStateResponse | null = null; // Track previous state for diff
   private walletAddress: string | null = null;
   private myDecryptedHand: Array<{ rank: number; suit: number }> = [];
+  private previousHand: Array<{ rank: number; suit: number }> = []; // Track previous hand for diff
   private setupInProgress: boolean = false;
   private setupCompleted: boolean = false;
   private maskApplied: boolean = false;  // Track if we've applied mask (frontend-side cache)
   private cardsDealt: boolean = false;   // Track if we've dealt cards (frontend-side cache)
+  private isHidden: boolean = false;     // Track if screen has been hidden to prevent stale renders
+  private errorCount: number = 0;        // Track consecutive errors before navigating away
+  private hasRenderedOnce: boolean = false; // Track if initial render has happened
+  private static readonly MAX_ERRORS = 3; // Navigate away after this many consecutive errors
 
   constructor(container: HTMLElement, lobbyId: string) {
     this.container = container;
@@ -49,25 +55,39 @@ export class GameScreen {
   }
 
   show() {
+    this.isHidden = false;
+    this.errorCount = 0;
     this.render();
-    // Poll every 3 seconds to reduce database pressure and prevent mutex deadlocks
+    // Poll every 5 seconds to reduce database pressure and prevent mutex deadlocks
     // The Paima sync process needs time to complete, and concurrent Midnight queries
     // can block the event loop causing sync protocols to timeout waiting for mutex
-    this.refreshInterval = window.setInterval(() => this.render(), 3000);
+    // Increased from 3s to 5s to give more breathing room for sync operations
+    this.refreshInterval = window.setInterval(() => this.render(), 5000);
   }
 
   hide() {
+    this.isHidden = true;
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
+      this.refreshInterval = undefined;
     }
   }
 
   private async render() {
+    // Don't render if screen has been hidden (prevents stale interval callbacks)
+    if (this.isHidden) {
+      return;
+    }
+
     // Fetch game state from API instead of local service
     if (!this.walletAddress) {
       this.container.innerHTML = '<div class="error">Wallet not connected</div>';
       return;
     }
+
+    // Store previous state for comparison
+    this.previousGameState = this.gameState;
+    this.previousHand = [...this.myDecryptedHand];
 
     try {
       const response = await fetch(
@@ -75,14 +95,28 @@ export class GameScreen {
       );
 
       if (!response.ok) {
-        console.error('Failed to fetch game state:', response.status);
-        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+        this.errorCount++;
+        console.error(`Failed to fetch game state: ${response.status} (error ${this.errorCount}/${GameScreen.MAX_ERRORS})`);
+
+        // Only navigate away after multiple consecutive errors to handle transient issues
+        if (this.errorCount >= GameScreen.MAX_ERRORS) {
+          console.log('Too many consecutive errors, navigating to lobby list');
+          this.dispatchEvent('navigate', { screen: 'lobby-list' });
+        }
         return;
       }
 
+      // Reset error count on successful fetch
+      this.errorCount = 0;
       this.gameState = await response.json();
     } catch (error) {
-      console.error('Error fetching game state:', error);
+      this.errorCount++;
+      console.error(`Error fetching game state (error ${this.errorCount}/${GameScreen.MAX_ERRORS}):`, error);
+
+      if (this.errorCount >= GameScreen.MAX_ERRORS) {
+        console.log('Too many consecutive errors, navigating to lobby list');
+        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+      }
       return;
     }
 
@@ -122,7 +156,6 @@ export class GameScreen {
         if (response.ok) {
           const data = await response.json();
           this.myDecryptedHand = data.hand || [];
-          console.log(`[GameScreen] Decrypted ${this.myDecryptedHand.length} cards from backend`);
         } else {
           console.error('[GameScreen] Failed to fetch hand from backend:', response.status);
           this.myDecryptedHand = [];
@@ -135,33 +168,84 @@ export class GameScreen {
       this.myDecryptedHand = [];
     }
 
+    // Check if we need a full render or can do selective updates
+    if (!this.hasRenderedOnce || this.needsFullRender()) {
+      this.fullRender(isMyTurn, currentTurnPlayer, myHandSize, myBooks, myScore);
+      this.hasRenderedOnce = true;
+    } else {
+      this.selectiveUpdate(isMyTurn, currentTurnPlayer, myHandSize, myBooks, myScore);
+    }
+  }
+
+  /**
+   * Check if state changes require a full re-render
+   */
+  private needsFullRender(): boolean {
+    if (!this.previousGameState || !this.gameState) return true;
+
+    // Full render needed if phase changed
+    if (this.previousGameState.phase !== this.gameState.phase) return true;
+
+    // Full render needed if hand size changed (cards added/removed)
+    const prevHandSize = this.previousGameState.handSizes[this.previousGameState.playerId - 1];
+    const currHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
+    if (prevHandSize !== currHandSize) return true;
+
+    // Full render needed if hand contents changed
+    if (this.handChanged()) return true;
+
+    return false;
+  }
+
+  /**
+   * Check if the hand contents have changed
+   */
+  private handChanged(): boolean {
+    if (this.previousHand.length !== this.myDecryptedHand.length) return true;
+
+    for (let i = 0; i < this.previousHand.length; i++) {
+      const prev = this.previousHand[i];
+      const curr = this.myDecryptedHand[i];
+      if (prev.rank !== curr.rank || prev.suit !== curr.suit) return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Perform a full DOM render (used on first render or major state changes)
+   */
+  private fullRender(
+    isMyTurn: boolean,
+    currentTurnPlayer: any,
+    myHandSize: number,
+    myBooks: string[],
+    myScore: number
+  ) {
     this.container.innerHTML = `
       <div class="game-screen">
         <!-- Main Game Area - 3 column layout -->
         <div class="game-content">
-          <!-- Left Panel: Game Info + Your Hand -->
+          <!-- Left Panel: Your Hand + Books -->
           <div class="left-panel">
             <div class="game-info-panel">
               <h1>🎣 Go Fish</h1>
-              <div class="turn-indicator ${isMyTurn ? 'your-turn' : ''}">
+              <div id="turn-indicator" class="turn-indicator ${isMyTurn ? 'your-turn' : ''}">
                 ${isMyTurn
                   ? '<strong>🎯 Your Turn!</strong>'
                   : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`
                 }
               </div>
-              <div class="game-stats">
-                <div class="stat-item">🃏 Deck: ${this.gameState.deckCount} cards</div>
-                <div class="stat-item">📊 You: ${myScore} books | Opponent: ${this.gameState.scores[this.gameState.playerId === 1 ? 1 : 0]} books</div>
-              </div>
               <div class="player-books-section">
-                <h4>Your Books (${myBooks.length})</h4>
-                ${this.renderBooks(myBooks)}
+                <h4 id="books-header">Your Books (${myBooks.length})</h4>
+                <div id="books-container">${this.renderBooks(myBooks)}</div>
               </div>
             </div>
 
             <!-- Your Hand -->
             <div class="player-hand-panel">
-              <h3>Your Hand (${myHandSize} cards)</h3>
+              <h3 id="hand-header">Your Hand (${myHandSize} cards)</h3>
+              <div id="hand-container">
               ${myHandSize > 0
                 ? this.myDecryptedHand.length > 0
                   ? `<div class="card-grid">
@@ -173,29 +257,53 @@ export class GameScreen {
                      </div>`
                 : '<div class="empty-hand">No cards in hand</div>'
               }
+              </div>
             </div>
           </div>
 
           <!-- Center Panel: Actions -->
-          <div class="center-panel">
+          <div id="center-panel" class="center-panel">
             ${this.renderCenterPanel(isMyTurn)}
           </div>
 
-          <!-- Right Panel: Opponent + Game Log -->
+          <!-- Right Panel: Stats + Opponent + Game Log -->
           <div class="right-panel">
+            <!-- Game Stats -->
+            <div class="game-stats-panel">
+              <h3>Game Stats</h3>
+              <div class="stats-content">
+                <div class="stat-row">
+                  <span class="stat-label">🃏 Deck:</span>
+                  <span id="deck-count" class="stat-value">${this.gameState!.deckCount} cards</span>
+                </div>
+                <div class="stat-row">
+                  <span class="stat-label">📊 Your Books:</span>
+                  <span id="my-score" class="stat-value">${myScore}</span>
+                </div>
+                <div class="stat-row">
+                  <span class="stat-label">📊 Opponent's Books:</span>
+                  <span id="opponent-score" class="stat-value">${this.gameState!.scores[this.gameState!.playerId === 1 ? 1 : 0]}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Opponent -->
             <div class="opponent-panel">
               <h3>Opponent</h3>
-              ${this.gameState.players
+              <div id="opponent-container">
+              ${this.gameState!.players
                 .map((p: any, index: number) => ({ player: p, playerNum: index + 1 }))
                 .filter(({ playerNum }) => playerNum !== this.gameState!.playerId)
                 .map(({ player, playerNum }) => this.renderOpponentFromAPI(player, playerNum))
                 .join('')
               }
+              </div>
             </div>
 
+            <!-- Game Log -->
             <div class="game-log-panel">
               <h3>Game Log</h3>
-              ${this.renderGameLogFromAPI()}
+              <div id="game-log-container">${this.renderGameLogFromAPI()}</div>
             </div>
           </div>
         </div>
@@ -203,6 +311,68 @@ export class GameScreen {
     `;
 
     this.attachEventListeners();
+  }
+
+  /**
+   * Perform selective DOM updates (preserves existing DOM structure)
+   */
+  private selectiveUpdate(
+    isMyTurn: boolean,
+    currentTurnPlayer: any,
+    myHandSize: number,
+    myBooks: string[],
+    myScore: number
+  ) {
+    // Update turn indicator
+    const turnIndicator = document.getElementById('turn-indicator');
+    if (turnIndicator) {
+      turnIndicator.className = `turn-indicator ${isMyTurn ? 'your-turn' : ''}`;
+      turnIndicator.innerHTML = isMyTurn
+        ? '<strong>🎯 Your Turn!</strong>'
+        : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`;
+    }
+
+    // Update stats
+    this.updateTextContent('deck-count', `${this.gameState!.deckCount} cards`);
+    this.updateTextContent('my-score', `${myScore}`);
+    this.updateTextContent('opponent-score', `${this.gameState!.scores[this.gameState!.playerId === 1 ? 1 : 0]}`);
+    this.updateTextContent('books-header', `Your Books (${myBooks.length})`);
+    this.updateTextContent('hand-header', `Your Hand (${myHandSize} cards)`);
+
+    // Update center panel (actions) - this changes based on phase/turn
+    const centerPanel = document.getElementById('center-panel');
+    if (centerPanel) {
+      centerPanel.innerHTML = this.renderCenterPanel(isMyTurn);
+    }
+
+    // Update game log
+    const gameLogContainer = document.getElementById('game-log-container');
+    if (gameLogContainer) {
+      gameLogContainer.innerHTML = this.renderGameLogFromAPI();
+    }
+
+    // Update opponent info
+    const opponentContainer = document.getElementById('opponent-container');
+    if (opponentContainer) {
+      opponentContainer.innerHTML = this.gameState!.players
+        .map((p: any, index: number) => ({ player: p, playerNum: index + 1 }))
+        .filter(({ playerNum }) => playerNum !== this.gameState!.playerId)
+        .map(({ player, playerNum }) => this.renderOpponentFromAPI(player, playerNum))
+        .join('');
+    }
+
+    // Re-attach event listeners for updated elements
+    this.attachEventListeners();
+  }
+
+  /**
+   * Helper to update text content of an element by ID
+   */
+  private updateTextContent(id: string, text: string) {
+    const el = document.getElementById(id);
+    if (el && el.textContent !== text) {
+      el.textContent = text;
+    }
   }
 
   private renderOpponent(player: GoFishPlayer, game: GoFishGameState): string {

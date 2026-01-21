@@ -293,23 +293,24 @@ function mapPhaseToString(phase: number | null): string {
 
 /**
  * Simple cache to prevent excessive queries that can cause database mutex deadlocks
- * Cache TTL: 3000ms (longer than frontend poll interval to ensure cache hits)
+ * Cache TTL: 5000ms - longer to reduce query frequency
  */
 const gameStateCache = new Map<string, { state: any; timestamp: number }>();
-const CACHE_TTL_MS = 3000;
+const CACHE_TTL_MS = 5000;
 
 /**
  * Setup status cache - separate from game state cache since it's polled frequently during setup
  */
 const setupStatusCache = new Map<string, { status: any; timestamp: number }>();
-const SETUP_CACHE_TTL_MS = 1000;
+const SETUP_CACHE_TTL_MS = 2000;
 
 /**
  * Yield to event loop - critical for preventing mutex deadlocks
  * Gives Paima's sync processes a chance to run
+ * Uses 10ms delay to give sync processes real time to execute
  */
 async function yieldToEventLoop(): Promise<void> {
-  return new Promise(r => setTimeout(r, 1));
+  return new Promise(r => setTimeout(r, 10));
 }
 
 /**
@@ -318,7 +319,7 @@ async function yieldToEventLoop(): Promise<void> {
  */
 let isMidnightOperationInProgress = false;
 let lastOperationEndTime = 0;
-const MIN_OPERATION_GAP_MS = 50; // Minimum gap between operations to let sync run
+const MIN_OPERATION_GAP_MS = 200; // Increased gap between operations to let sync run
 
 /**
  * Request queue to prevent concurrent Midnight queries that can cause mutex deadlocks

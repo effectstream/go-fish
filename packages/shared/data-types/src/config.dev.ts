@@ -39,9 +39,9 @@ export const config = new ConfigBuilder()
           type: ConfigSyncProtocolType.NTP_MAIN,
           chainUri: "",
           startBlockHeight: 1,
-          // Increased from 1000ms to reduce mutex contention
-          // The NTP sync doesn't need to be very fast for game state
-          pollingInterval: 2000,
+          // Increased to 5000ms to allow CPU-intensive Midnight WASM operations
+          // to complete without blocking sync processes
+          pollingInterval: 5000,
         })
       )
       .addParallel(
@@ -51,10 +51,10 @@ export const config = new ConfigBuilder()
           type: ConfigSyncProtocolType.EVM_RPC_PARALLEL,
           chainUri: network.rpcUrls.default.http[0],
           startBlockHeight: 1,
-          // Increased from 500ms to reduce mutex contention
-          // This gives more time for CPU-intensive operations to complete
-          // before the next sync cycle tries to acquire the mutex
-          pollingInterval: 2000,
+          // Increased to 5000ms to reduce mutex contention
+          // Midnight circuit operations are CPU-intensive and block the event loop
+          // This gives sync processes time to complete between operations
+          pollingInterval: 5000,
           confirmationDepth: 1,
         })
       )

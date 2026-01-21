@@ -38,9 +38,46 @@ function getDB(): Pool {
 const RANK_NAMES = ['Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King'];
 
 /**
- * Build dynamic game log based on current game state
+ * Persistent game log storage - maintains full log history per game
+ * Key: lobbyId, Value: { logs: string[], lastState: state snapshot }
  */
-function buildGameLog(
+interface GameLogState {
+  logs: string[];
+  lastPhase: string | null;
+  lastTurn: number | null;
+  lastAskedRank: number | null;
+  lastAskingPlayer: number | null;
+  playerNames: [string, string];
+}
+
+const gameLogStorage = new Map<string, GameLogState>();
+
+/**
+ * Get or initialize game log state
+ */
+function getGameLogState(lobbyId: string, players: Array<{ player_name: string }>): GameLogState {
+  let state = gameLogStorage.get(lobbyId);
+  if (!state) {
+    const player1Name = players[0]?.player_name || 'Player 1';
+    const player2Name = players[1]?.player_name || 'Player 2';
+    state = {
+      logs: ['Game started'],
+      lastPhase: null,
+      lastTurn: null,
+      lastAskedRank: null,
+      lastAskingPlayer: null,
+      playerNames: [player1Name, player2Name],
+    };
+    gameLogStorage.set(lobbyId, state);
+  }
+  return state;
+}
+
+/**
+ * Update game log based on state changes (appends new entries)
+ */
+function updateGameLog(
+  lobbyId: string,
   midnightState: {
     phase: string;
     currentTurn: number;
@@ -51,63 +88,96 @@ function buildGameLog(
   },
   players: Array<{ account_id: number; player_name: string }>
 ): string[] {
-  const log: string[] = ['Game started'];
-
-  // Get player names (default to "Player 1" / "Player 2" if not found)
-  const player1Name = players[0]?.player_name || 'Player 1';
-  const player2Name = players[1]?.player_name || 'Player 2';
+  const state = getGameLogState(lobbyId, players);
+  const [player1Name, player2Name] = state.playerNames;
   const getPlayerName = (id: number) => id === 1 ? player1Name : player2Name;
   const getOpponentName = (id: number) => id === 1 ? player2Name : player1Name;
 
-  // Add phase-specific log entries
-  if (midnightState.lastAskedRank !== null && midnightState.lastAskingPlayer !== null) {
-    const askerName = getPlayerName(midnightState.lastAskingPlayer);
-    const targetName = getOpponentName(midnightState.lastAskingPlayer);
-    const rankName = RANK_NAMES[midnightState.lastAskedRank] || `rank ${midnightState.lastAskedRank}`;
+  // Detect state changes and append appropriate log entries
+  const phaseChanged = state.lastPhase !== midnightState.phase;
+  const turnChanged = state.lastTurn !== midnightState.currentTurn;
+  const askChanged = state.lastAskedRank !== midnightState.lastAskedRank ||
+                     state.lastAskingPlayer !== midnightState.lastAskingPlayer;
 
-    switch (midnightState.phase) {
-      case 'wait_response':
-        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
-        log.push(`Waiting for ${targetName} to respond...`);
-        break;
-      case 'wait_transfer':
-        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
-        log.push(`${targetName} has ${rankName}s! Transferring cards...`);
-        break;
-      case 'wait_draw':
-        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
-        log.push(`${targetName} says "Go Fish!"`);
-        log.push(`${askerName} is drawing from the deck...`);
-        break;
-      case 'wait_draw_check':
-        log.push(`${askerName} asked ${targetName} for ${rankName}s`);
-        log.push(`${targetName} says "Go Fish!"`);
-        log.push(`${askerName} drew a card. Checking if it matches...`);
-        break;
-      case 'turn_start':
-        // If there's a last asked rank, show what happened last turn
-        if (midnightState.currentTurn !== midnightState.lastAskingPlayer) {
-          // Turn switched, so the last ask didn't get the card from draw
-          log.push(`${askerName} asked for ${rankName}s but didn't get any`);
-        }
-        log.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
-        break;
-      default:
-        log.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
+  // Handle phase transitions
+  if (phaseChanged || askChanged) {
+    const askerName = midnightState.lastAskingPlayer ? getPlayerName(midnightState.lastAskingPlayer) : null;
+    const targetName = midnightState.lastAskingPlayer ? getOpponentName(midnightState.lastAskingPlayer) : null;
+    const rankName = midnightState.lastAskedRank !== null
+      ? RANK_NAMES[midnightState.lastAskedRank] || `rank ${midnightState.lastAskedRank}`
+      : null;
+
+    // Log new ask action
+    if (askChanged && midnightState.lastAskedRank !== null && midnightState.phase === 'wait_response') {
+      state.logs.push(`${askerName} asked ${targetName} for ${rankName}s`);
     }
-  } else {
-    // No pending ask, just show whose turn it is
-    if (midnightState.phase === 'finished') {
+
+    // Log response/go fish events based on phase transitions
+    if (phaseChanged && state.lastPhase === 'wait_response') {
+      if (midnightState.phase === 'wait_transfer') {
+        state.logs.push(`${targetName} has ${rankName}s!`);
+      } else if (midnightState.phase === 'wait_draw') {
+        state.logs.push(`${targetName} says "Go Fish!"`);
+      }
+    }
+
+    // Log draw event
+    if (phaseChanged && state.lastPhase === 'wait_draw' && midnightState.phase === 'wait_draw_check') {
+      state.logs.push(`${askerName} drew a card from the deck`);
+    }
+
+    // Log transfer completion
+    if (phaseChanged && state.lastPhase === 'wait_transfer' && midnightState.phase === 'turn_start') {
+      const prevAskerName = state.lastAskingPlayer ? getPlayerName(state.lastAskingPlayer) : askerName;
+      const prevRankName = state.lastAskedRank !== null
+        ? RANK_NAMES[state.lastAskedRank] || `rank ${state.lastAskedRank}`
+        : rankName;
+      state.logs.push(`${prevAskerName} received ${prevRankName}s!`);
+    }
+
+    // Log turn change after go fish
+    if (phaseChanged && state.lastPhase === 'wait_draw_check' && midnightState.phase === 'turn_start') {
+      const prevAskerName = state.lastAskingPlayer ? getPlayerName(state.lastAskingPlayer) : null;
+      if (turnChanged && prevAskerName) {
+        state.logs.push(`${prevAskerName} didn't get the requested card`);
+      } else if (!turnChanged && prevAskerName) {
+        state.logs.push(`${prevAskerName} got the requested card! Another turn!`);
+      }
+    }
+
+    // Log turn changes
+    if (turnChanged && midnightState.phase === 'turn_start') {
+      state.logs.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
+    }
+
+    // Log game over
+    if (midnightState.isGameOver && state.lastPhase !== 'finished' && midnightState.phase === 'finished') {
       const winner = midnightState.scores[0] > midnightState.scores[1] ? player1Name :
                      midnightState.scores[1] > midnightState.scores[0] ? player2Name : 'Tie';
-      log.push(`Game Over! ${winner === 'Tie' ? "It's a tie!" : `${winner} wins!`}`);
-      log.push(`Final scores: ${player1Name}: ${midnightState.scores[0]}, ${player2Name}: ${midnightState.scores[1]}`);
-    } else if (midnightState.phase !== 'dealing') {
-      log.push(`${getPlayerName(midnightState.currentTurn)}'s turn`);
+      state.logs.push(`Game Over! ${winner === 'Tie' ? "It's a tie!" : `${winner} wins!`}`);
+      state.logs.push(`Final scores: ${player1Name}: ${midnightState.scores[0]}, ${player2Name}: ${midnightState.scores[1]}`);
     }
   }
 
-  return log;
+  // Update tracked state
+  state.lastPhase = midnightState.phase;
+  state.lastTurn = midnightState.currentTurn;
+  state.lastAskedRank = midnightState.lastAskedRank;
+  state.lastAskingPlayer = midnightState.lastAskingPlayer;
+
+  // Limit log size to prevent memory issues (keep last 50 entries)
+  if (state.logs.length > 50) {
+    state.logs = state.logs.slice(-50);
+  }
+
+  return [...state.logs]; // Return a copy
+}
+
+/**
+ * Clear game log (call when game ends or lobby is deleted)
+ */
+export function clearGameLog(lobbyId: string): void {
+  gameLogStorage.delete(lobbyId);
 }
 
 export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
@@ -358,8 +428,8 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       myHand: [], // TODO: Query player's semi-masked cards from contract
       myBooks: [], // TODO: Calculate from player's completed books
 
-      // Dynamic game log based on current state
-      gameLog: buildGameLog(midnightState, players),
+      // Dynamic game log - persisted across state changes
+      gameLog: updateGameLog(lobby_id, midnightState, players),
     };
   });
 

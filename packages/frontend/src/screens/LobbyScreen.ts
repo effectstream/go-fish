@@ -181,24 +181,62 @@ export class LobbyScreen {
 
     // Ready toggle
     document.getElementById('toggle-ready-btn')?.addEventListener('click', async () => {
-      const result = await EffectstreamBridge.toggleReady(this.lobbyId);
-      if (!result.success) {
-        console.error('Failed to toggle ready:', result.errorMessage);
-        alert('Failed to toggle ready status. Please try again.');
+      const btn = document.getElementById('toggle-ready-btn') as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Processing...';
       }
-      // State will update automatically via the refresh interval
+
+      try {
+        const result = await EffectstreamBridge.toggleReady(this.lobbyId);
+        if (!result.success) {
+          console.error('Failed to toggle ready:', result.errorMessage);
+          alert('Failed to toggle ready status. Please try again.');
+          // Re-enable button on error
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Ready Up!';
+          }
+        }
+        // State will update automatically via the refresh interval
+      } catch (error) {
+        console.error('Error toggling ready:', error);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Ready Up!';
+        }
+      }
     });
 
     // Start game
     document.getElementById('start-game-btn')?.addEventListener('click', async () => {
-      const result = await EffectstreamBridge.startGame(this.lobbyId);
-      if (result.success) {
-        // Game started - the lobby status will update to 'in_progress'
-        // and the screen will automatically navigate when it refreshes
-        console.log('Game started successfully');
-      } else {
-        console.error('Failed to start game:', result.errorMessage);
-        alert('Failed to start game. Please try again.');
+      const btn = document.getElementById('start-game-btn') as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Starting...';
+      }
+
+      try {
+        const result = await EffectstreamBridge.startGame(this.lobbyId);
+        if (result.success) {
+          // Game started - the lobby status will update to 'in_progress'
+          // and the screen will automatically navigate when it refreshes
+          console.log('Game started successfully');
+        } else {
+          console.error('Failed to start game:', result.errorMessage);
+          alert('Failed to start game. Please try again.');
+          // Re-enable button on error
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Start Game';
+          }
+        }
+      } catch (error) {
+        console.error('Error starting game:', error);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Start Game';
+        }
       }
     });
   }
