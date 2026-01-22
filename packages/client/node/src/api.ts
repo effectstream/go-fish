@@ -216,11 +216,23 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
    * Get open lobbies (for lobby list)
    */
   server.get("/open_lobbies", async (request, reply) => {
-    const { page = 0, count = 10 } = request.query as { page?: number; count?: number };
+    const { page = 0, count = 10, wallet } = request.query as { page?: number; count?: number; wallet?: string };
 
     const db = getDB();
     const offset = page * count;
 
+    // Get account ID from wallet if provided (to check membership)
+    let accountId: number | null = null;
+    if (wallet) {
+      const accountResult = await db.query(`
+        SELECT account_id FROM effectstream.addresses WHERE address = $1
+      `, [wallet]);
+      if (accountResult.rows.length > 0) {
+        accountId = accountResult.rows[0].account_id;
+      }
+    }
+
+    // Query lobbies with optional membership check
     const result = await db.query(`
       SELECT
         l.lobby_id,
@@ -230,7 +242,8 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
         l.created_at,
         l.host_account_id,
         (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count,
-        (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name
+        (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name,
+        ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'} as is_player_in_lobby
       FROM lobbies l
       WHERE l.status = 'open'
       ORDER BY l.created_at DESC

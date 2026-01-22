@@ -6,7 +6,9 @@ RETURNING *;
 /* @name JoinLobby */
 INSERT INTO lobby_players (lobby_id, account_id, player_name, is_ready)
 VALUES (:lobbyId, :accountId, :playerName, false)
-ON CONFLICT (lobby_id, account_id) DO NOTHING
+ON CONFLICT (lobby_id, account_id) DO UPDATE SET
+  player_name = EXCLUDED.player_name,
+  is_ready = false
 RETURNING *;
 
 /* @name LeaveLobby */

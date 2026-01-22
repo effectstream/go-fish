@@ -26,6 +26,7 @@ import {
 } from '../../../shared/data-types/src/go-fish-types';
 
 import * as EffectstreamBridge from '../effectstreamBridge';
+import { getWalletAddress } from '../effectstreamBridge';
 
 export class GoFishGameService {
   private static instance: GoFishGameService;
@@ -129,7 +130,10 @@ export class GoFishGameService {
 
   async fetchOpenLobbies(): Promise<Lobby[]> {
     try {
-      const response = await fetch('http://localhost:9999/open_lobbies?page=0&count=50');
+      // Include wallet address to check if player is already in each lobby
+      const wallet = getWalletAddress();
+      const walletParam = wallet ? `&wallet=${encodeURIComponent(wallet)}` : '';
+      const response = await fetch(`http://localhost:9999/open_lobbies?page=0&count=50${walletParam}`);
       if (!response.ok) {
         console.error('Failed to fetch open lobbies');
         return [];
@@ -146,6 +150,7 @@ export class GoFishGameService {
         maxPlayers: apiLobby.max_players,
         status: apiLobby.status === 'open' ? 'waiting' as const : 'in_progress' as const,
         createdAt: new Date(apiLobby.created_at).getTime(),
+        isPlayerInLobby: apiLobby.is_player_in_lobby === true,
       }));
 
       // Update local cache (always update to get latest player counts)

@@ -156,9 +156,9 @@ export class LobbyListScreen {
         <button
           class="btn btn-primary join-btn"
           data-lobby-id="${lobby.id}"
-          ${lobby.playerCount >= lobby.maxPlayers ? 'disabled' : ''}
+          ${lobby.playerCount >= lobby.maxPlayers && !lobby.isPlayerInLobby ? 'disabled' : ''}
         >
-          ${lobby.playerCount >= lobby.maxPlayers ? 'Full' : 'Join'}
+          ${lobby.isPlayerInLobby ? 'Rejoin' : (lobby.playerCount >= lobby.maxPlayers ? 'Full' : 'Join')}
         </button>
       </div>
     `;

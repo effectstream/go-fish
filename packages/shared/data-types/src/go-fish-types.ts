@@ -82,6 +82,7 @@ export interface Lobby {
   maxPlayers: number;
   status: 'waiting' | 'in_progress' | 'finished';
   createdAt: number;
+  isPlayerInLobby?: boolean; // True if current user is already in this lobby
 }
 
 export interface ChatMessage {
