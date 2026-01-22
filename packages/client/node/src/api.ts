@@ -47,6 +47,7 @@ interface GameLogState {
   lastTurn: number | null;
   lastAskedRank: number | null;
   lastAskingPlayer: number | null;
+  lastScores: [number, number];
   playerNames: [string, string];
 }
 
@@ -66,6 +67,7 @@ function getGameLogState(lobbyId: string, players: Array<{ player_name: string }
       lastTurn: null,
       lastAskedRank: null,
       lastAskingPlayer: null,
+      lastScores: [0, 0],
       playerNames: [player1Name, player2Name],
     };
     gameLogStorage.set(lobbyId, state);
@@ -159,11 +161,25 @@ function updateGameLog(
     }
   }
 
+  // Log book completions (score changes)
+  if (state.lastScores) {
+    const player1ScoreDiff = midnightState.scores[0] - state.lastScores[0];
+    const player2ScoreDiff = midnightState.scores[1] - state.lastScores[1];
+
+    if (player1ScoreDiff > 0) {
+      state.logs.push(`📚 ${player1Name} completed a book! (${midnightState.scores[0]} total)`);
+    }
+    if (player2ScoreDiff > 0) {
+      state.logs.push(`📚 ${player2Name} completed a book! (${midnightState.scores[1]} total)`);
+    }
+  }
+
   // Update tracked state
   state.lastPhase = midnightState.phase;
   state.lastTurn = midnightState.currentTurn;
   state.lastAskedRank = midnightState.lastAskedRank;
   state.lastAskingPlayer = midnightState.lastAskingPlayer;
+  state.lastScores = [...midnightState.scores] as [number, number];
 
   // Limit log size to prevent memory issues (keep last 50 entries)
   if (state.logs.length > 50) {

@@ -567,68 +567,80 @@ body {
 
 /* Game Setup Screen - Loading state during initialization */
 .game-setup-screen {
-  max-width: 700px;
-  margin: 40px auto;
-  background: rgba(26, 32, 44, 0.95);
-  border-radius: 16px;
-  padding: 40px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  max-width: 800px;
+  margin: 20px auto;
+  background: rgba(26, 32, 44, 0.98);
+  border-radius: 20px;
+  padding: 60px 50px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
   text-align: center;
   color: #f7fafc;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .game-setup-screen h1 {
-  margin: 0 0 8px 0;
-  font-size: 2.2em;
+  margin: 0 0 12px 0;
+  font-size: 3em;
   color: #f7fafc;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .game-setup-screen h2 {
-  margin: 0 0 24px 0;
-  font-size: 1.5em;
+  margin: 0 0 32px 0;
+  font-size: 1.8em;
   color: #e2e8f0;
   font-weight: 500;
 }
 
 .game-setup-screen .setup-description {
   color: #a0aec0;
-  line-height: 1.6;
-  margin-bottom: 32px;
-  font-size: 1rem;
+  line-height: 1.8;
+  margin-bottom: 40px;
+  font-size: 1.1rem;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .game-setup-screen .setup-spinner-section {
-  margin: 32px 0;
+  margin: 40px 0;
+  padding: 30px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 16px;
 }
 
 .game-setup-screen .spinner {
-  margin: 0 auto 16px;
-  width: 50px;
-  height: 50px;
-  border: 4px solid rgba(255, 255, 255, 0.1);
+  margin: 0 auto 20px;
+  width: 70px;
+  height: 70px;
+  border: 5px solid rgba(255, 255, 255, 0.1);
   border-top-color: #667eea;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
 
 .game-setup-screen .setup-status {
-  font-size: 1.1rem;
-  font-weight: 500;
+  font-size: 1.3rem;
+  font-weight: 600;
   color: #e2e8f0;
   margin: 0;
 }
 
 .game-setup-screen .setup-info {
-  margin-top: 32px;
-  padding: 16px;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
+  margin-top: 40px;
+  padding: 20px;
+  background: rgba(102, 126, 234, 0.15);
+  border-radius: 12px;
+  border: 1px solid rgba(102, 126, 234, 0.3);
 }
 
 .game-setup-screen .setup-info p {
   margin: 0;
-  font-size: 0.9rem;
-  color: #718096;
+  font-size: 1rem;
+  color: #a0aec0;
 }
 
 /* Game Screen - 2 column layout: left (hand/books), right (stats/opponent/log) */
@@ -1277,6 +1289,50 @@ body {
 .log-entry.system {
   background: #e3f2fd;
   color: #1976d2;
+}
+
+/* Game Log Table */
+.game-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.game-log-table .log-row {
+  border-bottom: 1px solid #eee;
+}
+
+.game-log-table .log-row:last-child {
+  border-bottom: none;
+}
+
+.game-log-table .log-row.newest {
+  animation: highlightNew 1.5s ease-out;
+}
+
+@keyframes highlightNew {
+  0% {
+    background: rgba(102, 126, 234, 0.3);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.game-log-table .log-number {
+  width: 32px;
+  padding: 8px;
+  text-align: center;
+  font-weight: 600;
+  color: #999;
+  font-size: 0.85em;
+  vertical-align: top;
+}
+
+.game-log-table .log-message {
+  padding: 8px 12px;
+  color: #333;
+  line-height: 1.4;
 }
 
 /* Game Action Modal */

@@ -144,7 +144,6 @@ export class GameScreen {
     const isMyTurn = this.gameState.currentTurn === this.gameState.playerId;
     const currentTurnPlayer = this.gameState.players[this.gameState.currentTurn - 1];
     const myHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
-    const myBooks = this.gameState.myBooks;
     const myScore = this.gameState.scores[this.gameState.playerId - 1];
 
     // Decrypt player's hand via backend API
@@ -171,10 +170,10 @@ export class GameScreen {
 
     // Check if we need a full render or can do selective updates
     if (!this.hasRenderedOnce || this.needsFullRender()) {
-      this.fullRender(isMyTurn, currentTurnPlayer, myHandSize, myBooks, myScore);
+      this.fullRender(isMyTurn, currentTurnPlayer, myHandSize, myScore);
       this.hasRenderedOnce = true;
     } else {
-      this.selectiveUpdate(isMyTurn, currentTurnPlayer, myHandSize, myBooks, myScore);
+      this.selectiveUpdate(isMyTurn, currentTurnPlayer, myHandSize, myScore);
     }
   }
 
@@ -185,18 +184,38 @@ export class GameScreen {
     if (!this.previousGameState || !this.gameState) return true;
 
     // Full render needed if phase changed
-    if (this.previousGameState.phase !== this.gameState.phase) return true;
+    if (this.previousGameState.phase !== this.gameState.phase) {
+      console.log(`[GameScreen] Full render: phase changed ${this.previousGameState.phase} -> ${this.gameState.phase}`);
+      return true;
+    }
 
     // Full render needed if turn changed (cards clickable state depends on whose turn it is)
-    if (this.previousGameState.currentTurn !== this.gameState.currentTurn) return true;
+    if (this.previousGameState.currentTurn !== this.gameState.currentTurn) {
+      console.log(`[GameScreen] Full render: turn changed ${this.previousGameState.currentTurn} -> ${this.gameState.currentTurn}`);
+      return true;
+    }
 
     // Full render needed if hand size changed (cards added/removed)
     const prevHandSize = this.previousGameState.handSizes[this.previousGameState.playerId - 1];
     const currHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
-    if (prevHandSize !== currHandSize) return true;
+    if (prevHandSize !== currHandSize) {
+      console.log(`[GameScreen] Full render: hand size changed ${prevHandSize} -> ${currHandSize}`);
+      return true;
+    }
 
     // Full render needed if hand contents changed
-    if (this.handChanged()) return true;
+    if (this.handChanged()) {
+      console.log('[GameScreen] Full render: hand contents changed');
+      return true;
+    }
+
+    // Full render needed if scores changed (might indicate book completion that needs UI update)
+    const prevMyScore = this.previousGameState.scores[this.previousGameState.playerId - 1];
+    const currMyScore = this.gameState.scores[this.gameState.playerId - 1];
+    if (prevMyScore !== currMyScore) {
+      console.log(`[GameScreen] Full render: score changed ${prevMyScore} -> ${currMyScore}`);
+      return true;
+    }
 
     return false;
   }
@@ -223,7 +242,6 @@ export class GameScreen {
     isMyTurn: boolean,
     currentTurnPlayer: any,
     myHandSize: number,
-    myBooks: string[],
     myScore: number
   ) {
     this.container.innerHTML = `
@@ -241,8 +259,8 @@ export class GameScreen {
                 }
               </div>
               <div class="player-books-section">
-                <h4 id="books-header">Your Books (${myBooks.length})</h4>
-                <div id="books-container">${this.renderBooks(myBooks)}</div>
+                <h4 id="books-header">Your Books (${myScore})</h4>
+                <div id="books-container">${myScore > 0 ? `<span class="books-count-display">📚 ${myScore} book${myScore !== 1 ? 's' : ''} completed</span>` : '<div class="no-books">None yet</div>'}</div>
               </div>
             </div>
 
@@ -329,7 +347,6 @@ export class GameScreen {
     isMyTurn: boolean,
     currentTurnPlayer: any,
     myHandSize: number,
-    myBooks: string[],
     myScore: number
   ) {
     // Update turn indicator
@@ -345,8 +362,16 @@ export class GameScreen {
     this.updateTextContent('deck-count', `${this.gameState!.deckCount} cards`);
     this.updateTextContent('my-score', `${myScore}`);
     this.updateTextContent('opponent-score', `${this.gameState!.scores[this.gameState!.playerId === 1 ? 1 : 0]}`);
-    this.updateTextContent('books-header', `Your Books (${myBooks.length})`);
+    this.updateTextContent('books-header', `Your Books (${myScore})`);
     this.updateTextContent('hand-header', `Your Hand (${myHandSize} cards)`);
+
+    // Update books container
+    const booksContainer = document.getElementById('books-container');
+    if (booksContainer) {
+      booksContainer.innerHTML = myScore > 0
+        ? `<span class="books-count-display">📚 ${myScore} book${myScore !== 1 ? 's' : ''} completed</span>`
+        : '<div class="no-books">None yet</div>';
+    }
 
     // Update inline action panel (respond, go fish, waiting, etc.)
     const inlineActionPanel = document.getElementById('inline-action-panel');
@@ -434,18 +459,6 @@ export class GameScreen {
           }
           ${player.cardCount > 10 ? `<span class="card-overflow">+${player.cardCount - 10}</span>` : ''}
         </div>
-      </div>
-    `;
-  }
-
-  private renderBooks(books: Rank[] | string[]): string {
-    if (books.length === 0) {
-      return '<div class="no-books">None yet</div>';
-    }
-
-    return `
-      <div class="books-container">
-        ${books.map(rank => CardComponent.renderBook(rank as Rank)).join('')}
       </div>
     `;
   }
@@ -1048,22 +1061,43 @@ export class GameScreen {
       return '<div class="empty-log">No moves yet</div>';
     }
 
-    return this.gameState.gameLog
-      .slice(-10)
-      .map(msg => `
-        <div class="log-entry">
-          ${msg}
-        </div>
-      `)
-      .join('');
+    const totalEntries = this.gameState.gameLog.length;
+
+    // Take last 10 entries, reverse to show newest first, and add numbering
+    return `
+      <table class="game-log-table">
+        <tbody>
+          ${this.gameState.gameLog
+            .slice(-10)
+            .reverse()
+            .map((msg, reverseIndex) => {
+              // Calculate the actual entry number (1-indexed from start of game)
+              const entryNumber = totalEntries - reverseIndex;
+              // Mark the newest entry (first in reversed list) for animation
+              const isNewest = reverseIndex === 0;
+              return `
+                <tr class="log-row ${isNewest ? 'newest' : ''}">
+                  <td class="log-number">${entryNumber}</td>
+                  <td class="log-message">${msg}</td>
+                </tr>
+              `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    `;
   }
 
   private attachEventListeners() {
     // Card selection - click on cards in your hand to select the rank and open modal
-    document.querySelectorAll('.card-wrapper.clickable').forEach(wrapper => {
+    const clickableCards = document.querySelectorAll('.card-wrapper.clickable');
+    console.log(`[GameScreen] Attaching click listeners to ${clickableCards.length} clickable cards`);
+
+    clickableCards.forEach(wrapper => {
       wrapper.addEventListener('click', (e) => {
         const target = e.currentTarget as HTMLElement;
         const rank = target.dataset.rank as Rank;
+        console.log(`[GameScreen] Card clicked: rank=${rank}, showActionModal will be set to true`);
         if (rank) {
           this.selectedRank = rank;
           this.selectedTargetId = null; // Reset target when selecting new card
