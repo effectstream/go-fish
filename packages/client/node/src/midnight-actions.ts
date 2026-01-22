@@ -529,12 +529,53 @@ export async function respondToAsk(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] respondToAsk(gameId: ${lobbyId}, playerId: ${playerId})`);
 
-    const result = actionContract.impureCircuits.respondToAsk(
-      actionContext,
-      gameId,
-      BigInt(playerId)
-    );
-    actionContext = result.context;
+    // First verify game phase is correct
+    try {
+      const phaseCheck = actionContract.impureCircuits.getGamePhase(actionContext, gameId);
+      actionContext = phaseCheck.context;
+      console.log(`[MidnightActions] respondToAsk - current phase: ${phaseCheck.result}`);
+
+      // Phase 2 = WaitForResponse (compare as Number since BigInt comparison can be tricky)
+      if (Number(phaseCheck.result) !== 2) {
+        return {
+          success: false,
+          hasCards: false,
+          cardCount: 0,
+          errorMessage: `Wrong phase for respondToAsk. Expected WaitForResponse (2), got ${phaseCheck.result}`
+        };
+      }
+    } catch (phaseError: any) {
+      console.error('[MidnightActions] Failed to check phase before respondToAsk:', phaseError);
+      return {
+        success: false,
+        hasCards: false,
+        cardCount: 0,
+        errorMessage: `Failed to verify game phase: ${phaseError.message}`
+      };
+    }
+
+    let result;
+    try {
+      result = actionContract.impureCircuits.respondToAsk(
+        actionContext,
+        gameId,
+        BigInt(playerId)
+      );
+      actionContext = result.context;
+    } catch (respondError: any) {
+      console.error('[MidnightActions] respondToAsk circuit failed:', respondError);
+      // Try to provide more context about the error
+      let errorDetails = respondError.message;
+      if (errorDetails.includes('expected a cell, received null')) {
+        errorDetails = 'State lookup failed - a required mapping (card ownership, player secret, or semi-masked mapping) is missing. This may indicate state corruption or a card that was never properly registered.';
+      }
+      return {
+        success: false,
+        hasCards: false,
+        cardCount: 0,
+        errorMessage: `Circuit error: ${errorDetails}`
+      };
+    }
 
     // respondToAsk returns [Boolean, Uint<8>] - whether cards transferred and count
     const [hasCards, cardCount] = result.result;
@@ -594,6 +635,45 @@ export async function afterGoFish(
 
     console.log('[MidnightActions] afterGoFish succeeded');
     return { success: true };
+  });
+}
+
+/**
+ * Skip draw when deck is empty - ends turn without drawing
+ * Called when a player needs to "Go Fish" but the deck has no cards
+ */
+export async function skipDrawDeckEmpty(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<{ success: boolean; errorMessage?: string }> {
+  return enqueueAction(async () => {
+    if (!actionContract || !actionContext) {
+      return { success: false, errorMessage: 'Contract not initialized' };
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    console.log(`[MidnightActions] skipDrawDeckEmpty(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    try {
+      const result = actionContract.impureCircuits.skipDrawDeckEmpty(
+        actionContext,
+        gameId,
+        BigInt(playerId)
+      );
+      actionContext = result.context;
+
+      // Sync query context so queries see the updated state
+      syncQueryContextFromAction(actionContext);
+
+      // Invalidate hand cache since turn changed
+      invalidateHandCache(lobbyId);
+
+      console.log('[MidnightActions] skipDrawDeckEmpty succeeded - turn ended without drawing');
+      return { success: true };
+    } catch (error: any) {
+      console.error('[MidnightActions] skipDrawDeckEmpty failed:', error);
+      return { success: false, errorMessage: error.message || String(error) };
+    }
   });
 }
 

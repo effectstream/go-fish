@@ -202,13 +202,95 @@ body {
   gap: 16px;
 }
 
-#create-lobby-modal {
-  margin-top: 20px;
+/* Create Lobby Modal */
+.create-lobby-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease;
 }
 
-#create-lobby-modal h2 {
-  margin-top: 0;
+.create-lobby-modal {
+  background: white;
+  border-radius: 16px;
+  padding: 30px;
+  max-width: 450px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: slideUp 0.3s ease;
+}
+
+.create-lobby-modal .modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.create-lobby-modal .modal-header h2 {
+  margin: 0;
   color: #333;
+  font-size: 1.5em;
+}
+
+.create-lobby-modal .modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  cursor: pointer;
+  color: #999;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.create-lobby-modal .modal-close-btn:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.create-lobby-modal .form-group {
+  margin-bottom: 20px;
+}
+
+.create-lobby-modal .form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: #555;
+}
+
+.create-lobby-modal .form-group input,
+.create-lobby-modal .form-group select {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font-size: 16px;
+  transition: border-color 0.3s;
+}
+
+.create-lobby-modal .form-group input:focus,
+.create-lobby-modal .form-group select:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.create-lobby-modal .modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.create-lobby-modal .modal-actions .btn {
+  flex: 1;
 }
 
 .screen-header {
@@ -1423,6 +1505,134 @@ body {
 .game-action-modal .selected-card-display .label {
   font-size: 0.9em;
   opacity: 0.9;
+}
+
+/* Notification Modal */
+.notification-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  animation: fadeIn 0.2s ease;
+}
+
+.notification-modal {
+  background: white;
+  border-radius: 20px;
+  padding: 40px;
+  max-width: 400px;
+  width: 90%;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: bounceIn 0.4s ease;
+}
+
+@keyframes bounceIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(20px);
+  }
+  50% {
+    transform: scale(1.02) translateY(-5px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.notification-modal .notification-icon {
+  font-size: 4em;
+  margin-bottom: 16px;
+}
+
+.notification-modal h3 {
+  margin: 0 0 20px 0;
+  color: #333;
+  font-size: 1.6em;
+}
+
+.notification-modal .notification-card-display {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0;
+}
+
+.notification-modal .notification-card-display .card-wrapper {
+  width: 80px;
+  display: inline-block;
+}
+
+.notification-modal .notification-card-display .card-wrapper .card {
+  width: 100%;
+  height: auto;
+}
+
+.notification-modal .notification-cards-display {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 20px 0;
+  flex-wrap: wrap;
+}
+
+.notification-modal .notification-cards-display .card-wrapper {
+  width: 60px;
+  display: inline-block;
+}
+
+.notification-modal .notification-cards-display .card-wrapper .card {
+  width: 100%;
+  height: auto;
+}
+
+.notification-modal .notification-cards-display.lost .card-wrapper {
+  opacity: 0.7;
+}
+
+.notification-modal .notification-book-display {
+  background: linear-gradient(135deg, #FFD700 0%, #FFA000 100%);
+  border-radius: 16px;
+  padding: 24px;
+  margin: 20px auto;
+  width: fit-content;
+  min-width: 120px;
+}
+
+.notification-modal .notification-book-display .book-icon {
+  font-size: 3em;
+  margin-bottom: 8px;
+}
+
+.notification-modal .notification-book-display .book-rank {
+  font-size: 2.5em;
+  font-weight: bold;
+  color: #333;
+}
+
+.notification-modal .notification-text {
+  color: #555;
+  font-size: 1.1em;
+  margin: 16px 0 24px 0;
+  line-height: 1.5;
+}
+
+.notification-modal .btn {
+  min-width: 140px;
+  position: relative;
+  z-index: 10;
+  cursor: pointer;
+}
+
+/* Ensure card wrappers in notification don't block clicks */
+.notification-modal .card-wrapper {
+  pointer-events: none;
 }
 
 /* Action Panel for Go Fish */

@@ -19,6 +19,7 @@ import {
   dealCards as midnightDealCards,
   respondToAsk as midnightRespondToAsk,
   afterGoFish as midnightAfterGoFish,
+  skipDrawDeckEmpty as midnightSkipDrawDeckEmpty,
 } from "./midnight-actions.ts";
 
 // Global database connection pool
@@ -589,6 +590,26 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     }
 
     const result = await midnightAfterGoFish(lobby_id, playerId, drew_requested_card);
+    return result;
+  });
+
+  // Skip draw when deck is empty - ends turn without drawing
+  server.post("/api/midnight/skip_draw_deck_empty", async (request, reply) => {
+    const { lobby_id, player_id } = request.body as {
+      lobby_id: string;
+      player_id: number;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const result = await midnightSkipDrawDeckEmpty(lobby_id, playerId);
     return result;
   });
 

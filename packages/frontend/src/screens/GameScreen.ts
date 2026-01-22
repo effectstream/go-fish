@@ -46,6 +46,18 @@ export class GameScreen {
   private showActionModal: boolean = false; // Track if action modal is visible
   private static readonly MAX_ERRORS = 3; // Navigate away after this many consecutive errors
 
+  // Notification modal state
+  private notificationModal: {
+    type: 'draw' | 'gained' | 'lost' | 'book';
+    card?: { rank: string; suit: string };
+    cards?: Array<{ rank: string; suit: string }>;
+    playerName?: string;
+    bookRank?: string;
+  } | null = null;
+
+  // Track previous scores for book completion detection
+  private previousScores: [number, number] | null = null;
+
   constructor(container: HTMLElement, lobbyId: string) {
     this.container = container;
     this.lobbyId = lobbyId;
@@ -168,6 +180,78 @@ export class GameScreen {
       this.myDecryptedHand = [];
     }
 
+    // Detect book completion (score increased) - only if not showing another notification
+    if (this.previousScores && !this.notificationModal) {
+      const prevMyScore = this.previousScores[this.gameState.playerId - 1];
+      if (myScore > prevMyScore) {
+        // Player completed a book! Try to determine which rank
+        // Look for ranks that disappeared from hand
+        const prevRanks = new Set(this.previousHand.map(c => c.rank));
+        const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+
+        // Find rank that was in previous hand but not in current (with 4 cards)
+        let bookRank: string | undefined;
+        for (const rank of prevRanks) {
+          const prevCount = this.previousHand.filter(c => c.rank === rank).length;
+          const currCount = this.myDecryptedHand.filter(c => c.rank === rank).length;
+          if (prevCount >= 4 && currCount === 0) {
+            bookRank = rankNames[rank];
+            break;
+          }
+        }
+
+        if (bookRank) {
+          this.showNotification({
+            type: 'book',
+            bookRank
+          });
+        }
+      }
+    }
+
+    // Update previous scores for next comparison
+    this.previousScores = [...this.gameState.scores] as [number, number];
+
+    // Detect gained cards (hand size increased without drawing) - only if not showing another notification
+    // This happens when the opponent responds and transfers cards to us
+    if (this.previousGameState && !this.notificationModal) {
+      const prevHandSize = this.previousGameState.handSizes[this.previousGameState.playerId - 1];
+      const wasMyTurn = this.previousGameState.currentTurn === this.previousGameState.playerId;
+      const prevPhase = this.previousGameState.phase;
+
+      // If we were asking (our turn, wait_response phase) and now have more cards, we gained them
+      if (wasMyTurn && prevPhase === 'wait_response' && myHandSize > prevHandSize) {
+        // Find the new cards
+        const gainedCards: Array<{ rank: number; suit: number }> = [];
+        for (const card of this.myDecryptedHand) {
+          const existedBefore = this.previousHand.some(
+            prev => prev.rank === card.rank && prev.suit === card.suit
+          );
+          if (!existedBefore) {
+            gainedCards.push(card);
+          }
+        }
+
+        if (gainedCards.length > 0) {
+          // Find opponent's name (the one who gave cards)
+          const opponentIndex = this.gameState.playerId === 1 ? 1 : 0;
+          const opponentName = this.gameState.players[opponentIndex]?.name || 'Opponent';
+
+          const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+          const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+
+          this.showNotification({
+            type: 'gained',
+            cards: gainedCards.map(c => ({
+              rank: rankNames[c.rank],
+              suit: suitNames[c.suit]
+            })),
+            playerName: opponentName
+          });
+        }
+      }
+    }
+
     // Check if we need a full render or can do selective updates
     if (!this.hasRenderedOnce || this.needsFullRender()) {
       this.fullRender(isMyTurn, currentTurnPlayer, myHandSize, myScore);
@@ -255,7 +339,7 @@ export class GameScreen {
               <div id="turn-indicator" class="turn-indicator ${isMyTurn ? 'your-turn' : ''}">
                 ${isMyTurn
                   ? '<strong>🎯 Your Turn!</strong> Click a card to ask for it.'
-                  : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`
+                  : `⏳ ${currentTurnPlayer?.name || 'Opponent'}'s turn`
                 }
               </div>
               <div class="player-books-section">
@@ -335,6 +419,11 @@ export class GameScreen {
       <div id="action-modal-container">
         ${this.showActionModal ? this.renderActionModal() : ''}
       </div>
+
+      <!-- Notification Modal (shown for card draw, gain/lose, book) -->
+      <div id="notification-modal-container">
+        ${this.renderNotificationModal()}
+      </div>
     `;
 
     this.attachEventListeners();
@@ -355,7 +444,7 @@ export class GameScreen {
       turnIndicator.className = `turn-indicator ${isMyTurn ? 'your-turn' : ''}`;
       turnIndicator.innerHTML = isMyTurn
         ? '<strong>🎯 Your Turn!</strong> Click a card to ask for it.'
-        : `⏳ Waiting for ${currentTurnPlayer?.name || 'opponent'}...`;
+        : `⏳ ${currentTurnPlayer?.name || 'Opponent'}'s turn`;
     }
 
     // Update stats
@@ -906,6 +995,22 @@ export class GameScreen {
   }
 
   private renderGoFishPanel(): string {
+    // Check if deck is empty
+    const deckEmpty = this.gameState && this.gameState.deckCount === 0;
+
+    if (deckEmpty) {
+      return `
+        <div class="ask-action-panel">
+          <h3>🃏 Deck is Empty!</h3>
+          <p class="info-text">Your opponent doesn't have the cards you asked for, but the deck is empty.</p>
+          <p class="info-text">Your turn ends without drawing.</p>
+          <button id="skip-draw-btn" class="btn btn-primary ask-button">
+            End Turn
+          </button>
+        </div>
+      `;
+    }
+
     return `
       <div class="ask-action-panel">
         <h3>🎣 Go Fish!</h3>
@@ -955,6 +1060,146 @@ export class GameScreen {
         </div>
       `)
       .join('');
+  }
+
+  /**
+   * Render notification modal for game events (draw, gain/lose cards, book)
+   */
+  private renderNotificationModal(): string {
+    if (!this.notificationModal) return '';
+
+    const { type, card, cards, playerName, bookRank } = this.notificationModal;
+
+    let title = '';
+    let content = '';
+    let icon = '';
+
+    switch (type) {
+      case 'draw':
+        icon = '🎣';
+        title = 'You Drew a Card!';
+        if (card) {
+          content = `
+            <div class="notification-card-display">
+              <div class="card-wrapper">
+                ${CardComponent.render({ rank: card.rank as Rank, suit: card.suit as Suit }, true)}
+              </div>
+            </div>
+            <p class="notification-text">You drew a <strong>${card.rank}</strong>!</p>
+          `;
+        }
+        break;
+
+      case 'gained':
+        icon = '🎉';
+        title = 'Cards Gained!';
+        if (cards && cards.length > 0 && playerName) {
+          const rankDisplay = cards[0].rank;
+          content = `
+            <div class="notification-cards-display">
+              ${cards.map(c => `<div class="card-wrapper">${CardComponent.render({ rank: c.rank as Rank, suit: c.suit as Suit }, true)}</div>`).join('')}
+            </div>
+            <p class="notification-text">You got <strong>${cards.length} ${rankDisplay}${cards.length > 1 ? 's' : ''}</strong> from <strong>${playerName}</strong>!</p>
+          `;
+        }
+        break;
+
+      case 'lost':
+        icon = '😢';
+        title = 'Cards Lost';
+        if (cards && cards.length > 0 && playerName) {
+          const rankDisplay = cards[0].rank;
+          content = `
+            <div class="notification-cards-display lost">
+              ${cards.map(c => `<div class="card-wrapper">${CardComponent.render({ rank: c.rank as Rank, suit: c.suit as Suit }, true)}</div>`).join('')}
+            </div>
+            <p class="notification-text"><strong>${playerName}</strong> took <strong>${cards.length} ${rankDisplay}${cards.length > 1 ? 's' : ''}</strong> from you!</p>
+          `;
+        }
+        break;
+
+      case 'book':
+        icon = '📚';
+        title = 'Book Completed!';
+        if (bookRank) {
+          content = `
+            <div class="notification-book-display">
+              <div class="book-icon">📚</div>
+              <div class="book-rank">${bookRank}</div>
+            </div>
+            <p class="notification-text">You completed a book of <strong>${bookRank}s</strong>!</p>
+          `;
+        }
+        break;
+    }
+
+    return `
+      <div class="notification-modal-overlay" id="notification-modal-overlay">
+        <div class="notification-modal">
+          <div class="notification-icon">${icon}</div>
+          <h3>${title}</h3>
+          ${content}
+          <button id="notification-dismiss-btn" class="btn btn-primary">
+            Got it!
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Show a notification modal
+   */
+  private showNotification(notification: typeof this.notificationModal): void {
+    this.notificationModal = notification;
+    this.updateNotificationContainer();
+    this.attachNotificationListeners();
+  }
+
+  /**
+   * Dismiss the notification modal
+   */
+  private dismissNotification(): void {
+    this.notificationModal = null;
+    this.updateNotificationContainer();
+  }
+
+  /**
+   * Update just the notification modal container
+   */
+  private updateNotificationContainer(): void {
+    const container = document.getElementById('notification-modal-container');
+    if (container) {
+      container.innerHTML = this.renderNotificationModal();
+      if (this.notificationModal) {
+        this.attachNotificationListeners();
+      }
+    }
+  }
+
+  /**
+   * Attach event listeners for notification modal using event delegation
+   */
+  private attachNotificationListeners(): void {
+    const container = document.getElementById('notification-modal-container');
+    if (!container) return;
+
+    // Use event delegation on the container to avoid issues with cloned elements
+    container.onclick = (e) => {
+      const target = e.target as HTMLElement;
+
+      // Check if dismiss button was clicked
+      if (target.id === 'notification-dismiss-btn' || target.closest('#notification-dismiss-btn')) {
+        e.stopPropagation();
+        this.dismissNotification();
+        return;
+      }
+
+      // Check if overlay was clicked (but not the modal content)
+      if (target.id === 'notification-modal-overlay') {
+        this.dismissNotification();
+      }
+    };
   }
 
   // New API-based render methods
@@ -1174,27 +1419,45 @@ export class GameScreen {
           // Step 4: Find the new card by comparing hands
           // Cards are {rank, suit} objects - find the card in handAfter not in handBefore
           let drewRequestedCard = false;
+          let drawnCard: { rank: number; suit: number } | null = null;
 
-          if (this.selectedRank !== null) {
-            // Convert selectedRank to number (ranks are 0-12 for A-K)
-            const askedRankNum = this.selectedRank;
+          // Find any new card by looking for cards in handAfter not in handBefore
+          for (const cardAfter of handAfter) {
+            const existsInBefore = handBefore.some(
+              (cardBefore: {rank: number; suit: number}) =>
+                cardBefore.rank === cardAfter.rank && cardBefore.suit === cardAfter.suit
+            );
+            if (!existsInBefore) {
+              drawnCard = cardAfter;
+              console.log(`[GameScreen] Drew card: rank=${cardAfter.rank}, suit=${cardAfter.suit}`);
 
-            // Find any new card by looking for cards in handAfter not in handBefore
-            for (const cardAfter of handAfter) {
-              const existsInBefore = handBefore.some(
-                (cardBefore: {rank: number; suit: number}) =>
-                  cardBefore.rank === cardAfter.rank && cardBefore.suit === cardAfter.suit
-              );
-              if (!existsInBefore) {
-                // This is the new card - check if it matches the asked rank
-                console.log(`[GameScreen] Drew card: rank=${cardAfter.rank}, suit=${cardAfter.suit}, asked for rank=${askedRankNum}`);
+              // Check if it matches the asked rank
+              if (this.selectedRank !== null) {
+                const rankMap: Record<string, number> = {
+                  'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
+                  '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
+                };
+                const askedRankNum = rankMap[this.selectedRank] ?? -1;
                 if (cardAfter.rank === askedRankNum) {
                   drewRequestedCard = true;
                   console.log('[GameScreen] Drew the requested card! Player gets another turn.');
                 }
-                break;
               }
+              break;
             }
+          }
+
+          // Show notification for the drawn card
+          if (drawnCard) {
+            const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+            const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+            this.showNotification({
+              type: 'draw',
+              card: {
+                rank: rankNames[drawnCard.rank],
+                suit: suitNames[drawnCard.suit]
+              }
+            });
           }
 
           // Step 5: Call afterGoFish to complete the turn
@@ -1242,6 +1505,13 @@ export class GameScreen {
 
       if (this.gameState) {
         try {
+          // Get hand before responding to compare later
+          const handBeforeResponse = await fetch(
+            `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+          );
+          const handBeforeData = await handBeforeResponse.json();
+          const handBefore: Array<{ rank: number; suit: number }> = handBeforeData.hand || [];
+
           const response = await fetch('http://localhost:9999/api/midnight/respond_to_ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1255,6 +1525,45 @@ export class GameScreen {
 
           if (result.success) {
             console.log('[GameScreen] Respond to ask succeeded:', result);
+
+            // If cards were transferred (we lost cards), show notification
+            if (result.hasCards && result.cardCount > 0) {
+              // Get hand after to find what cards were lost
+              const handAfterResponse = await fetch(
+                `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+              );
+              const handAfterData = await handAfterResponse.json();
+              const handAfter: Array<{ rank: number; suit: number }> = handAfterData.hand || [];
+
+              // Find cards that were in handBefore but not in handAfter
+              const lostCards: Array<{ rank: number; suit: number }> = [];
+              for (const cardBefore of handBefore) {
+                const stillExists = handAfter.some(
+                  cardAfter => cardAfter.rank === cardBefore.rank && cardAfter.suit === cardBefore.suit
+                );
+                if (!stillExists) {
+                  lostCards.push(cardBefore);
+                }
+              }
+
+              if (lostCards.length > 0) {
+                // Find opponent's name (the one who asked)
+                const opponentIndex = this.gameState.currentTurn - 1;
+                const opponentName = this.gameState.players[opponentIndex]?.name || 'Opponent';
+
+                const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+                const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+
+                this.showNotification({
+                  type: 'lost',
+                  cards: lostCards.map(c => ({
+                    rank: rankNames[c.rank],
+                    suit: suitNames[c.suit]
+                  })),
+                  playerName: opponentName
+                });
+              }
+            }
             // State will update on next poll
           } else {
             alert(`Failed to respond: ${result.errorMessage}`);
@@ -1280,6 +1589,51 @@ export class GameScreen {
     document.getElementById('back-to-lobby-btn')?.addEventListener('click', () => {
       this.dispatchEvent('navigate', { screen: 'lobby-list' });
     });
+
+    // Skip draw button (deck empty) - ends turn without drawing
+    document.getElementById('skip-draw-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('skip-draw-btn') as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Ending turn...';
+      }
+
+      if (this.gameState) {
+        try {
+          // Call skipDrawDeckEmpty to end the turn when deck is empty
+          const skipDrawResponse = await fetch('http://localhost:9999/api/midnight/skip_draw_deck_empty', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lobby_id: this.lobbyId,
+              player_id: this.gameState.playerId
+            })
+          });
+
+          const skipDrawResult = await skipDrawResponse.json();
+
+          if (skipDrawResult.success) {
+            console.log('[GameScreen] Skip draw (deck empty) succeeded, turn ended');
+            this.selectedRank = null;
+            // State will update on next poll
+          } else {
+            console.error('[GameScreen] Skip draw failed:', skipDrawResult.errorMessage);
+            alert(`Failed to end turn: ${skipDrawResult.errorMessage}`);
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = 'End Turn';
+            }
+          }
+        } catch (error) {
+          console.error('[GameScreen] Skip draw failed:', error);
+          alert('Failed to end turn. Please try again.');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'End Turn';
+          }
+        }
+      }
+    });
   }
 
   /**
@@ -1298,15 +1652,26 @@ export class GameScreen {
       }
     });
 
-    // Player selection in modal
+    // Player selection in modal - update button states without re-rendering modal
     document.querySelectorAll('.player-select-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
         const playerId = target.dataset.playerId;
         if (playerId) {
           this.selectedTargetId = playerId;
-          this.updateModalContainer();
-          this.attachModalEventListeners();
+
+          // Update button selected states without re-rendering
+          document.querySelectorAll('.player-select-btn').forEach(b => {
+            b.classList.remove('selected');
+          });
+          target.classList.add('selected');
+
+          // Update ask button state
+          const askBtn = document.getElementById('ask-btn') as HTMLButtonElement;
+          if (askBtn) {
+            askBtn.disabled = false;
+            askBtn.textContent = `Ask for ${this.selectedRank}s`;
+          }
         }
       });
     });

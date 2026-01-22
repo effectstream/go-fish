@@ -437,6 +437,34 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
     return [];
 }
 
+// Called when deck is empty and player cannot draw - ends turn without drawing
+export circuit skipDrawDeckEmpty(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+
+    // Game must exist
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+
+    // RULE 1: Must be in WaitForDraw phase
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase == go_fish_GamePhase.WaitForDraw, "Not in draw phase");
+
+    // RULE 2: Must be the current player's turn
+    const currentTurn = go_fish_getCurrentTurn(gid);
+    assert(disclosed_playerId == currentTurn, "Not your turn");
+
+    // RULE 3: Deck must actually be empty
+    const topIndex = deck_getTopCardIndex(gid);
+    const deckSize = deck_getDeckSize(gid);
+    assert(topIndex as Uint<64> >= deckSize, "Deck is not empty - must draw");
+
+    // Clear state and switch turn
+    go_fish_clearLastAskedRank(gid);
+    go_fish_switchTurn(gid);
+
+    return [];
+}
+
 export circuit get_card_from_point(point: CurvePoint): Field {
     return deck_getCardFromPoint(point);
 }

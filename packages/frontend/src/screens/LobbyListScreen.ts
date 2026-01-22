@@ -84,10 +84,13 @@ export class LobbyListScreen {
           <button id="refresh-btn" class="btn btn-secondary">Refresh</button>
         </div>
 
-        <!-- Create Lobby Modal -->
-        <div id="create-lobby-modal" class="modal" style="display: none;">
-          <div class="modal-content">
-            <h2>Create New Lobby</h2>
+        <!-- Create Lobby Modal (with overlay) -->
+        <div id="create-lobby-modal" class="create-lobby-modal-overlay" style="display: none;">
+          <div class="create-lobby-modal">
+            <div class="modal-header">
+              <h2>Create New Lobby</h2>
+              <button class="modal-close-btn" id="modal-close-btn">&times;</button>
+            </div>
             <div class="form-group">
               <label>Lobby Name:</label>
               <input type="text" id="lobby-name" placeholder="Enter lobby name" maxlength="30"/>
@@ -95,9 +98,9 @@ export class LobbyListScreen {
             <div class="form-group">
               <label>Max Players:</label>
               <select id="max-players">
-                <option value="2">2 Players</option>
+                <option value="2" selected>2 Players</option>
                 <option value="3">3 Players</option>
-                <option value="4" selected>4 Players</option>
+                <option value="4">4 Players</option>
                 <option value="5">5 Players</option>
                 <option value="6">6 Players</option>
               </select>
@@ -200,6 +203,18 @@ export class LobbyListScreen {
     if (!modal) return;
 
     modal.style.display = 'flex';
+
+    // Close button (X)
+    document.getElementById('modal-close-btn')?.addEventListener('click', () => {
+      modal.style.display = 'none';
+    });
+
+    // Close on overlay click
+    modal.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).id === 'create-lobby-modal') {
+        modal.style.display = 'none';
+      }
+    });
 
     // Cancel button
     document.getElementById('cancel-create-btn')?.addEventListener('click', () => {
