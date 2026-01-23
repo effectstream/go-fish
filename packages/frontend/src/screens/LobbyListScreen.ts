@@ -9,6 +9,7 @@ export class LobbyListScreen {
   private container: HTMLElement;
   private gameService: GoFishGameService;
   private refreshInterval?: number;
+  private pendingJoinLobbyId: string | null = null; // Track which lobby we're joining
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -29,6 +30,11 @@ export class LobbyListScreen {
   }
 
   private async render() {
+    // Don't re-render if we're in the middle of joining a lobby
+    if (this.pendingJoinLobbyId) {
+      return;
+    }
+
     // Fetch lobbies from server
     const lobbies = await this.gameService.fetchOpenLobbies();
 
@@ -277,11 +283,14 @@ export class LobbyListScreen {
     }
 
     // Find and disable the join button
-    const joinBtn = document.querySelector(`[data-lobby-id="${lobbyId}"]`) as HTMLButtonElement;
+    const joinBtn = document.querySelector(`.join-btn[data-lobby-id="${lobbyId}"]`) as HTMLButtonElement;
     if (joinBtn) {
       joinBtn.disabled = true;
       joinBtn.textContent = 'Joining...';
     }
+
+    // Track that we're joining to prevent render from re-enabling the button
+    this.pendingJoinLobbyId = lobbyId;
 
     try {
       const success = await this.gameService.joinLobby(lobbyId);
@@ -289,16 +298,22 @@ export class LobbyListScreen {
         this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
       } else {
         alert('Failed to join lobby. It may be full.');
+        // Re-enable button on failure
+        if (joinBtn) {
+          joinBtn.disabled = false;
+          joinBtn.textContent = 'Join';
+        }
       }
     } catch (error) {
       console.error('Error joining lobby:', error);
       alert('Error joining lobby. Please check your wallet and try again.');
-    } finally {
-      // Re-enable button if still on the screen
+      // Re-enable button on error
       if (joinBtn) {
         joinBtn.disabled = false;
         joinBtn.textContent = 'Join';
       }
+    } finally {
+      this.pendingJoinLobbyId = null;
     }
   }
 

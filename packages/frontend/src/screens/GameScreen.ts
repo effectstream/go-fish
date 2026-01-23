@@ -158,6 +158,8 @@ export class GameScreen {
     const myHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
     const myScore = this.gameState.scores[this.gameState.playerId - 1];
 
+    console.log(`[GameScreen] State: phase=${this.gameState.phase}, currentTurn=${this.gameState.currentTurn}, myPlayerId=${this.gameState.playerId}, isMyTurn=${isMyTurn}, myHandSize=${myHandSize}`);
+
     // Decrypt player's hand via backend API
     if (myHandSize > 0 && this.gameState.playerId) {
       try {
@@ -168,6 +170,7 @@ export class GameScreen {
         if (response.ok) {
           const data = await response.json();
           this.myDecryptedHand = data.hand || [];
+          console.log(`[GameScreen] Hand fetched: ${this.myDecryptedHand.length} cards for player ${this.gameState.playerId}`);
         } else {
           console.error('[GameScreen] Failed to fetch hand from backend:', response.status);
           this.myDecryptedHand = [];
@@ -177,6 +180,7 @@ export class GameScreen {
         this.myDecryptedHand = [];
       }
     } else {
+      console.log(`[GameScreen] Skipping hand fetch: myHandSize=${myHandSize}, playerId=${this.gameState.playerId}`);
       this.myDecryptedHand = [];
     }
 
@@ -462,6 +466,21 @@ export class GameScreen {
         : '<div class="no-books">None yet</div>';
     }
 
+    // Update hand container - important for updating clickable state when turn changes
+    const handContainer = document.getElementById('hand-container');
+    if (handContainer) {
+      handContainer.innerHTML = myHandSize > 0
+        ? this.myDecryptedHand.length > 0
+          ? `<div class="card-grid">
+               ${this.renderDecryptedHand()}
+             </div>`
+          : `<div class="hand-info">Decrypting cards...</div>
+             <div class="card-grid">
+               ${Array(myHandSize).fill(0).map(() => `<div class="card-wrapper">${CardComponent.renderCardBack()}</div>`).join('')}
+             </div>`
+        : '<div class="empty-hand">No cards in hand</div>';
+    }
+
     // Update inline action panel (respond, go fish, waiting, etc.)
     const inlineActionPanel = document.getElementById('inline-action-panel');
     if (inlineActionPanel) {
@@ -567,10 +586,8 @@ export class GameScreen {
     const isMyTurn = this.gameState?.currentTurn === this.gameState?.playerId;
     const canAskForCard = isMyTurn && this.gameState?.phase === 'turn_start';
 
-    // Debug logging when cards should be clickable but something might be wrong
-    if (isMyTurn && !canAskForCard) {
-      console.log(`[GameScreen] Cards not clickable: isMyTurn=${isMyTurn}, phase=${this.gameState?.phase}`);
-    }
+    // Debug logging
+    console.log(`[GameScreen] renderDecryptedHand: cards=${cards.length}, isMyTurn=${isMyTurn}, phase=${this.gameState?.phase}, canAskForCard=${canAskForCard}`);
 
     return cards
       .map(card => {
@@ -1099,7 +1116,7 @@ export class GameScreen {
             <div class="notification-cards-display">
               ${cards.map(c => `<div class="card-wrapper">${CardComponent.render({ rank: c.rank as Rank, suit: c.suit as Suit }, true)}</div>`).join('')}
             </div>
-            <p class="notification-text">You got <strong>${cards.length} ${rankDisplay}${cards.length > 1 ? 's' : ''}</strong> from <strong>${playerName}</strong>!</p>
+            <p class="notification-text">You got ${cards.length} <strong>${rankDisplay}${cards.length > 1 ? 's' : ''}</strong> from <strong>${playerName}</strong>!</p>
           `;
         }
         break;
@@ -1113,7 +1130,7 @@ export class GameScreen {
             <div class="notification-cards-display lost">
               ${cards.map(c => `<div class="card-wrapper">${CardComponent.render({ rank: c.rank as Rank, suit: c.suit as Suit }, true)}</div>`).join('')}
             </div>
-            <p class="notification-text"><strong>${playerName}</strong> took <strong>${cards.length} ${rankDisplay}${cards.length > 1 ? 's' : ''}</strong> from you!</p>
+            <p class="notification-text"><strong>${playerName}</strong> took ${cards.length} <strong>${rankDisplay}${cards.length > 1 ? 's' : ''}</strong> from you!</p>
           `;
         }
         break;
@@ -1335,11 +1352,12 @@ export class GameScreen {
 
   private attachEventListeners() {
     // Card selection - click on cards in your hand to select the rank and open modal
+    // Uses onclick assignment (not addEventListener) to prevent stacking multiple handlers
     const clickableCards = document.querySelectorAll('.card-wrapper.clickable');
     console.log(`[GameScreen] Attaching click listeners to ${clickableCards.length} clickable cards`);
 
     clickableCards.forEach(wrapper => {
-      wrapper.addEventListener('click', (e) => {
+      (wrapper as HTMLElement).onclick = (e) => {
         const target = e.currentTarget as HTMLElement;
         const rank = target.dataset.rank as Rank;
         console.log(`[GameScreen] Card clicked: rank=${rank}, showActionModal will be set to true`);
@@ -1350,12 +1368,17 @@ export class GameScreen {
           this.updateModalContainer();
           this.attachModalEventListeners();
         }
-      });
+      };
     });
 
     // Attach modal event listeners if modal is showing
     if (this.showActionModal) {
       this.attachModalEventListeners();
+    }
+
+    // Attach notification modal listeners if notification is showing
+    if (this.notificationModal) {
+      this.attachNotificationListeners();
     }
 
     // Attach inline action panel event listeners
@@ -1364,297 +1387,291 @@ export class GameScreen {
 
   /**
    * Attach event listeners for inline action panels (respond, go fish, back to lobby)
+   * Uses onclick assignment (not addEventListener) to prevent stacking multiple handlers
    */
   private attachInlineActionListeners() {
     // Go Fish action - draw from deck and complete turn
-    document.getElementById('go-fish-btn')?.addEventListener('click', async () => {
-      const btn = document.getElementById('go-fish-btn') as HTMLButtonElement;
-      if (btn) {
+    const goFishBtn = document.getElementById('go-fish-btn') as HTMLButtonElement | null;
+    if (goFishBtn) {
+      goFishBtn.onclick = async () => {
+        const btn = goFishBtn;
         btn.disabled = true;
         btn.textContent = 'Drawing...';
-      }
 
-      if (this.gameState) {
-        try {
-          // Step 1: Get hand before drawing to compare later
-          const handBeforeResponse = await fetch(
-            `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
-          );
-          const handBeforeData = await handBeforeResponse.json();
-          const handBefore = handBeforeData.hand || [];
-          console.log('[GameScreen] Hand before Go Fish:', handBefore);
+        if (this.gameState) {
+          try {
+            // Step 1: Get hand before drawing to compare later
+            const handBeforeResponse = await fetch(
+              `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+            );
+            const handBeforeData = await handBeforeResponse.json();
+            const handBefore = handBeforeData.hand || [];
+            console.log('[GameScreen] Hand before Go Fish:', handBefore);
 
-          // Step 2: Draw card from deck
-          const goFishResponse = await fetch('http://localhost:9999/api/midnight/go_fish', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId
-            })
-          });
+            // Step 2: Draw card from deck
+            const goFishResponse = await fetch('http://localhost:9999/api/midnight/go_fish', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lobby_id: this.lobbyId,
+                player_id: this.gameState.playerId
+              })
+            });
 
-          const goFishResult = await goFishResponse.json();
+            const goFishResult = await goFishResponse.json();
 
-          if (!goFishResult.success) {
-            alert(`Failed to draw card: ${goFishResult.errorMessage}`);
-            // Re-enable button on error
-            if (btn) {
+            if (!goFishResult.success) {
+              alert(`Failed to draw card: ${goFishResult.errorMessage}`);
               btn.disabled = false;
               btn.textContent = '🎣 Draw from Deck';
+              return;
             }
-            return;
-          }
 
-          console.log('[GameScreen] Go Fish draw succeeded');
+            console.log('[GameScreen] Go Fish draw succeeded');
 
-          // Step 3: Get hand after drawing to find the new card
-          const handAfterResponse = await fetch(
-            `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
-          );
-          const handAfterData = await handAfterResponse.json();
-          const handAfter = handAfterData.hand || [];
-          console.log('[GameScreen] Hand after Go Fish:', handAfter);
-
-          // Step 4: Find the new card by comparing hands
-          // Cards are {rank, suit} objects - find the card in handAfter not in handBefore
-          let drewRequestedCard = false;
-          let drawnCard: { rank: number; suit: number } | null = null;
-
-          // Find any new card by looking for cards in handAfter not in handBefore
-          for (const cardAfter of handAfter) {
-            const existsInBefore = handBefore.some(
-              (cardBefore: {rank: number; suit: number}) =>
-                cardBefore.rank === cardAfter.rank && cardBefore.suit === cardAfter.suit
+            // Step 3: Get hand after drawing to find the new card
+            const handAfterResponse = await fetch(
+              `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
             );
-            if (!existsInBefore) {
-              drawnCard = cardAfter;
-              console.log(`[GameScreen] Drew card: rank=${cardAfter.rank}, suit=${cardAfter.suit}`);
+            const handAfterData = await handAfterResponse.json();
+            const handAfter = handAfterData.hand || [];
+            console.log('[GameScreen] Hand after Go Fish:', handAfter);
 
-              // Check if it matches the asked rank
-              if (this.selectedRank !== null) {
-                const rankMap: Record<string, number> = {
-                  'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
-                  '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
-                };
-                const askedRankNum = rankMap[this.selectedRank] ?? -1;
-                if (cardAfter.rank === askedRankNum) {
-                  drewRequestedCard = true;
-                  console.log('[GameScreen] Drew the requested card! Player gets another turn.');
+            // Step 4: Find the new card by comparing hands
+            let drewRequestedCard = false;
+            let drawnCard: { rank: number; suit: number } | null = null;
+
+            for (const cardAfter of handAfter) {
+              const existsInBefore = handBefore.some(
+                (cardBefore: {rank: number; suit: number}) =>
+                  cardBefore.rank === cardAfter.rank && cardBefore.suit === cardAfter.suit
+              );
+              if (!existsInBefore) {
+                drawnCard = cardAfter;
+                console.log(`[GameScreen] Drew card: rank=${cardAfter.rank}, suit=${cardAfter.suit}`);
+
+                // Check if it matches the asked rank
+                if (this.selectedRank !== null) {
+                  const rankMap: Record<string, number> = {
+                    'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
+                    '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
+                  };
+                  const askedRankNum = rankMap[this.selectedRank] ?? -1;
+                  if (cardAfter.rank === askedRankNum) {
+                    drewRequestedCard = true;
+                    console.log('[GameScreen] Drew the requested card! Player gets another turn.');
+                  }
                 }
+                break;
               }
-              break;
             }
-          }
 
-          // Show notification for the drawn card
-          if (drawnCard) {
-            const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-            const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
-            this.showNotification({
-              type: 'draw',
-              card: {
-                rank: rankNames[drawnCard.rank],
-                suit: suitNames[drawnCard.suit]
-              }
+            // Show notification for the drawn card
+            if (drawnCard) {
+              const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+              const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+              this.showNotification({
+                type: 'draw',
+                card: {
+                  rank: rankNames[drawnCard.rank],
+                  suit: suitNames[drawnCard.suit]
+                }
+              });
+            }
+
+            // Step 5: Call afterGoFish to complete the turn
+            console.log(`[GameScreen] Calling afterGoFish with drewRequestedCard=${drewRequestedCard}`);
+            const afterGoFishResponse = await fetch('http://localhost:9999/api/midnight/after_go_fish', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lobby_id: this.lobbyId,
+                player_id: this.gameState.playerId,
+                drew_requested_card: drewRequestedCard
+              })
             });
-          }
 
-          // Step 5: Call afterGoFish to complete the turn
-          console.log(`[GameScreen] Calling afterGoFish with drewRequestedCard=${drewRequestedCard}`);
-          const afterGoFishResponse = await fetch('http://localhost:9999/api/midnight/after_go_fish', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId,
-              drew_requested_card: drewRequestedCard
-            })
-          });
+            const afterGoFishResult = await afterGoFishResponse.json();
 
-          const afterGoFishResult = await afterGoFishResponse.json();
-
-          if (afterGoFishResult.success) {
-            console.log('[GameScreen] afterGoFish succeeded, turn complete');
-            // Clear selected rank since turn is complete
-            this.selectedRank = null;
-            // State will update on next poll
-          } else {
-            console.error('[GameScreen] afterGoFish failed:', afterGoFishResult.errorMessage);
-            alert(`Failed to complete turn: ${afterGoFishResult.errorMessage}`);
-          }
-        } catch (error) {
-          console.error('[GameScreen] Go Fish failed:', error);
-          alert('Failed to draw card. Please try again.');
-          // Re-enable button on error
-          if (btn) {
+            if (afterGoFishResult.success) {
+              console.log('[GameScreen] afterGoFish succeeded, turn complete');
+              this.selectedRank = null;
+            } else {
+              console.error('[GameScreen] afterGoFish failed:', afterGoFishResult.errorMessage);
+              alert(`Failed to complete turn: ${afterGoFishResult.errorMessage}`);
+            }
+          } catch (error) {
+            console.error('[GameScreen] Go Fish failed:', error);
+            alert('Failed to draw card. Please try again.');
             btn.disabled = false;
             btn.textContent = '🎣 Draw from Deck';
           }
         }
-      }
-    });
+      };
+    }
 
     // Respond to ask action - check hand and respond
-    document.getElementById('respond-btn')?.addEventListener('click', async () => {
-      const btn = document.getElementById('respond-btn') as HTMLButtonElement;
-      if (btn) {
+    const respondBtn = document.getElementById('respond-btn') as HTMLButtonElement | null;
+    if (respondBtn) {
+      respondBtn.onclick = async () => {
+        const btn = respondBtn;
         btn.disabled = true;
         btn.textContent = 'Checking...';
-      }
 
-      if (this.gameState) {
-        try {
-          // Get hand before responding to compare later
-          const handBeforeResponse = await fetch(
-            `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
-          );
-          const handBeforeData = await handBeforeResponse.json();
-          const handBefore: Array<{ rank: number; suit: number }> = handBeforeData.hand || [];
+        if (this.gameState) {
+          try {
+            // Get hand before responding to compare later
+            const handBeforeResponse = await fetch(
+              `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+            );
+            const handBeforeData = await handBeforeResponse.json();
+            const handBefore: Array<{ rank: number; suit: number }> = handBeforeData.hand || [];
 
-          const response = await fetch('http://localhost:9999/api/midnight/respond_to_ask', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId
-            })
-          });
+            const response = await fetch('http://localhost:9999/api/midnight/respond_to_ask', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lobby_id: this.lobbyId,
+                player_id: this.gameState.playerId
+              })
+            });
 
-          const result = await response.json();
+            const result = await response.json();
 
-          if (result.success) {
-            console.log('[GameScreen] Respond to ask succeeded:', result);
+            if (result.success) {
+              console.log('[GameScreen] Respond to ask succeeded:', result);
 
-            // If cards were transferred (we lost cards), show notification
-            if (result.hasCards && result.cardCount > 0) {
-              // Get hand after to find what cards were lost
-              const handAfterResponse = await fetch(
-                `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
-              );
-              const handAfterData = await handAfterResponse.json();
-              const handAfter: Array<{ rank: number; suit: number }> = handAfterData.hand || [];
-
-              // Find cards that were in handBefore but not in handAfter
-              const lostCards: Array<{ rank: number; suit: number }> = [];
-              for (const cardBefore of handBefore) {
-                const stillExists = handAfter.some(
-                  cardAfter => cardAfter.rank === cardBefore.rank && cardAfter.suit === cardBefore.suit
+              // If cards were transferred (we lost cards), show notification
+              if (result.hasCards && result.cardCount > 0) {
+                // Get hand after to find what cards were lost
+                const handAfterResponse = await fetch(
+                  `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
                 );
-                if (!stillExists) {
-                  lostCards.push(cardBefore);
+                const handAfterData = await handAfterResponse.json();
+                const handAfter: Array<{ rank: number; suit: number }> = handAfterData.hand || [];
+
+                // Find cards that were in handBefore but not in handAfter
+                const lostCards: Array<{ rank: number; suit: number }> = [];
+                for (const cardBefore of handBefore) {
+                  const stillExists = handAfter.some(
+                    cardAfter => cardAfter.rank === cardBefore.rank && cardAfter.suit === cardBefore.suit
+                  );
+                  if (!stillExists) {
+                    lostCards.push(cardBefore);
+                  }
+                }
+
+                if (lostCards.length > 0) {
+                  // Find opponent's name (the one who asked)
+                  const opponentIndex = this.gameState.currentTurn - 1;
+                  const opponentName = this.gameState.players[opponentIndex]?.name || 'Opponent';
+
+                  const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+                  const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+
+                  this.showNotification({
+                    type: 'lost',
+                    cards: lostCards.map(c => ({
+                      rank: rankNames[c.rank],
+                      suit: suitNames[c.suit]
+                    })),
+                    playerName: opponentName
+                  });
                 }
               }
-
-              if (lostCards.length > 0) {
-                // Find opponent's name (the one who asked)
-                const opponentIndex = this.gameState.currentTurn - 1;
-                const opponentName = this.gameState.players[opponentIndex]?.name || 'Opponent';
-
-                const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-                const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
-
-                this.showNotification({
-                  type: 'lost',
-                  cards: lostCards.map(c => ({
-                    rank: rankNames[c.rank],
-                    suit: suitNames[c.suit]
-                  })),
-                  playerName: opponentName
-                });
-              }
-            }
-            // State will update on next poll
-          } else {
-            alert(`Failed to respond: ${result.errorMessage}`);
-            // Re-enable button on error
-            if (btn) {
+              // State will update on next poll
+            } else {
+              alert(`Failed to respond: ${result.errorMessage}`);
               btn.disabled = false;
               btn.textContent = 'Check My Hand & Respond';
             }
-          }
-        } catch (error) {
-          console.error('[GameScreen] Respond to ask failed:', error);
-          alert('Failed to respond. Please try again.');
-          // Re-enable button on error
-          if (btn) {
+          } catch (error) {
+            console.error('[GameScreen] Respond to ask failed:', error);
+            alert('Failed to respond. Please try again.');
             btn.disabled = false;
             btn.textContent = 'Check My Hand & Respond';
           }
         }
-      }
-    });
+      };
+    }
 
     // Back to lobby list button (game over)
-    document.getElementById('back-to-lobby-btn')?.addEventListener('click', () => {
-      this.dispatchEvent('navigate', { screen: 'lobby-list' });
-    });
+    const backToLobbyBtn = document.getElementById('back-to-lobby-btn') as HTMLButtonElement | null;
+    if (backToLobbyBtn) {
+      backToLobbyBtn.onclick = () => {
+        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+      };
+    }
 
     // Skip draw button (deck empty) - ends turn without drawing
-    document.getElementById('skip-draw-btn')?.addEventListener('click', async () => {
-      const btn = document.getElementById('skip-draw-btn') as HTMLButtonElement;
-      if (btn) {
+    const skipDrawBtn = document.getElementById('skip-draw-btn') as HTMLButtonElement | null;
+    if (skipDrawBtn) {
+      skipDrawBtn.onclick = async () => {
+        const btn = skipDrawBtn;
         btn.disabled = true;
         btn.textContent = 'Ending turn...';
-      }
 
-      if (this.gameState) {
-        try {
-          // Call skipDrawDeckEmpty to end the turn when deck is empty
-          const skipDrawResponse = await fetch('http://localhost:9999/api/midnight/skip_draw_deck_empty', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId
-            })
-          });
+        if (this.gameState) {
+          try {
+            // Call skipDrawDeckEmpty to end the turn when deck is empty
+            const skipDrawResponse = await fetch('http://localhost:9999/api/midnight/skip_draw_deck_empty', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lobby_id: this.lobbyId,
+                player_id: this.gameState.playerId
+              })
+            });
 
-          const skipDrawResult = await skipDrawResponse.json();
+            const skipDrawResult = await skipDrawResponse.json();
 
-          if (skipDrawResult.success) {
-            console.log('[GameScreen] Skip draw (deck empty) succeeded, turn ended');
-            this.selectedRank = null;
-            // State will update on next poll
-          } else {
-            console.error('[GameScreen] Skip draw failed:', skipDrawResult.errorMessage);
-            alert(`Failed to end turn: ${skipDrawResult.errorMessage}`);
-            if (btn) {
+            if (skipDrawResult.success) {
+              console.log('[GameScreen] Skip draw (deck empty) succeeded, turn ended');
+              this.selectedRank = null;
+              // State will update on next poll
+            } else {
+              console.error('[GameScreen] Skip draw failed:', skipDrawResult.errorMessage);
+              alert(`Failed to end turn: ${skipDrawResult.errorMessage}`);
               btn.disabled = false;
               btn.textContent = 'End Turn';
             }
-          }
-        } catch (error) {
-          console.error('[GameScreen] Skip draw failed:', error);
-          alert('Failed to end turn. Please try again.');
-          if (btn) {
+          } catch (error) {
+            console.error('[GameScreen] Skip draw failed:', error);
+            alert('Failed to end turn. Please try again.');
             btn.disabled = false;
             btn.textContent = 'End Turn';
           }
         }
-      }
-    });
+      };
+    }
   }
 
   /**
    * Attach event listeners specific to the modal
+   * Uses onclick assignment (not addEventListener) to prevent stacking multiple handlers
    */
   private attachModalEventListeners() {
     // Modal close button
-    document.getElementById('modal-close-btn')?.addEventListener('click', () => {
-      this.closeActionModal();
-    });
+    const closeBtn = document.getElementById('modal-close-btn') as HTMLElement | null;
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        this.closeActionModal();
+      };
+    }
 
     // Close modal on overlay click
-    document.getElementById('action-modal-overlay')?.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).id === 'action-modal-overlay') {
-        this.closeActionModal();
-      }
-    });
+    const overlay = document.getElementById('action-modal-overlay') as HTMLElement | null;
+    if (overlay) {
+      overlay.onclick = (e) => {
+        if ((e.target as HTMLElement).id === 'action-modal-overlay') {
+          this.closeActionModal();
+        }
+      };
+    }
 
     // Player selection in modal - update button states without re-rendering modal
     document.querySelectorAll('.player-select-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      (btn as HTMLElement).onclick = (e) => {
         const target = e.target as HTMLElement;
         const playerId = target.dataset.playerId;
         if (playerId) {
@@ -1673,46 +1690,59 @@ export class GameScreen {
             askBtn.textContent = `Ask for ${this.selectedRank}s`;
           }
         }
-      });
+      };
     });
 
     // Ask action - now uses backend API
-    document.getElementById('ask-btn')?.addEventListener('click', async () => {
-      if (this.selectedRank && this.selectedTargetId && this.gameState) {
-        try {
-          // Convert rank string to number (0-indexed: A=0, 2=1, ..., K=12)
-          // Contract uses 0-12 for ranks, matching the card index pattern
-          const rankMap: Record<string, number> = {
-            'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
-            '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
-          };
-          const targetRank = rankMap[this.selectedRank] ?? 0;
+    const askBtn = document.getElementById('ask-btn') as HTMLButtonElement | null;
+    if (askBtn) {
+      askBtn.onclick = async () => {
+        if (this.selectedRank && this.selectedTargetId && this.gameState) {
+          // Disable button while processing
+          askBtn.disabled = true;
+          askBtn.textContent = 'Asking...';
 
-          const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lobby_id: this.lobbyId,
-              player_id: this.gameState.playerId,
-              rank: targetRank
-            })
-          });
+          try {
+            // Convert rank string to number (0-indexed: A=0, 2=1, ..., K=12)
+            // Contract uses 0-12 for ranks, matching the card index pattern
+            const rankMap: Record<string, number> = {
+              'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
+              '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
+            };
+            const targetRank = rankMap[this.selectedRank] ?? 0;
 
-          const result = await response.json();
+            const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lobby_id: this.lobbyId,
+                player_id: this.gameState.playerId,
+                rank: targetRank
+              })
+            });
 
-          if (result.success) {
-            console.log('[GameScreen] Ask for card succeeded');
-            this.closeActionModal(); // Close modal and reset selections
-            // State will update on next poll
-          } else {
-            alert(`Failed to ask for card: ${result.errorMessage}`);
+            const result = await response.json();
+
+            if (result.success) {
+              console.log('[GameScreen] Ask for card succeeded');
+              this.closeActionModal(); // Close modal and reset selections
+              // State will update on next poll
+            } else {
+              alert(`Failed to ask for card: ${result.errorMessage}`);
+              // Re-enable button on error
+              askBtn.disabled = false;
+              askBtn.textContent = `Ask for ${this.selectedRank}s`;
+            }
+          } catch (error) {
+            console.error('[GameScreen] Ask for card failed:', error);
+            alert('Failed to ask for card. Please try again.');
+            // Re-enable button on error
+            askBtn.disabled = false;
+            askBtn.textContent = `Ask for ${this.selectedRank}s`;
           }
-        } catch (error) {
-          console.error('[GameScreen] Ask for card failed:', error);
-          alert('Failed to ask for card. Please try again.');
         }
-      }
-    });
+      };
+    }
   }
 
   private dispatchEvent(type: string, detail: any) {

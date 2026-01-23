@@ -182,10 +182,8 @@ function updateGameLog(
   state.lastAskingPlayer = midnightState.lastAskingPlayer;
   state.lastScores = [...midnightState.scores] as [number, number];
 
-  // Limit log size to prevent memory issues (keep last 50 entries)
-  if (state.logs.length > 50) {
-    state.logs = state.logs.slice(-50);
-  }
+  // Note: No limit on log size - a typical Go Fish game has ~100-200 log entries
+  // which is negligible memory usage. The log is cleared when the game ends.
 
   return [...state.logs]; // Return a copy
 }

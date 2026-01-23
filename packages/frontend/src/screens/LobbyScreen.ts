@@ -28,6 +28,11 @@ export class LobbyScreen {
   private previousLobbyState: LobbyStateResponse | null = null;
   private hasRenderedOnce: boolean = false;
 
+  // Track pending transactions to prevent UI updates while processing
+  private pendingReady: boolean = false;
+  private pendingLeave: boolean = false;
+  private pendingStart: boolean = false;
+
   constructor(container: HTMLElement) {
     this.container = container;
     this.gameService = GoFishGameService.getInstance();
@@ -220,9 +225,23 @@ export class LobbyScreen {
     // Update ready button state
     const readyBtn = document.getElementById('toggle-ready-btn') as HTMLButtonElement;
     if (readyBtn && !isHost) {
-      readyBtn.className = `btn ${currentPlayer?.is_ready ? 'btn-secondary' : 'btn-primary'}`;
-      readyBtn.textContent = currentPlayer?.is_ready ? 'Not Ready' : 'Ready Up!';
-      readyBtn.disabled = false;
+      // Check if ready state changed from previous (transaction completed)
+      if (this.pendingReady && this.previousLobbyState) {
+        const prevPlayer = this.previousLobbyState.players.find(
+          (p: any) => p.wallet_address.toLowerCase() === myWalletAddress.toLowerCase()
+        );
+        if (prevPlayer && prevPlayer.is_ready !== currentPlayer?.is_ready) {
+          // State changed - transaction completed
+          this.pendingReady = false;
+        }
+      }
+
+      // Only update button if not pending
+      if (!this.pendingReady) {
+        readyBtn.className = `btn ${currentPlayer?.is_ready ? 'btn-secondary' : 'btn-primary'}`;
+        readyBtn.textContent = currentPlayer?.is_ready ? 'Not Ready' : 'Ready Up!';
+        readyBtn.disabled = false;
+      }
     }
 
     // Update host section info text
@@ -280,12 +299,34 @@ export class LobbyScreen {
   private attachEventListeners() {
     // Leave lobby
     document.getElementById('leave-lobby-btn')?.addEventListener('click', async () => {
-      const result = await this.gameService.leaveLobby(this.lobbyId);
-      if (result) {
-        this.dispatchEvent('navigate', { screen: 'lobby-list' });
-      } else {
-        console.error('Failed to leave lobby');
+      const btn = document.getElementById('leave-lobby-btn') as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Leaving...';
+      }
+      this.pendingLeave = true;
+
+      try {
+        const result = await this.gameService.leaveLobby(this.lobbyId);
+        if (result) {
+          this.dispatchEvent('navigate', { screen: 'lobby-list' });
+        } else {
+          console.error('Failed to leave lobby');
+          alert('Failed to leave lobby. Please try again.');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Leave Lobby';
+          }
+        }
+      } catch (error) {
+        console.error('Error leaving lobby:', error);
         alert('Failed to leave lobby. Please try again.');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Leave Lobby';
+        }
+      } finally {
+        this.pendingLeave = false;
       }
     });
 
@@ -296,6 +337,7 @@ export class LobbyScreen {
         btn.disabled = true;
         btn.textContent = 'Processing...';
       }
+      this.pendingReady = true;
 
       try {
         const result = await EffectstreamBridge.toggleReady(this.lobbyId);
@@ -307,14 +349,17 @@ export class LobbyScreen {
             btn.disabled = false;
             btn.textContent = 'Ready Up!';
           }
+          this.pendingReady = false;
         }
-        // State will update automatically via the refresh interval
+        // On success, pendingReady stays true until the next render detects the state change
+        // Then selectiveUpdate will re-enable the button with the correct text
       } catch (error) {
         console.error('Error toggling ready:', error);
         if (btn) {
           btn.disabled = false;
           btn.textContent = 'Ready Up!';
         }
+        this.pendingReady = false;
       }
     });
 
@@ -325,6 +370,7 @@ export class LobbyScreen {
         btn.disabled = true;
         btn.textContent = 'Starting...';
       }
+      this.pendingStart = true;
 
       try {
         const result = await EffectstreamBridge.startGame(this.lobbyId);
@@ -332,6 +378,7 @@ export class LobbyScreen {
           // Game started - the lobby status will update to 'in_progress'
           // and the screen will automatically navigate when it refreshes
           console.log('Game started successfully');
+          // Keep pendingStart true - we'll navigate away soon
         } else {
           console.error('Failed to start game:', result.errorMessage);
           alert('Failed to start game. Please try again.');
@@ -340,6 +387,7 @@ export class LobbyScreen {
             btn.disabled = false;
             btn.textContent = 'Start Game';
           }
+          this.pendingStart = false;
         }
       } catch (error) {
         console.error('Error starting game:', error);
@@ -347,6 +395,7 @@ export class LobbyScreen {
           btn.disabled = false;
           btn.textContent = 'Start Game';
         }
+        this.pendingStart = false;
       }
     });
   }
