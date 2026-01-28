@@ -1,321 +1,323 @@
-
 module GoFish {
-    import CompactStandardLibrary;
+import CompactStandardLibrary;
 
-    export enum GamePhase {
-        Setup,
-        TurnStart,
-        WaitForResponse,
-        WaitForTransfer,
-        WaitForDraw,
-        WaitForDrawCheck,
-        GameOver
-    }
+export enum GamePhase {
+    Setup,
+    TurnStart,
+    WaitForResponse,
+    WaitForTransfer,
+    WaitForDraw,
+    WaitForDrawCheck,
+    GameOver
+}
 
-    // Game registry - tracks which games exist
-    export ledger gameExists: Map<Bytes<32>, Boolean>;
+// Game registry - tracks which games exist
+export ledger gameExists: Map<Bytes<32>, Boolean>;
+
+// All game state wrapped in Map<gameId, ...>
+export ledger currentTurn: Map<Bytes<32>, Uint<64>>; // 1 or 2
+export ledger phase: Map<Bytes<32>, GamePhase>;
+export ledger scoreP1: Map<Bytes<32>, Uint<8>>;
+export ledger scoreP2: Map<Bytes<32>, Uint<8>>;
+export ledger totalBooks: Map<Bytes<32>, Uint<8>>; // Total books completed
+export ledger cardsDealtP1: Map<Bytes<32>, Uint<64>>; // Track cards dealt during setup
+export ledger cardsDealtP2: Map<Bytes<32>, Uint<64>>;
+export ledger lastAskedRank: Map<Bytes<32>, Uint<32>>; // Track the rank being asked for (for state recovery)
+export ledger lastAskingPlayer: Map<Bytes<32>, Uint<64>>; // Track who is asking for cards
+export ledger maskAppliedP1: Map<Bytes<32>, Boolean>; // Track if player 1 applied mask
+export ledger maskAppliedP2: Map<Bytes<32>, Boolean>; // Track if player 2 applied mask
+export ledger preDrawRankCount: Map<Bytes<32>, Uint<8>>;
+export ledger hasDealtP1: Map<Bytes<32>, Boolean>; // Track if player 1 has called dealCards
+export ledger hasDealtP2: Map<Bytes<32>, Boolean>; // Track if player 2 has called dealCards
+
+// Initialize a new game with the given gameId
+export circuit init_game(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    assert(!gameExists.member(gid), "Game already exists");
     
-    // All game state wrapped in Map<gameId, ...>
-    export ledger currentTurn: Map<Bytes<32>, Uint<64>>; // 1 or 2
-    export ledger phase: Map<Bytes<32>, GamePhase>;
-    export ledger scoreP1: Map<Bytes<32>, Uint<8>>;
-    export ledger scoreP2: Map<Bytes<32>, Uint<8>>;
-    export ledger totalBooks: Map<Bytes<32>, Uint<8>>; // Total books completed (game ends at 13)
-    export ledger cardsDealtP1: Map<Bytes<32>, Uint<64>>; // Track cards dealt during setup
-    export ledger cardsDealtP2: Map<Bytes<32>, Uint<64>>;
-    export ledger lastAskedRank: Map<Bytes<32>, Uint<32>>; // Track the rank being asked for (for state recovery)
-    export ledger lastAskingPlayer: Map<Bytes<32>, Uint<64>>; // Track who is asking for cards
-    export ledger maskAppliedP1: Map<Bytes<32>, Boolean>; // Track if player 1 applied mask
-    export ledger maskAppliedP2: Map<Bytes<32>, Boolean>; // Track if player 2 applied mask
-    export ledger preDrawRankCount: Map<Bytes<32>, Uint<8>>;
-    export ledger hasDealtP1: Map<Bytes<32>, Boolean>; // Track if player 1 has called dealCards
-    export ledger hasDealtP2: Map<Bytes<32>, Boolean>; // Track if player 2 has called dealCards
+    gameExists.insert(gid, true);
+    currentTurn.insert(gid, 1 as Uint<64>);
+    phase.insert(gid, GamePhase.Setup);
+    scoreP1.insert(gid, 0 as Uint<8>);
+    scoreP2.insert(gid, 0 as Uint<8>);
+    totalBooks.insert(gid, 0 as Uint<8>);
+    cardsDealtP1.insert(gid, 0 as Uint<64>);
+    cardsDealtP2.insert(gid, 0 as Uint<64>);
+    lastAskedRank.insert(gid, 255 as Uint<32>); // 255 = no pending request
+    lastAskingPlayer.insert(gid, 0 as Uint<64>); // 0 = no pending request
+    preDrawRankCount.insert(gid, 0 as Uint<8>);
+    maskAppliedP1.insert(gid, false);
+    maskAppliedP2.insert(gid, false);
+    hasDealtP1.insert(gid, false);
+    hasDealtP2.insert(gid, false);
+    return [];
+}
 
-    // Initialize a new game with the given gameId
-    export circuit init_game(gameId: Bytes<32>): [] {
-        const gid = disclose(gameId);
-        assert(!gameExists.member(gid), "Game already exists");
-        
-        gameExists.insert(gid, true);
+// Check if a game exists
+export circuit doesGameExist(gameId: Bytes<32>): Boolean {
+    return gameExists.member(disclose(gameId));
+}
+
+// Switch turns between players
+export circuit switchTurn(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    const turn = currentTurn.lookup(gid) as Uint<64>;
+    if (turn == 1 as Uint<64>) {
+        currentTurn.insert(gid, 2 as Uint<64>);
+    } else {
         currentTurn.insert(gid, 1 as Uint<64>);
-        phase.insert(gid, GamePhase.Setup);
-        scoreP1.insert(gid, 0 as Uint<8>);
-        scoreP2.insert(gid, 0 as Uint<8>);
-        totalBooks.insert(gid, 0 as Uint<8>);
-        cardsDealtP1.insert(gid, 0 as Uint<64>);
-        cardsDealtP2.insert(gid, 0 as Uint<64>);
-        lastAskedRank.insert(gid, 255 as Uint<32>); // 255 = no pending request
-        lastAskingPlayer.insert(gid, 0 as Uint<64>); // 0 = no pending request
-        preDrawRankCount.insert(gid, 0 as Uint<8>);
-        maskAppliedP1.insert(gid, false);
-        maskAppliedP2.insert(gid, false);
-        hasDealtP1.insert(gid, false);
-        hasDealtP2.insert(gid, false);
-        return [];
     }
-    
-    // Check if a game exists
-    export circuit doesGameExist(gameId: Bytes<32>): Boolean {
-        return gameExists.member(disclose(gameId));
-    }
-    
-    // Switch turns between players
-    export circuit switchTurn(gameId: Bytes<32>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        const turn = currentTurn.lookup(gid) as Uint<64>;
-        if (turn == 1 as Uint<64>) {
-            currentTurn.insert(gid, 2 as Uint<64>);
-        } else {
-            currentTurn.insert(gid, 1 as Uint<64>);
-        }
-        phase.insert(gid, GamePhase.TurnStart);
-        return [];
-    }
-    
-    // Set game phase
-    export circuit setPhase(gameId: Bytes<32>, newPhase: GamePhase): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        phase.insert(gid, disclose(newPhase));
-        return [];
-    }
-    
-    // Add score for a player making a book
-    export circuit addScore(gameId: Bytes<32>, playerId: Uint<64>): [] {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            const current = scoreP1.lookup(gid) as Uint<8>;
-            scoreP1.insert(gid, (current + 1 as Uint<8>) as Uint<8>);
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            const current = scoreP2.lookup(gid) as Uint<8>;
-            scoreP2.insert(gid, (current + 1 as Uint<8>) as Uint<8>);
-        }
-        const books = totalBooks.lookup(gid) as Uint<8>;
-        totalBooks.insert(gid, (books + 1 as Uint<8>) as Uint<8>);
-        // Check if game is over (all 13 books completed)
-        if (books + 1 as Uint<8> == 13 as Uint<8>) {
-            phase.insert(gid, GamePhase.GameOver);
-        }
-        return [];
-    }
-    
-    // Mark that a card was dealt during setup
-    export circuit markCardDealt(gameId: Bytes<32>, playerId: Uint<64>): [] {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            const current = cardsDealtP1.lookup(gid) as Uint<64>;
-            cardsDealtP1.insert(gid, current + 1 as Uint<64>);
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            const current = cardsDealtP2.lookup(gid) as Uint<64>;
-            cardsDealtP2.insert(gid, current + 1 as Uint<64>);
-        }
-        return [];
-    }
-    
-    // Check if initial dealing is complete (7 cards each for 2 players)
-    export circuit isDealingComplete(gameId: Bytes<32>): Boolean {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        const p1Cards = cardsDealtP1.lookup(gid) as Uint<64>;
-        const p2Cards = cardsDealtP2.lookup(gid) as Uint<64>;
-        return p1Cards >= 7 as Uint<64> && p2Cards >= 7 as Uint<64>;
-    }
-    
-    // Transition from Setup to TurnStart once dealing is done
-    export circuit startGame(gameId: Bytes<32>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        const currentPhase = phase.lookup(gid) as GamePhase;
-        assert(currentPhase == GamePhase.Setup, "Game not in setup phase");
-        assert(isDealingComplete(gid), "Cards not yet dealt to both players");
-        phase.insert(gid, GamePhase.TurnStart);
-        return [];
-    }
-    
-    // Check if it's game over
-    export circuit isGameOver(gameId: Bytes<32>): Boolean {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        const currentPhase = phase.lookup(gid) as GamePhase;
-        return currentPhase == GamePhase.GameOver;
-    }
-    
-    // Get current player's turn
-    export circuit getCurrentTurn(gameId: Bytes<32>): Uint<64> {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        return currentTurn.lookup(gid) as Uint<64>;
-    }
-    
-    // Get current phase
-    export circuit getPhase(gameId: Bytes<32>): GamePhase {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        return phase.lookup(gid) as GamePhase;
-    }
-    
-    // End game (when deck empty and a player has no cards)
-    export circuit endGame(gameId: Bytes<32>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        phase.insert(gid, GamePhase.GameOver);
-        return [];
-    }
-    
-    // Set the last asked rank (called by askForCard)
-    export circuit setLastAskedRank(gameId: Bytes<32>, rank: Uint<32>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        lastAskedRank.insert(gid, disclose(rank));
-        return [];
-    }
-    
-    // Set the asking player ID (called by askForCard)
-    export circuit setLastAskingPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        lastAskingPlayer.insert(gid, disclose(playerId));
-        return [];
-    }
-    
-    // Clear the last asked rank and player (called after response)
-    export circuit clearLastAskedRank(gameId: Bytes<32>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        lastAskedRank.insert(gid, 255 as Uint<32>);
-        lastAskingPlayer.insert(gid, 0 as Uint<64>);
-        return [];
-    }
-    
-    // Get the last asked rank (for state recovery)
-    export circuit getLastAskedRank(gameId: Bytes<32>): Uint<32> {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        return lastAskedRank.lookup(gid) as Uint<32>;
-    }
-    
-    // Get the last asking player (for response processing)
-    export circuit getLastAskingPlayer(gameId: Bytes<32>): Uint<64> {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        return lastAskingPlayer.lookup(gid) as Uint<64>;
-    }
-    
-    // Mark that a player has applied their mask
-    export circuit markMaskApplied(gameId: Bytes<32>, playerId: Uint<64>): [] {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            maskAppliedP1.insert(gid, true);
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            maskAppliedP2.insert(gid, true);
-        }
-        return [];
-    }
-    
-    // Check if a player has applied their mask
-    export circuit hasMaskApplied(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            return maskAppliedP1.lookup(gid) as Boolean;
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            return maskAppliedP2.lookup(gid) as Boolean;
-        }
-        return false;
-    }
-    
-    // Get the number of cards dealt to a player (for state recovery)
-    export circuit getCardsDealt(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            return cardsDealtP1.lookup(gid) as Uint<64>;
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            return cardsDealtP2.lookup(gid) as Uint<64>;
-        }
-        return 0 as Uint<64>;
-    }
+    phase.insert(gid, GamePhase.TurnStart);
+    return [];
+}
 
-    // Setter for the pre-draw count
-    export circuit setPreDrawRankCount(gameId: Bytes<32>, count: Uint<8>): [] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        preDrawRankCount.insert(gid, disclose(count));
-        return [];
-    }
+// Set game phase
+export circuit setPhase(gameId: Bytes<32>, newPhase: GamePhase): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    phase.insert(gid, disclose(newPhase));
+    return [];
+}
+
+// Add score for a player making a book
+export circuit addScore(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
     
-    // Getter for the pre-draw count
-    export circuit getPreDrawRankCount(gameId: Bytes<32>): Uint<8> {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        return preDrawRankCount.lookup(gid) as Uint<8>;
+    if (disclosed_playerId == 1 as Uint<64>) {
+        const current = scoreP1.lookup(gid) as Uint<8>;
+        scoreP1.insert(gid, (current + 1 as Uint<8>) as Uint<8>);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        const current = scoreP2.lookup(gid) as Uint<8>;
+        scoreP2.insert(gid, (current + 1 as Uint<8>) as Uint<8>);
     }
+    const books = totalBooks.lookup(gid) as Uint<8>;
+    totalBooks.insert(gid, (books + 1 as Uint<8>) as Uint<8>);
     
-    // Mark that a player has dealt cards
-    export circuit markHasDealt(gameId: Bytes<32>, playerId: Uint<64>): [] {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            hasDealtP1.insert(gid, true);
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            hasDealtP2.insert(gid, true);
-        }
-        return [];
+    // CHANGED: Game ends at 7 books (7 ranks available)
+    if (books + 1 as Uint<8> == 7 as Uint<8>) {
+        phase.insert(gid, GamePhase.GameOver);
     }
+    return [];
+}
+
+// Mark that a card was dealt during setup
+export circuit markCardDealt(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
     
-    // Check if a player has dealt cards
-    export circuit hasDealt(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
-        const gid = disclose(gameId);
-        const disclosed_playerId = disclose(playerId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        if (disclosed_playerId == 1 as Uint<64>) {
-            return hasDealtP1.lookup(gid) as Boolean;
-        } else if (disclosed_playerId == 2 as Uint<64>) {
-            return hasDealtP2.lookup(gid) as Boolean;
-        }
-        return false;
+    if (disclosed_playerId == 1 as Uint<64>) {
+        const current = cardsDealtP1.lookup(gid) as Uint<64>;
+        cardsDealtP1.insert(gid, current + 1 as Uint<64>);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        const current = cardsDealtP2.lookup(gid) as Uint<64>;
+        cardsDealtP2.insert(gid, current + 1 as Uint<64>);
     }
+    return [];
+}
+
+// Check if initial dealing is complete (4 cards each for 2 players)
+// CHANGED: 4 Cards
+export circuit isDealingComplete(gameId: Bytes<32>): Boolean {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
     
-    // Get how many players have dealt (0, 1, or 2)
-    export circuit getPlayersDealtCount(gameId: Bytes<32>): Uint<8> {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        const p1Dealt = hasDealtP1.lookup(gid) as Boolean;
-        const p2Dealt = hasDealtP2.lookup(gid) as Boolean;
-        const p1: Uint<8> = p1Dealt ? 1 as Uint<8> : 0 as Uint<8>;
-        const p2: Uint<8> = p2Dealt ? 1 as Uint<8> : 0 as Uint<8>;
-        return (p1 + p2) as Uint<8>;
-    }
+    const p1Cards = cardsDealtP1.lookup(gid) as Uint<64>;
+    const p2Cards = cardsDealtP2.lookup(gid) as Uint<64>;
+    return p1Cards >= 4 as Uint<64> && p2Cards >= 4 as Uint<64>;
+}
+
+// Transition from Setup to TurnStart once dealing is done
+export circuit startGame(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
     
-    // Get scores for a game
-    export circuit getScores(gameId: Bytes<32>): [Uint<8>, Uint<8>] {
-        const gid = disclose(gameId);
-        assert(gameExists.member(gid), "Game does not exist");
-        
-        const s1 = scoreP1.lookup(gid) as Uint<8>;
-        const s2 = scoreP2.lookup(gid) as Uint<8>;
-        return [s1, s2];
+    const currentPhase = phase.lookup(gid) as GamePhase;
+    assert(currentPhase == GamePhase.Setup, "Game not in setup phase");
+    assert(isDealingComplete(gid), "Cards not yet dealt to both players");
+    phase.insert(gid, GamePhase.TurnStart);
+    return [];
+}
+
+// Check if it's game over
+export circuit isGameOver(gameId: Bytes<32>): Boolean {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    const currentPhase = phase.lookup(gid) as GamePhase;
+    return currentPhase == GamePhase.GameOver;
+}
+
+// Get current player's turn
+export circuit getCurrentTurn(gameId: Bytes<32>): Uint<64> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return currentTurn.lookup(gid) as Uint<64>;
+}
+
+// Get current phase
+export circuit getPhase(gameId: Bytes<32>): GamePhase {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return phase.lookup(gid) as GamePhase;
+}
+
+// End game (when deck empty and a player has no cards)
+export circuit endGame(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    phase.insert(gid, GamePhase.GameOver);
+    return [];
+}
+
+// Set the last asked rank (called by askForCard)
+export circuit setLastAskedRank(gameId: Bytes<32>, rank: Uint<32>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    lastAskedRank.insert(gid, disclose(rank));
+    return [];
+}
+
+// Set the asking player ID (called by askForCard)
+export circuit setLastAskingPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    lastAskingPlayer.insert(gid, disclose(playerId));
+    return [];
+}
+
+// Clear the last asked rank and player (called after response)
+export circuit clearLastAskedRank(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    lastAskedRank.insert(gid, 255 as Uint<32>);
+    lastAskingPlayer.insert(gid, 0 as Uint<64>);
+    return [];
+}
+
+// Get the last asked rank (for state recovery)
+export circuit getLastAskedRank(gameId: Bytes<32>): Uint<32> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return lastAskedRank.lookup(gid) as Uint<32>;
+}
+
+// Get the last asking player (for response processing)
+export circuit getLastAskingPlayer(gameId: Bytes<32>): Uint<64> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return lastAskingPlayer.lookup(gid) as Uint<64>;
+}
+
+// Mark that a player has applied their mask
+export circuit markMaskApplied(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    if (disclosed_playerId == 1 as Uint<64>) {
+        maskAppliedP1.insert(gid, true);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        maskAppliedP2.insert(gid, true);
     }
+    return [];
+}
+
+// Check if a player has applied their mask
+export circuit hasMaskApplied(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    if (disclosed_playerId == 1 as Uint<64>) {
+        return maskAppliedP1.lookup(gid) as Boolean;
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        return maskAppliedP2.lookup(gid) as Boolean;
+    }
+    return false;
+}
+
+// Get the number of cards dealt to a player (for state recovery)
+export circuit getCardsDealt(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    if (disclosed_playerId == 1 as Uint<64>) {
+        return cardsDealtP1.lookup(gid) as Uint<64>;
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        return cardsDealtP2.lookup(gid) as Uint<64>;
+    }
+    return 0 as Uint<64>;
+}
+
+// Setter for the pre-draw count
+export circuit setPreDrawRankCount(gameId: Bytes<32>, count: Uint<8>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    preDrawRankCount.insert(gid, disclose(count));
+    return [];
+}
+
+// Getter for the pre-draw count
+export circuit getPreDrawRankCount(gameId: Bytes<32>): Uint<8> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return preDrawRankCount.lookup(gid) as Uint<8>;
+}
+
+// Mark that a player has dealt cards
+export circuit markHasDealt(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    if (disclosed_playerId == 1 as Uint<64>) {
+        hasDealtP1.insert(gid, true);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        hasDealtP2.insert(gid, true);
+    }
+    return [];
+}
+
+// Check if a player has dealt cards
+export circuit hasDealt(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    if (disclosed_playerId == 1 as Uint<64>) {
+        return hasDealtP1.lookup(gid) as Boolean;
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        return hasDealtP2.lookup(gid) as Boolean;
+    }
+    return false;
+}
+
+// Get how many players have dealt (0, 1, or 2)
+export circuit getPlayersDealtCount(gameId: Bytes<32>): Uint<8> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    const p1Dealt = hasDealtP1.lookup(gid) as Boolean;
+    const p2Dealt = hasDealtP2.lookup(gid) as Boolean;
+    const p1: Uint<8> = p1Dealt ? 1 as Uint<8> : 0 as Uint<8>;
+    const p2: Uint<8> = p2Dealt ? 1 as Uint<8> : 0 as Uint<8>;
+    return (p1 + p2) as Uint<8>;
+}
+
+// Get scores for a game
+export circuit getScores(gameId: Bytes<32>): [Uint<8>, Uint<8>] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    
+    const s1 = scoreP1.lookup(gid) as Uint<8>;
+    const s2 = scoreP2.lookup(gid) as Uint<8>;
+    return [s1, s2];
+}
+
 }

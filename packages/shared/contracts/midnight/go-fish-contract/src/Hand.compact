@@ -1,156 +1,158 @@
-
 module Hand {
-    import CompactStandardLibrary;
-    import CompactStandardLibrary prefix std_;
+import CompactStandardLibrary;
+import CompactStandardLibrary prefix std_;
 
-    // Card ownership per game: maps (gameId, card) -> playerId (1 or 2, 0 = no owner)
-    // We use a hash of (gameId, card)
-    export ledger cardOwnership: Map<Bytes<32>, Uint<8>>;
-    
-    // Hand sizes per game per player
-    export ledger handSize1: Map<Bytes<32>, Uint<64>>;
-    export ledger handSize2: Map<Bytes<32>, Uint<64>>;
+// import './HashPersistent' prefix h_;
+import './HashTransient' prefix h_;
 
-    // Helper to create a composite key from gameId and card point
-    circuit makeCardKey(gameId: Bytes<32>, card: CurvePoint): Bytes<32> {
-        // Hash the combination of gameId and card to create a unique key
-        const cardHash = std_persistentHash<CurvePoint>(card);
-        const combined = std_persistentHash<Vector<2, Bytes<32>>>([disclose(gameId), cardHash]);
-        return combined;
-    }
+// Card ownership per game: maps (gameId, card) -> playerId (1 or 2, 0 = no owner)
+// We use a hash of (gameId, card)
+export ledger cardOwnership: Map<Bytes<32>, Uint<8>>;
 
-    export circuit init_hands(gameId: Bytes<32>): [] {
-        const gid = disclose(gameId);
-        // Initialize hand sizes to 0
-        handSize1.insert(gid, 0 as Uint<64>);
-        handSize2.insert(gid, 0 as Uint<64>);
-        return [];
-    }
-    
-    // Get current hand size
-    export circuit getHandSize(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
-        const gid = disclose(gameId);
-        if (playerId == 1 as Uint<64>) {
-            if (handSize1.member(gid)) {
-                return handSize1.lookup(gid) as Uint<64>;
-            }
-            return 0 as Uint<64>;
-        } else if (playerId == 2 as Uint<64>) {
-            if (handSize2.member(gid)) {
-                return handSize2.lookup(gid) as Uint<64>;
-            }
-            return 0 as Uint<64>;
-        } else {
-            assert(false, "Invalid player index");
+// Hand sizes per game per player
+export ledger handSize1: Map<Bytes<32>, Uint<64>>;
+export ledger handSize2: Map<Bytes<32>, Uint<64>>;
+
+// Helper to create a composite key from gameId and card point
+circuit makeCardKey(gameId: Bytes<32>, card: CurvePoint): Bytes<32> {
+    // Hash the combination of gameId and card to create a unique key
+    const cardHash = h_hashCurvePoint(card);
+    return h_hashVector([disclose(gameId), cardHash]);
+}
+
+export circuit init_hands(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    // Initialize hand sizes to 0
+    handSize1.insert(gid, 0 as Uint<64>);
+    handSize2.insert(gid, 0 as Uint<64>);
+    return [];
+}
+
+// Get current hand size
+export circuit getHandSize(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
+    const gid = disclose(gameId);
+    if (playerId == 1 as Uint<64>) {
+        if (handSize1.member(gid)) {
+            return handSize1.lookup(gid) as Uint<64>;
         }
         return 0 as Uint<64>;
-    }
-
-    // Cards in players hands are semi-masked, meaning they are 
-    // masked only by the player's secret key.
-    export circuit removeCardFromHand(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: CurvePoint): CurvePoint {
-        const gid = disclose(gameId);
-        const cardKey = makeCardKey(gid, disclose(semiMaskedPoint));
-        
-        if (playerId == 1 as Uint<64>) {
-            assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
-            const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
-            assert(owner == 1 as Uint<8>, "Card not in player 1 hand");
-            cardOwnership.insert(disclose(cardKey), 0 as Uint<8>); // Remove ownership
-            const currentSize = handSize1.lookup(gid) as Uint<64>;
-            handSize1.insert(gid, currentSize - 1 as Uint<64>);
-            return semiMaskedPoint;
-        } else if (playerId == 2 as Uint<64>) {
-            assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
-            const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
-            assert(owner == 2 as Uint<8>, "Card not in player 2 hand");
-            cardOwnership.insert(disclose(cardKey), 0 as Uint<8>); // Remove ownership
-            const currentSize = handSize2.lookup(gid) as Uint<64>;
-            handSize2.insert(gid, currentSize - 1 as Uint<64>);
-            return semiMaskedPoint;
-        } 
-        assert(false, "Invalid player index");
-        return semiMaskedPoint;
-    }
-
-    export circuit insertCardIntoHand(gameId: Bytes<32>, playerId: Uint<64>, card: CurvePoint): [] {
-        const gid = disclose(gameId);
-        const cardKey = makeCardKey(gid, disclose(card));
-        
-        if (playerId == 1 as Uint<64>) {
-            cardOwnership.insert(disclose(cardKey), 1 as Uint<8>);
-            const currentSize = handSize1.lookup(gid) as Uint<64>;
-            handSize1.insert(gid, currentSize + 1 as Uint<64>);
-        } else if (playerId == 2 as Uint<64>) {
-            cardOwnership.insert(disclose(cardKey), 2 as Uint<8>);
-            const currentSize = handSize2.lookup(gid) as Uint<64>;
-            handSize2.insert(gid, currentSize + 1 as Uint<64>);
-        } else {
-            assert(false, "Invalid player index");
+    } else if (playerId == 2 as Uint<64>) {
+        if (handSize2.member(gid)) {
+            return handSize2.lookup(gid) as Uint<64>;
         }
-        return [];
+        return 0 as Uint<64>;
+    } else {
+        assert(false, "Invalid player index");
     }
+    return 0 as Uint<64>;
+}
+
+// Cards in players hands are semi-masked, meaning they are 
+// masked only by the player's secret key.
+export circuit removeCardFromHand(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: CurvePoint): CurvePoint {
+    const gid = disclose(gameId);
+    const cardKey = makeCardKey(gid, disclose(semiMaskedPoint));
     
-    // Remove card without decrementing counter (for book removal)
-    export circuit removeCardFromHandForBook(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: CurvePoint): [] {
-        const gid = disclose(gameId);
-        const cardKey = makeCardKey(gid, disclose(semiMaskedPoint));
-        
-        if (playerId == 1 as Uint<64>) {
-            assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
-            const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
-            assert(owner == 1 as Uint<8>, "Card not in player 1 hand");
-            cardOwnership.insert(disclose(cardKey), 0 as Uint<8>);
-            const currentSize = handSize1.lookup(gid) as Uint<64>;
-            handSize1.insert(gid, currentSize - 1 as Uint<64>);
-        } else if (playerId == 2 as Uint<64>) {
-            assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
-            const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
-            assert(owner == 2 as Uint<8>, "Card not in player 2 hand");
-            cardOwnership.insert(disclose(cardKey), 0 as Uint<8>);
-            const currentSize = handSize2.lookup(gid) as Uint<64>;
-            handSize2.insert(gid, currentSize - 1 as Uint<64>);
-        } else {
-            assert(false, "Invalid player index"); 
-        }
-        return [];
-    }
-
-    export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, card: CurvePoint): Boolean {
-        const gid = disclose(gameId);
-        const cardKey = makeCardKey(gid, disclose(card));
-        
-        if (!cardOwnership.member(disclose(cardKey))) {
-            return false;
-        }
-        
+    if (playerId == 1 as Uint<64>) {
+        assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
         const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
-        
-        if (playerId == 1 as Uint<64>) {
-            return owner == 1 as Uint<8>;
-        } else if (playerId == 2 as Uint<64>) {
-            return owner == 2 as Uint<8>;
-        }
+        assert(owner == 1 as Uint<8>, "Card not in player 1 hand");
+        cardOwnership.insert(disclose(cardKey), 0 as Uint<8>); // Remove ownership
+        const currentSize = handSize1.lookup(gid) as Uint<64>;
+        handSize1.insert(gid, currentSize - 1 as Uint<64>);
+        return semiMaskedPoint;
+    } else if (playerId == 2 as Uint<64>) {
+        assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
+        const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
+        assert(owner == 2 as Uint<8>, "Card not in player 2 hand");
+        cardOwnership.insert(disclose(cardKey), 0 as Uint<8>); // Remove ownership
+        const currentSize = handSize2.lookup(gid) as Uint<64>;
+        handSize2.insert(gid, currentSize - 1 as Uint<64>);
+        return semiMaskedPoint;
+    } 
+    assert(false, "Invalid player index");
+    return semiMaskedPoint;
+}
+
+export circuit insertCardIntoHand(gameId: Bytes<32>, playerId: Uint<64>, card: CurvePoint): [] {
+    const gid = disclose(gameId);
+    const cardKey = makeCardKey(gid, disclose(card));
+    
+    if (playerId == 1 as Uint<64>) {
+        cardOwnership.insert(disclose(cardKey), 1 as Uint<8>);
+        const currentSize = handSize1.lookup(gid) as Uint<64>;
+        handSize1.insert(gid, currentSize + 1 as Uint<64>);
+    } else if (playerId == 2 as Uint<64>) {
+        cardOwnership.insert(disclose(cardKey), 2 as Uint<8>);
+        const currentSize = handSize2.lookup(gid) as Uint<64>;
+        handSize2.insert(gid, currentSize + 1 as Uint<64>);
+    } else {
         assert(false, "Invalid player index");
+    }
+    return [];
+}
+
+// Remove card without decrementing counter (for book removal)
+export circuit removeCardFromHandForBook(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: CurvePoint): [] {
+    const gid = disclose(gameId);
+    const cardKey = makeCardKey(gid, disclose(semiMaskedPoint));
+    
+    if (playerId == 1 as Uint<64>) {
+        assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
+        const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
+        assert(owner == 1 as Uint<8>, "Card not in player 1 hand");
+        cardOwnership.insert(disclose(cardKey), 0 as Uint<8>);
+        const currentSize = handSize1.lookup(gid) as Uint<64>;
+        handSize1.insert(gid, currentSize - 1 as Uint<64>);
+    } else if (playerId == 2 as Uint<64>) {
+        assert(cardOwnership.member(disclose(cardKey)), "Card not in any hand");
+        const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
+        assert(owner == 2 as Uint<8>, "Card not in player 2 hand");
+        cardOwnership.insert(disclose(cardKey), 0 as Uint<8>);
+        const currentSize = handSize2.lookup(gid) as Uint<64>;
+        handSize2.insert(gid, currentSize - 1 as Uint<64>);
+    } else {
+        assert(false, "Invalid player index"); 
+    }
+    return [];
+}
+
+export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, card: CurvePoint): Boolean {
+    const gid = disclose(gameId);
+    const cardKey = makeCardKey(gid, disclose(card));
+    
+    if (!cardOwnership.member(disclose(cardKey))) {
         return false;
     }
+    
+    const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
+    
+    if (playerId == 1 as Uint<64>) {
+        return owner == 1 as Uint<8>;
+    } else if (playerId == 2 as Uint<64>) {
+        return owner == 2 as Uint<8>;
+    }
+    assert(false, "Invalid player index");
+    return false;
+}
 
-    export circuit doesPlayerHaveCardN(gameId: Bytes<32>, playerId: Uint<64>, card: CurvePoint): Uint<8> {
-        const gid = disclose(gameId);
-        const cardKey = makeCardKey(gid, disclose(card));
-        
-        if (!cardOwnership.member(disclose(cardKey))) {
-            return 0 as Uint<8>;
-        }
-        
-        const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
-        
-        if (playerId == 1 as Uint<64>) {
-            return owner == 1 as Uint<8> ? 1 as Uint<8> : 0 as Uint<8>;
-        } else if (playerId == 2 as Uint<64>) {
-            return owner == 2 as Uint<8> ? 1 as Uint<8> : 0 as Uint<8>;
-        } 
-        assert(false, "Invalid player index");
+export circuit doesPlayerHaveCardN(gameId: Bytes<32>, playerId: Uint<64>, card: CurvePoint): Uint<8> {
+    const gid = disclose(gameId);
+    const cardKey = makeCardKey(gid, disclose(card));
+    
+    if (!cardOwnership.member(disclose(cardKey))) {
         return 0 as Uint<8>;
     }
+    
+    const owner = cardOwnership.lookup(disclose(cardKey)) as Uint<8>;
+    
+    if (playerId == 1 as Uint<64>) {
+        return owner == 1 as Uint<8> ? 1 as Uint<8> : 0 as Uint<8>;
+    } else if (playerId == 2 as Uint<64>) {
+        return owner == 2 as Uint<8> ? 1 as Uint<8> : 0 as Uint<8>;
+    } 
+    assert(false, "Invalid player index");
+    return 0 as Uint<8>;
+}
+
 }

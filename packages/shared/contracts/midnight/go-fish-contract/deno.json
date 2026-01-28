@@ -1,10 +1,16 @@
 {
-    "name": "@go-fish/midnight-contract-go-fish",
+    "name": "@go-fish/midnight-contract",
     "version": "0.1.0",
     "exports": {
-        ".": "./managed/contract.js"
+        ".": "./src/_index.ts",
+        "./witnesses": "./src/witnesses.ts",
+        "./contract": "./src/managed/contract/index.js"
     },
     "tasks": {
-        "compile": "compact compile +0.27.0 --skip-zk src/game.compact managed"
+        "compact": "compact compile +0.27.0 src/game.compact src/managed",
+        "contract:compile": "deno task compact"
+    },
+    "imports": {
+        "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1"
     }
 }

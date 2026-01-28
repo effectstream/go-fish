@@ -7,15 +7,12 @@ import {
   PaimaEngineConfig,
   sendTransaction,
   walletLogin,
-  WalletMode,
-  type WalletLoginResult,
   type Wallet,
 } from "@paimaexample/wallets";
 import { hardhat } from "viem/chains";
 
 // Contract addresses from deployment
 const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
-const GO_FISH_LOBBY_CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 
 // Paima Engine API endpoint
 const PAIMA_API_URL = "http://localhost:9999";
@@ -28,7 +25,7 @@ const paimaEngineConfig = new PaimaEngineConfig(
   "go-fish",
   "mainEvmRPC",
   PAIMA_L2_CONTRACT_ADDRESS,
-  hardhat,
+  hardhat as any, // Type compatibility with viem versions
   undefined,
   undefined,
   false,
@@ -39,11 +36,9 @@ const paimaEngineConfig = new PaimaEngineConfig(
  */
 export async function userWalletLogin({
   mode = 0, // WalletMode.EvmInjected
-  preferBatchedMode = false,
 }: {
   mode?: number;
-  preferBatchedMode?: boolean;
-} = {}): Promise<WalletLoginResult> {
+} = {}): Promise<{ success: boolean; errorMessage?: string }> {
   try {
     const result = await walletLogin({
       mode,

@@ -5,14 +5,22 @@
   "nodeModulesDir": "auto",
   "tasks": {
     "build:evm": "deno task --filter @go-fish/evm-contracts contract:compile",
+    "build:midnight": "deno task --filter @go-fish/midnight-contracts contract:compile",
     "dev": "deno task --filter @go-fish/node dev",
+    "dev:typescript": "USE_TYPESCRIPT_CONTRACT=true deno task --filter @go-fish/node dev",
     "testnet": "deno task --filter @go-fish/node testnet",
     "frontend:dev": "cd packages/frontend && npm run dev",
-    "frontend:build": "cd packages/frontend && npm run build"
+    "frontend:build": "cd packages/frontend && npm run build",
+    "midnight:node": "deno task --filter @go-fish/midnight-contracts midnight-node:start",
+    "midnight:indexer": "deno task --filter @go-fish/midnight-contracts midnight-indexer:start",
+    "midnight:proof-server": "deno task --filter @go-fish/midnight-contracts midnight-proof-server:start",
+    "midnight:deploy": "deno task --filter @go-fish/midnight-contracts midnight-contract:deploy",
+    "midnight:faucet": "deno task --filter @go-fish/midnight-contracts midnight-faucet:start"
   },
   "imports": {
-    // Workaround for missing Midnight dependencies
-    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.3.128"
+    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.3.128",
+    "@go-fish/midnight-contracts": "./packages/shared/contracts/midnight/deno.json",
+    "@go-fish/midnight-contracts/midnight-env": "./packages/shared/contracts/midnight/midnight-env.ts"
   },
   "lint": {
     "rules": {

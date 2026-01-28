@@ -1,0 +1,35 @@
+module HashTransient {
+import CompactStandardLibrary;
+import CompactStandardLibrary prefix std_;
+
+export circuit hashField(fieldValue: Field): Bytes<32> {
+    const hash = std_transientHash<Field>(fieldValue);
+    return std_upgradeFromTransient(hash);
+}
+export circuit hashCurvePoint(curvePoint: CurvePoint): Bytes<32> {
+    const hash = std_transientHash<CurvePoint>(curvePoint);
+    return std_upgradeFromTransient(hash);
+}
+export circuit hashVector(vector: [Bytes<32>, Bytes<32>]): Bytes<32> {
+    const hash = std_transientHash<[Bytes<32>, Bytes<32>]>(vector);
+    return std_upgradeFromTransient(hash);
+}
+// CHANGED: Vector size 21
+export circuit hashVector2(vector: Vector<21, Bytes<32>>): Bytes<32> {
+    const hash = std_transientHash<Vector<21, Bytes<32>>>(vector);
+    return std_upgradeFromTransient(hash);
+}
+export circuit hashVector3(vector: [CurvePoint, Uint<248>]): Bytes<32> {
+    const hash = std_transientHash<[CurvePoint, Uint<248>]>(vector);
+    return std_upgradeFromTransient(hash);
+}
+export circuit hashVector4(vector: [Field, Field]): Bytes<32> {
+    const hash = std_transientHash<[Field, Field]>(vector);
+    return std_upgradeFromTransient(hash);
+}
+export circuit hashBytes32(bytes32: Bytes<32>): Bytes<32> {
+    const hash = std_transientHash<Bytes<32>>(bytes32);
+    return std_upgradeFromTransient(hash);
+}
+
+}

@@ -3,7 +3,7 @@
  * This runs on the Paima node and provides read-only access to game state
  */
 
-import { Contract, type Witnesses, type Ledger } from '../../../shared/contracts/midnight/go-fish-contract/managed/contract/index.js';
+import { Contract } from '../../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
 import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-runtime';
 import {
   QueryContext,
@@ -16,26 +16,24 @@ import {
 type PrivateState = Record<string, never>;
 
 // Minimal witnesses for backend queries (no secrets needed for read-only)
-const queryWitnesses: Witnesses<PrivateState> = {
-  getFieldInverse: (context, x) => {
+// Type is any to avoid complex generic type mismatches with the Contract class
+const queryWitnesses: any = {
+  getFieldInverse: (_context: any, _x: any) => {
     throw new Error('Backend should not generate proofs');
   },
-  player_secret_key: (context, gameId, player) => {
+  player_secret_key: (_context: any, _gameId: any, _player: any) => {
     throw new Error('Backend should not access player secrets');
   },
-  split_field_bits: (context, f) => {
-    throw new Error('Backend should not generate proofs');
-  },
-  shuffle_seed: (context, gameId, player) => {
+  shuffle_seed: (_context: any, _gameId: any, _player: any) => {
     throw new Error('Backend should not access shuffle seeds');
   },
-  get_sorted_deck_witness: (context, input) => {
+  get_sorted_deck_witness: (_context: any, _input: any) => {
     throw new Error('Backend should not generate proofs');
   },
 };
 
-// Singleton contract instance for queries
-let queryContract: Contract<PrivateState, Witnesses<PrivateState>> | null = null;
+// Singleton contract instance for queries (using any for flexibility)
+let queryContract: any = null;
 let queryContext: CircuitContext<PrivateState> | null = null;
 
 /**
@@ -83,7 +81,7 @@ export async function initializeQueryContract(): Promise<void> {
     console.log('[MidnightQuery] Initializing query contract...');
 
     // Create contract instance with minimal witnesses
-    queryContract = new Contract<PrivateState, Witnesses<PrivateState>>(queryWitnesses);
+    queryContract = new Contract(queryWitnesses);
 
     // Initialize contract state
     const { currentPrivateState, currentContractState, currentZswapLocalState } =
@@ -468,12 +466,24 @@ export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<b
       }
 
       const gameId = lobbyIdToGameId(lobbyId);
-      // Use hasDealt circuit (checks if player called dealCards) not getCardsDealt (cards received)
-      const result = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
-      queryContext = result.context;
 
-      const hasDealt = Boolean(result.result);
-      console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt}`);
+      // Try hasDealt circuit first (checks if player called dealCards)
+      if (queryContract.impureCircuits.hasDealt) {
+        const result = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
+        queryContext = result.context;
+        const hasDealt = Boolean(result.result);
+        console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt}`);
+        return hasDealt;
+      }
+
+      // Fallback: Check if opponent has received cards (player deals to opponent)
+      // Player 1 deals to Player 2, Player 2 deals to Player 1
+      const opponentId = playerId === 1 ? 2 : 1;
+      const cardsDealtResult = queryContract.impureCircuits.getCardsDealt(queryContext, gameId, BigInt(opponentId));
+      queryContext = cardsDealtResult.context;
+      const cardsDealt = Number(cardsDealtResult.result);
+      const hasDealt = cardsDealt > 0;
+      console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt} (via getCardsDealt to opponent: ${cardsDealt})`);
       return hasDealt;
     } catch (error: any) {
       // "Game does not exist" is expected during setup phase - don't log as error

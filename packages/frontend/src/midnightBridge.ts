@@ -14,8 +14,11 @@
  * on backend (INSECURE). See MIDNIGHT_SECURITY_ARCHITECTURE.md for migration plan.
  */
 
-import { Contract, type Witnesses, type Ledger } from '../../shared/contracts/midnight/go-fish-contract/managed/contract/index.js';
+import { Contract } from '../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
 import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-runtime';
+
+// Ledger type placeholder (empty in this contract)
+type Ledger = Record<string, never>;
 import {
   QueryContext,
   sampleContractAddress,
@@ -29,8 +32,8 @@ export type PrivateState = {
   shuffleSeed?: Uint8Array;
 };
 
-// Midnight contract and state
-let contract: Contract<PrivateState, Witnesses<PrivateState>> | null = null;
+// Midnight contract and state (using any for flexibility with Contract's generic types)
+let contract: any = null;
 let circuitContext: CircuitContext<PrivateState> | null = null;
 let privateState: PrivateState = {};
 
@@ -42,7 +45,7 @@ export async function initializeMidnightContract(): Promise<{ success: boolean; 
     console.log('[MidnightBridge] Initializing Midnight contract...');
 
     // Create contract instance with witnesses
-    contract = new Contract<PrivateState, Witnesses<PrivateState>>(witnesses);
+    contract = new Contract(witnesses);
 
     // Initialize contract state (constructor creates static deck)
     const { currentPrivateState, currentContractState, currentZswapLocalState } =
@@ -58,6 +61,13 @@ export async function initializeMidnightContract(): Promise<{ success: boolean; 
       ),
       costModel: CostModel.initialCostModel(),
     };
+
+    // Initialize the static deck mappings (required before any game can be created)
+    // This sets up reverseDeckCurveToCard and deckCurveToCard for all 21 cards
+    console.log('[MidnightBridge] Initializing static deck mappings...');
+    const initDeckResult = contract.impureCircuits.init_deck(circuitContext);
+    circuitContext = initDeckResult.context;
+    console.log('[MidnightBridge] Static deck initialized');
 
     console.log('[MidnightBridge] Contract initialized successfully');
     return { success: true };
@@ -129,16 +139,6 @@ function modInverse(a: bigint, n: bigint): bigint {
 }
 
 /**
- * Split field value into high and low 64-bit parts
- */
-function splitFieldBits(fieldValue: bigint): [bigint, bigint] {
-  const TWO_POW_64 = 1n << 64n;
-  const low = fieldValue % TWO_POW_64;
-  const high = fieldValue / TWO_POW_64;
-  return [high, low];
-}
-
-/**
  * Jubjub curve scalar field order
  */
 const JUBJUB_SCALAR_FIELD_ORDER =
@@ -146,8 +146,9 @@ const JUBJUB_SCALAR_FIELD_ORDER =
 
 /**
  * Witness implementations for client-side proof generation
+ * Type is any to avoid complex generic type mismatches with the Contract class
  */
-export const witnesses: Witnesses<PrivateState> = {
+export const witnesses: any = {
   getFieldInverse: (
     context: WitnessContext<Ledger, PrivateState>,
     x: bigint
@@ -168,13 +169,6 @@ export const witnesses: Witnesses<PrivateState> = {
     return [context.privateState, privateState.playerSecretKey!];
   },
 
-  split_field_bits: (
-    context: WitnessContext<Ledger, PrivateState>,
-    f: bigint
-  ): [PrivateState, [bigint, bigint]] => {
-    return [context.privateState, splitFieldBits(f)];
-  },
-
   shuffle_seed: (
     context: WitnessContext<Ledger, PrivateState>,
     _gameId: Uint8Array,
@@ -189,20 +183,26 @@ export const witnesses: Witnesses<PrivateState> = {
 
   get_sorted_deck_witness: (
     context: WitnessContext<Ledger, PrivateState>,
-    input: { point: { x: bigint; y: bigint }; weight: bigint }[]
-  ): [PrivateState, { point: { x: bigint; y: bigint }; weight: bigint }[]] => {
-    // Bubble sort by weight (simple but works for 52 cards)
-    const sorted = [...input];
-    for (let i = 0; i < sorted.length; i++) {
-      for (let j = i + 1; j < sorted.length; j++) {
-        if (sorted[i]!.weight > sorted[j]!.weight) {
-          const temp = sorted[i];
-          sorted[i] = sorted[j]!;
-          sorted[j] = temp!;
+    input: { x: bigint; y: bigint }[]
+  ): [PrivateState, { x: bigint; y: bigint }[]] => {
+    // Assign random weights and sort (shuffles the deck)
+    const mappedPoints = input.map((point) => ({
+      x: point.x,
+      y: point.y,
+      weight: Math.floor(Math.random() * 1000000) | 0,
+    }));
+
+    // Bubble sort by weight
+    for (let i = 0; i < input.length; i++) {
+      for (let j = i + 1; j < input.length; j++) {
+        if (mappedPoints[i]!.weight > mappedPoints[j]!.weight) {
+          const temp = input[i];
+          input[i] = input[j]!;
+          input[j] = temp!;
         }
       }
     }
-    return [context.privateState, sorted];
+    return [context.privateState, mappedPoints.map((x) => ({ x: x.x, y: x.y }))];
   },
 };
 
@@ -571,15 +571,15 @@ export async function getPlayerHand(
 
     const hand: Array<{ rank: number; suit: number }> = [];
 
-    // Iterate through all 52 cards (13 ranks × 4 suits)
-    // Card index = rank + (suit * 13)
-    for (let rank = 0; rank < 13; rank++) {
-      for (let suit = 0; suit < 4; suit++) {
-        const cardIndex = rank + suit * 13;
+    // Iterate through all 21 cards (7 ranks × 3 suits) - simplified deck
+    // Card index = rank + (suit * 7)
+    for (let rank = 0; rank < 7; rank++) {
+      for (let suit = 0; suit < 3; suit++) {
+        const cardIndex = rank + suit * 7;
 
         try {
           // Check if player owns this semi-masked card
-          const checkResult = contract.impureCircuits.doesPlayerHaveSpecificCard(
+          const checkResult: any = contract.impureCircuits.doesPlayerHaveSpecificCard(
             circuitContext,
             gameId,
             BigInt(playerId),
@@ -591,7 +591,7 @@ export async function getPlayerHand(
             // Player has this card!
             hand.push({ rank, suit });
           }
-        } catch (error) {
+        } catch (_error) {
           // Card not in hand, continue
           continue;
         }

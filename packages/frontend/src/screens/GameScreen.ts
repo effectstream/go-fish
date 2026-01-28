@@ -191,7 +191,7 @@ export class GameScreen {
         // Player completed a book! Try to determine which rank
         // Look for ranks that disappeared from hand
         const prevRanks = new Set(this.previousHand.map(c => c.rank));
-        const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+        const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
 
         // Find rank that was in previous hand but not in current (with 4 cards)
         let bookRank: string | undefined;
@@ -241,8 +241,8 @@ export class GameScreen {
           const opponentIndex = this.gameState.playerId === 1 ? 1 : 0;
           const opponentName = this.gameState.players[opponentIndex]?.name || 'Opponent';
 
-          const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-          const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+          const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
+          const suitNames: Suit[] = ['hearts', 'diamonds', 'clubs']; // Simplified deck: 3 suits
 
           this.showNotification({
             type: 'gained',
@@ -573,8 +573,8 @@ export class GameScreen {
 
   private renderDecryptedHand(): string {
     // Convert numeric rank/suit to Card objects
-    const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-    const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+    const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
+    const suitNames: Suit[] = ['hearts', 'diamonds', 'clubs']; // Simplified deck: 3 suits
 
     const cards = this.myDecryptedHand.map(({ rank, suit }) => ({
       rank: rankNames[rank],
@@ -1452,9 +1452,9 @@ export class GameScreen {
 
                 // Check if it matches the asked rank
                 if (this.selectedRank !== null) {
+                  // Simplified deck: 7 ranks (A=0 through 7=6)
                   const rankMap: Record<string, number> = {
-                    'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
-                    '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
+                    'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6
                   };
                   const askedRankNum = rankMap[this.selectedRank] ?? -1;
                   if (cardAfter.rank === askedRankNum) {
@@ -1468,8 +1468,8 @@ export class GameScreen {
 
             // Show notification for the drawn card
             if (drawnCard) {
-              const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-              const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+              const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
+              const suitNames: Suit[] = ['hearts', 'diamonds', 'clubs']; // Simplified deck: 3 suits
               this.showNotification({
                 type: 'draw',
                 card: {
@@ -1566,8 +1566,8 @@ export class GameScreen {
                   const opponentIndex = this.gameState.currentTurn - 1;
                   const opponentName = this.gameState.players[opponentIndex]?.name || 'Opponent';
 
-                  const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-                  const suitNames: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
+                  const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
+                  const suitNames: Suit[] = ['hearts', 'diamonds', 'clubs']; // Simplified deck: 3 suits
 
                   this.showNotification({
                     type: 'lost',
@@ -1703,11 +1703,10 @@ export class GameScreen {
           askBtn.textContent = 'Asking...';
 
           try {
-            // Convert rank string to number (0-indexed: A=0, 2=1, ..., K=12)
-            // Contract uses 0-12 for ranks, matching the card index pattern
+            // Convert rank string to number (0-indexed: A=0 through 7=6)
+            // Simplified deck: 7 ranks × 3 suits = 21 cards
             const rankMap: Record<string, number> = {
-              'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
-              '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12
+              'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6
             };
             const targetRank = rankMap[this.selectedRank] ?? 0;
 

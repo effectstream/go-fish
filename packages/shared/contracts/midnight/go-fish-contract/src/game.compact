@@ -32,28 +32,11 @@ import './GoFish' prefix go_fish_;
 
 // Constructor only initializes the static deck mappings (shared across all games)
 constructor() {
-    deck_init_static_deck();
+    // deck_init_static_deck();
 }
 
-// ============================================
-// HELPER: Player Verification
-// ============================================
-
-// Verify that the caller's secret hash matches their claimed playerId for this game
-circuit verifyPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
-    const gid = disclose(gameId);
-    const pid = disclose(playerId);
-    
-    // Get the player's secret hash
-    const secretHash = deck_getSecretHashForPlayer(gid, playerId);
-    
-    // Create the composite key for this game + secret hash
-    const playerKeyHash = std_persistentHash<Vector<2, Bytes<32>>>([gid, disclose(secretHash)]);
-    
-    // This will fail if the player hasn't registered (applied mask) for this game
-    // The lookup verifies the secret hash is registered for the claimed playerId
-    // Note: We only verify after mask is applied, so some functions skip this check during setup
-    return [];
+export circuit init_deck(): [] {
+    return deck_init_static_deck();
 }
 
 // ============================================
@@ -79,8 +62,7 @@ export circuit applyMask(gameId: Bytes<32>, playerId: Uint<64>): [] {
     }
     
     // RULE: Must be in Setup phase
-    const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.Setup, "Can only apply mask during setup");
+    assert(go_fish_getPhase(gid) == go_fish_GamePhase.Setup, "Can only apply mask during setup");
     
     // RULE: Player hasn't already applied their mask
     assert(!go_fish_hasMaskApplied(gid, playerId), "Player has already applied their mask");
@@ -90,7 +72,7 @@ export circuit applyMask(gameId: Bytes<32>, playerId: Uint<64>): [] {
     return [];
 }
 
-// Deal 7 cards to opponent - called by each player
+// Deal 4 cards to opponent - called by each player
 // RULE: Must be in Setup phase
 // RULE: Both players must have applied their masks first
 // RULE: First caller becomes player1, second caller becomes player2
@@ -121,16 +103,18 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
     const playersDealt = go_fish_getPlayersDealtCount(gid);
     
     if (playersDealt == 0 as Uint<8> && disclosed_playerId == 1 as Uint<64>) {
-        // First player to call - they are player1, deal 7 cards to player2 (opponent)
+        // First player to call - they are player1, deal 4 cards to player2 (opponent)
         assert(disclosed_playerId == 1 as Uint<64>, "First player to deal must use player ID 1");
-        for (const i of 0..7) {
+        // CHANGED: Deal 4 cards
+        for (const i of 0..4) {
             dealCard(gid, 2 as Uint<64>); // Deal to opponent (player2)
         }
         go_fish_markHasDealt(gid, 1 as Uint<64>);
     } else if (playersDealt == 1 as Uint<8> && disclosed_playerId == 2 as Uint<64>) {
-        // Second player to call - they are player2, deal 7 cards to player1 (opponent)
+        // Second player to call - they are player2, deal 4 cards to player1 (opponent)
         assert(disclosed_playerId == 2 as Uint<64>, "Second player to deal must use player ID 2");
-        for (const i of 0..7) {
+        // CHANGED: Deal 4 cards
+        for (const i of 0..4) {
             dealCard(gid, 1 as Uint<64>); // Deal to opponent (player1)
         }
         go_fish_markHasDealt(gid, 2 as Uint<64>);
@@ -144,7 +128,8 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
 }
 
 // Deal a single card to a player during setup
-circuit dealCard(gameId: Bytes<32>, toPlayerId: Uint<64>): CurvePoint {
+circuit dealCard(gameId: Bytes<32>, _toPlayerId: Uint<64>): CurvePoint {
+    const toPlayerId = disclose(_toPlayerId);
     const gid = disclose(gameId);
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.Setup, "Not in setup phase");
@@ -179,39 +164,26 @@ export circuit partial_decryption(gameId: Bytes<32>, point: CurvePoint, playerId
 }
 
 // Transfer a single card from one player to another (internal use)
-circuit moveCardFromPlayerToPlayerCardInHand(gameId: Bytes<32>, fromPlayerId: Uint<64>, semiMaskedPoint: CurvePoint): [] {
+circuit moveCardFromPlayerToPlayerCardInHand(gameId: Bytes<32>, fromPlayerId: Uint<64>, _semiMaskedPoint: CurvePoint): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(fromPlayerId);
+    const semiMaskedPoint = disclose(_semiMaskedPoint);
     
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
  
-    if (disclosed_playerId == 1 as Uint<64>) {
-        assert(hand_doesPlayerHaveCard(gid, 1 as Uint<64>, disclose(semiMaskedPoint)), "Card not in player1 hand");
-        hand_removeCardFromHand(gid, 1, disclose(semiMaskedPoint));
+    // if (disclosed_playerId == 1 as Uint<64>) {
+        assert(hand_doesPlayerHaveCard(gid, disclosed_playerId as Uint<64>, disclose(semiMaskedPoint)), "Card not in player1 hand");
+        hand_removeCardFromHand(gid, disclosed_playerId, disclose(semiMaskedPoint));
         
         // Look up the fully encrypted card from the semi-masked point
         const fullyMaskedPoint = deck_lookupFullyMasked(gid, disclose(semiMaskedPoint));
         
         // Apply P1's inverse to get card encrypted only with P2's secret
-        const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
-        const opponentMaskedPoint = std_ecMul(fullyMaskedPoint, invScalar1);
-        
-        hand_insertCardIntoHand(gid, 2, disclose(opponentMaskedPoint));
-    } else if (disclosed_playerId == 2 as Uint<64>) {
-        assert(hand_doesPlayerHaveCard(gid, 2 as Uint<64>, disclose(semiMaskedPoint)), "Card not in player2 hand");
-        hand_removeCardFromHand(gid, 2, disclose(semiMaskedPoint));
-        
-        // Look up the fully encrypted card from the semi-masked point
-        const fullyMaskedPoint = deck_lookupFullyMasked(gid, disclose(semiMaskedPoint));
-        
-        // Apply P2's inverse to get card encrypted only with P1's secret
-        const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
-        const opponentMaskedPoint = std_ecMul(fullyMaskedPoint, invScalar2);
-        
-        hand_insertCardIntoHand(gid, 1, disclose(opponentMaskedPoint));
-    } else {
-        assert(false, "Invalid player index");
-    }
+        const [secret, invScalar] = deck_getSecretFromPlayerId(gid, disclosed_playerId);
+        const opponentMaskedPoint = std_ecMul(fullyMaskedPoint, invScalar);
+        const opponentPlayerId = disclosed_playerId == 1 as Uint<64> ? 2 as Uint<64> : 1 as Uint<64>;
+        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(opponentMaskedPoint));
+   
 }
 
 // Transfer all cards of a rank from opponent to current player
@@ -219,13 +191,14 @@ circuit transferAllCardsOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, target
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(fromPlayerId);
     const disclosed_rank = disclose(targetRank);
-    assert(disclosed_rank >= 0 && disclosed_rank < 13, "Invalid card rank");
+    // CHANGED: Rank < 7
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
 
-    transferCardOfRank(gid, fromPlayerId, targetRank, 0 as Uint<32>);
-    transferCardOfRank(gid, fromPlayerId, targetRank, 1 as Uint<32>);
-    transferCardOfRank(gid, fromPlayerId, targetRank, 2 as Uint<32>);
-    transferCardOfRank(gid, fromPlayerId, targetRank, 3 as Uint<32>);
+    // Try each suit exactly once (0..3 yields 0,1,2 in Compact ranges).
+    for (const suit of 0..3) {
+        transferCardOfRank(gid, fromPlayerId, targetRank, suit as Uint<32>);
+    }
 }
 
 // Transfer a single card of a specific rank
@@ -243,29 +216,22 @@ circuit transferCardOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank
     const currentTurn = go_fish_getCurrentTurn(gid);
     assert(disclosed_playerId != currentTurn, "Cannot transfer cards from current player - must be opponent");
     
-    assert(disclosed_rank >= 0 && disclosed_rank < 13, "Invalid card rank");
-    assert(disclosed_suit >= 0 && disclosed_suit < 4, "Invalid card suit");
+    // CHANGED: Rank < 7
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
+    assert(disclosed_suit >= 0 && disclosed_suit < 3, "Invalid card suit");
     
-    const cardIndex = (disclosed_rank + (disclosed_suit * 13 as Uint<32>)) as Uint<32>;
+    // CHANGED: Multiply by 7 (number of ranks)
+    const cardIndex = (disclosed_rank + (disclosed_suit * 7 as Uint<32>)) as Uint<32>;
     const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as CurvePoint;
     
-    if (disclosed_playerId == 1 as Uint<64>) {
-        const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
-        const maskedCard = std_ecMul(baseCard, secret1);
+    // if (disclosed_playerId == 1 as Uint<64>) {
+        const [secret, _] = deck_getSecretFromPlayerId(gid, disclosed_playerId);
+        const maskedCard = std_ecMul(baseCard, secret);
         
-        if (hand_doesPlayerHaveCard(gid, 1 as Uint<64>, disclose(maskedCard))) {
-            moveCardFromPlayerToPlayerCardInHand(gid, 1 as Uint<64>, maskedCard);
+        if (hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard))) {
+            moveCardFromPlayerToPlayerCardInHand(gid, disclosed_playerId, maskedCard);
             return true;
         }
-    } else if (disclosed_playerId == 2 as Uint<64>) {
-        const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
-        const maskedCard = std_ecMul(baseCard, secret2);
-        
-        if (hand_doesPlayerHaveCard(gid, 2 as Uint<64>, disclose(maskedCard))) {
-            moveCardFromPlayerToPlayerCardInHand(gid, 2 as Uint<64>, maskedCard);
-            return true;
-        }
-    }
     
     return false;
 }
@@ -294,8 +260,9 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     const hasCard = doesPlayerHaveCard(gid, askingPlayerId, targetRank);
     assert(hasCard, "Cannot ask for a rank you don't have in your hand");
     
-    // RULE 4: Valid rank (0-12)
-    assert(disclosed_rank >= 0 && disclosed_rank < 13, "Invalid card rank");
+    // RULE 4: Valid rank (0-6)
+    // CHANGED: Rank < 7
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
     
     // Store the asked rank and asking player for the response phase
     go_fish_setLastAskedRank(gid, targetRank);
@@ -354,8 +321,9 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>): [B
 // DRAWING CARDS
 // ============================================
 
-circuit getTopCardForOpponent(gameId: Bytes<32>, toPlayerId: Uint<64>): CurvePoint {
+export circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): CurvePoint {
     const gid = disclose(gameId);
+    const toPlayerId = disclose(_toPlayerId);
     const disclosed_playerId = disclose(toPlayerId);
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
     
@@ -437,34 +405,6 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
     return [];
 }
 
-// Called when deck is empty and player cannot draw - ends turn without drawing
-export circuit skipDrawDeckEmpty(gameId: Bytes<32>, playerId: Uint<64>): [] {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(playerId);
-
-    // Game must exist
-    assert(go_fish_doesGameExist(gid), "Game does not exist");
-
-    // RULE 1: Must be in WaitForDraw phase
-    const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.WaitForDraw, "Not in draw phase");
-
-    // RULE 2: Must be the current player's turn
-    const currentTurn = go_fish_getCurrentTurn(gid);
-    assert(disclosed_playerId == currentTurn, "Not your turn");
-
-    // RULE 3: Deck must actually be empty
-    const topIndex = deck_getTopCardIndex(gid);
-    const deckSize = deck_getDeckSize(gid);
-    assert(topIndex as Uint<64> >= deckSize, "Deck is not empty - must draw");
-
-    // Clear state and switch turn
-    go_fish_clearLastAskedRank(gid);
-    go_fish_switchTurn(gid);
-
-    return [];
-}
-
 export circuit get_card_from_point(point: CurvePoint): Field {
     return deck_getCardFromPoint(point);
 }
@@ -477,77 +417,58 @@ export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, _target
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
     const targetRank = disclose(_targetRank);
-    assert(targetRank >= 0 && targetRank < 13, "Invalid card rank");
+    // CHANGED: Rank < 7
+    assert(targetRank >= 0 && targetRank < 7, "Invalid card rank");
     assert(playerId == 1 as Uint<64> || playerId == 2 as Uint<64>, "Invalid player index");
 
+    // CHANGED: Offsets to +7 and +14 for the 3 suits (since rank size is 7)
     const baseCard1 = deck_reverseDeckCurveToCard.lookup(targetRank) as CurvePoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(targetRank+13 as Uint<32>) as CurvePoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(targetRank+26 as Uint<32>) as CurvePoint;
-    const baseCard4 = deck_reverseDeckCurveToCard.lookup(targetRank+39 as Uint<32>) as CurvePoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(targetRank+7 as Uint<32>) as CurvePoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(targetRank+14 as Uint<32>) as CurvePoint;
 
-    if (disclosed_playerId == 1 as Uint<64>) {
-        const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
-        const card1 = std_ecMul(baseCard1, secret1);
-        const card2 = std_ecMul(baseCard2, secret1);
-        const card3 = std_ecMul(baseCard3, secret1);
-        const card4 = std_ecMul(baseCard4, secret1);
-        return (
-            hand_doesPlayerHaveCard(gid, 1 as Uint<64>, disclose(card1)) ||
-            hand_doesPlayerHaveCard(gid, 1 as Uint<64>, disclose(card2)) ||
-            hand_doesPlayerHaveCard(gid, 1 as Uint<64>, disclose(card3)) ||
-            hand_doesPlayerHaveCard(gid, 1 as Uint<64>, disclose(card4))
-        );
-    } else if (disclosed_playerId == 2 as Uint<64>) {
-        const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
-        const card1 = std_ecMul(baseCard1, secret2);
-        const card2 = std_ecMul(baseCard2, secret2);
-        const card3 = std_ecMul(baseCard3, secret2);
-        const card4 = std_ecMul(baseCard4, secret2);
-        return (
-            hand_doesPlayerHaveCard(gid, 2 as Uint<64>, disclose(card1)) ||
-            hand_doesPlayerHaveCard(gid, 2 as Uint<64>, disclose(card2)) ||
-            hand_doesPlayerHaveCard(gid, 2 as Uint<64>, disclose(card3)) ||
-            hand_doesPlayerHaveCard(gid, 2 as Uint<64>, disclose(card4))
-        );
-    }
-    return false;
+    const [secret, _] = deck_getSecretFromPlayerId(gid, disclosed_playerId);
+    const card1 = std_ecMul(baseCard1, secret);
+    const card2 = std_ecMul(baseCard2, secret);
+    const card3 = std_ecMul(baseCard3, secret);
+    return (
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card1)) ||
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card2)) ||
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card3))
+    );
 }
 
 circuit countCardsOfRank(gameId: Bytes<32>, playerId: Uint<64>, targetRank: Uint<32>): Uint<8> {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
     const disclosed_rank = disclose(targetRank);
-    assert(disclosed_rank >= 0 && disclosed_rank < 13, "Invalid card rank");
+    // CHANGED: Rank < 7
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
 
+    // CHANGED: Offsets to +7 and +14
     const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as CurvePoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+13 as Uint<32>) as CurvePoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+26 as Uint<32>) as CurvePoint;
-    const baseCard4 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+39 as Uint<32>) as CurvePoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as CurvePoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as CurvePoint;
     
     if (disclosed_playerId == 1 as Uint<64>) {
         const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
         const card1 = std_ecMul(baseCard1, secret1);
         const card2 = std_ecMul(baseCard2, secret1);
         const card3 = std_ecMul(baseCard3, secret1);
-        const card4 = std_ecMul(baseCard4, secret1);
         
         const c1: Uint<8> = hand_doesPlayerHaveCardN(gid, 1, disclose(card1));
         const c2: Uint<8> = hand_doesPlayerHaveCardN(gid, 1, disclose(card2));
         const c3: Uint<8> = hand_doesPlayerHaveCardN(gid, 1, disclose(card3));
-        const c4: Uint<8> = hand_doesPlayerHaveCardN(gid, 1, disclose(card4));
-        return (c1 + c2 + c3 + c4) as Uint<8>;
+        return (c1 + c2 + c3) as Uint<8>;
     } else if (disclosed_playerId == 2 as Uint<64>) {
         const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
         const card1 = std_ecMul(baseCard1, secret2);
         const card2 = std_ecMul(baseCard2, secret2);
         const card3 = std_ecMul(baseCard3, secret2);
-        const card4 = std_ecMul(baseCard4, secret2);
         
         const c1: Uint<8> = hand_doesPlayerHaveCardN(gid, 2, disclose(card1));
         const c2: Uint<8> = hand_doesPlayerHaveCardN(gid, 2, disclose(card2));
         const c3: Uint<8> = hand_doesPlayerHaveCardN(gid, 2, disclose(card3));
-        const c4: Uint<8> = hand_doesPlayerHaveCardN(gid, 2, disclose(card4));
-        return (c1 + c2 + c3 + c4) as Uint<8>;
+        return (c1 + c2 + c3) as Uint<8>;
     }
     return 0;
 }
@@ -565,7 +486,8 @@ export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRa
     assert(go_fish_doesGameExist(gid), "Game does not exist");
     
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-    assert(disclosed_rank >= 0 && disclosed_rank < 13, "Invalid card rank");
+    // CHANGED: Rank < 7
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
     
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase != go_fish_GamePhase.Setup, "Cannot score books during setup");
@@ -573,24 +495,22 @@ export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRa
     
     const cardCount = countCardsOfRank(gid, playerId, targetRank);
     
-    if (cardCount == 4 as Uint<8>) {
+    if (cardCount == 3 as Uint<8>) {
+        // CHANGED: Offsets to +7 and +14
         const card1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as CurvePoint;
-        const card2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+13 as Uint<32>) as CurvePoint;
-        const card3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+26 as Uint<32>) as CurvePoint;
-        const card4 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+39 as Uint<32>) as CurvePoint;
+        const card2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as CurvePoint;
+        const card3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as CurvePoint;
         
         if (disclosed_playerId == 1 as Uint<64>) {
             const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
             hand_removeCardFromHandForBook(gid, 1, std_ecMul(card1, secret1));
             hand_removeCardFromHandForBook(gid, 1, std_ecMul(card2, secret1));
             hand_removeCardFromHandForBook(gid, 1, std_ecMul(card3, secret1));
-            hand_removeCardFromHandForBook(gid, 1, std_ecMul(card4, secret1));
         } else if (disclosed_playerId == 2 as Uint<64>) {
             const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
             hand_removeCardFromHandForBook(gid, 2, std_ecMul(card1, secret2));
             hand_removeCardFromHandForBook(gid, 2, std_ecMul(card2, secret2));
             hand_removeCardFromHandForBook(gid, 2, std_ecMul(card3, secret2));
-            hand_removeCardFromHandForBook(gid, 2, std_ecMul(card4, secret2));
         }
         
         go_fish_addScore(gid, playerId);
@@ -695,7 +615,8 @@ export circuit doesPlayerHaveSpecificCard(gameId: Bytes<32>, playerId: Uint<64>,
     const disclosed_playerId = disclose(playerId);
     const disclosed_cardIndex = disclose(cardIndex);
     
-    assert(disclosed_cardIndex >= 0 && disclosed_cardIndex < 52, "Invalid card index");
+    // CHANGED: Index < 21
+    assert(disclosed_cardIndex >= 0 && disclosed_cardIndex < 21, "Invalid card index");
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
     
     const baseCard = deck_reverseDeckCurveToCard.lookup(disclosed_cardIndex) as CurvePoint;
@@ -712,18 +633,21 @@ export circuit doesPlayerHaveSpecificCard(gameId: Bytes<32>, playerId: Uint<64>,
     return false;
 }
 
+// Test helper
 export circuit getLastAskedRank(gameId: Bytes<32>): Uint<32> {
     const gid = disclose(gameId);
     assert(go_fish_doesGameExist(gid), "Game does not exist");
     return go_fish_getLastAskedRank(gid);
 }
 
+// Test helper
 export circuit getLastAskingPlayer(gameId: Bytes<32>): Uint<64> {
     const gid = disclose(gameId);
     assert(go_fish_doesGameExist(gid), "Game does not exist");
     return go_fish_getLastAskingPlayer(gid);
 }
 
+// Test helper
 export circuit hasMaskApplied(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
     const gid = disclose(gameId);
     // Allow checking even if game doesn't exist yet (returns false)
@@ -733,20 +657,21 @@ export circuit hasMaskApplied(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
     return go_fish_hasMaskApplied(gid, playerId);
 }
 
+// Test helper
 export circuit getCardsDealt(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
     const gid = disclose(gameId);
     assert(go_fish_doesGameExist(gid), "Game does not exist");
     return go_fish_getCardsDealt(gid, playerId);
 }
 
-// Check if a game exists
-export circuit doesGameExist(gameId: Bytes<32>): Boolean {
-    return go_fish_doesGameExist(disclose(gameId));
-}
-
-// Check if a player has dealt cards (called dealCards)
+// Test helper - checks if player has called dealCards
 export circuit hasDealt(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
     const gid = disclose(gameId);
     assert(go_fish_doesGameExist(gid), "Game does not exist");
     return go_fish_hasDealt(gid, playerId);
+}
+
+// Test helper
+export circuit doesGameExist(gameId: Bytes<32>): Boolean {
+    return go_fish_doesGameExist(disclose(gameId));
 }

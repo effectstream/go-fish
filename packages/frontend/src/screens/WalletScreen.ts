@@ -1,25 +1,59 @@
 /**
  * WalletScreen - Handles wallet connection before entering the game
+ * Supports both EVM (MetaMask) and Midnight (Lace) wallets
+ *
+ * In mock mode (USE_TYPESCRIPT_CONTRACT=true): Only EVM wallet is needed
+ * In production mode: Both EVM and Lace wallets are required
  */
 
 import * as EffectstreamBridge from '../effectstreamBridge';
-import { WalletMode } from '@paimaexample/wallets';
+import * as LaceWalletBridge from '../laceWalletBridge';
+
+// Wallet type selection
+type WalletType = 'evm' | 'lace';
+
+// Config from backend
+interface AppConfig {
+  useMockedMidnight: boolean;
+  requiresLaceWallet: boolean;
+  requiresEvmWallet: boolean;
+}
 
 export class WalletScreen {
   private container: HTMLElement;
-  private connectButton: HTMLButtonElement | null = null;
+  private connectEvmButton: HTMLButtonElement | null = null;
+  private connectLaceButton: HTMLButtonElement | null = null;
+  private continueButton: HTMLButtonElement | null = null;
   private statusText: HTMLElement | null = null;
   private errorText: HTMLElement | null = null;
+  private selectedWalletType: WalletType = 'evm';
+
+  // Connection state
+  private evmConnected: boolean = false;
+  private laceConnected: boolean = false;
+
+  // Config from backend
+  private config: AppConfig = {
+    useMockedMidnight: true, // Default to mock mode until we fetch config
+    requiresLaceWallet: false,
+    requiresEvmWallet: true,
+  };
 
   constructor(container: HTMLElement) {
     this.container = container;
   }
 
   async show() {
-    // Check if already connected
-    if (EffectstreamBridge.isWalletConnected()) {
-      const address = EffectstreamBridge.getWalletAddress();
-      console.log('Already connected to wallet:', address);
+    // Fetch config from backend to determine which wallets are needed
+    await this.fetchConfig();
+
+    // Check existing connections
+    this.evmConnected = EffectstreamBridge.isWalletConnected();
+    this.laceConnected = LaceWalletBridge.isLaceConnected();
+
+    // If all required wallets are already connected, proceed
+    if (this.areAllRequiredWalletsConnected()) {
+      console.log('All required wallets already connected, proceeding...');
       this.dispatchNavigate('name-entry');
       return;
     }
@@ -31,7 +65,29 @@ export class WalletScreen {
     // No cleanup needed
   }
 
+  private async fetchConfig(): Promise<void> {
+    try {
+      const response = await fetch('http://localhost:9999/api/config');
+      if (response.ok) {
+        this.config = await response.json();
+        console.log('[WalletScreen] Config loaded:', this.config);
+      }
+    } catch (error) {
+      console.warn('[WalletScreen] Could not fetch config, using defaults:', error);
+      // Keep defaults (mock mode)
+    }
+  }
+
+  private areAllRequiredWalletsConnected(): boolean {
+    const evmOk = !this.config.requiresEvmWallet || this.evmConnected;
+    const laceOk = !this.config.requiresLaceWallet || this.laceConnected;
+    return evmOk && laceOk;
+  }
+
   private render() {
+    const isMockMode = this.config.useMockedMidnight;
+    const modeLabel = isMockMode ? '(Development Mode)' : '(Production Mode)';
+
     this.container.innerHTML = `
       <style>
         .wallet-container {
@@ -47,7 +103,7 @@ export class WalletScreen {
           background: white;
           border-radius: 16px;
           padding: 48px;
-          max-width: 480px;
+          max-width: 520px;
           width: 100%;
           box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
           text-align: center;
@@ -63,7 +119,15 @@ export class WalletScreen {
         .subtitle {
           font-size: 18px;
           color: #718096;
+          margin: 0 0 8px 0;
+        }
+
+        .mode-label {
+          font-size: 12px;
+          color: #a0aec0;
           margin: 0 0 32px 0;
+          text-transform: uppercase;
+          letter-spacing: 1px;
         }
 
         .wallet-info {
@@ -85,29 +149,129 @@ export class WalletScreen {
           min-height: 24px;
         }
 
+        .wallet-buttons {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          margin: 24px 0;
+        }
+
         .btn-large {
           padding: 16px 48px;
           font-size: 18px;
           font-weight: 600;
-          margin: 16px 0;
           width: 100%;
           transition: all 0.3s ease;
-          background: #667eea;
-          color: white;
           border: none;
           border-radius: 8px;
           cursor: pointer;
         }
 
-        .btn-large:hover {
+        .btn-evm {
+          background: #667eea;
+          color: white;
+        }
+
+        .btn-evm:hover:not(:disabled) {
           transform: translateY(-2px);
           box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-lace {
+          background: linear-gradient(135deg, #1a472a 0%, #2d6b3f 100%);
+          color: white;
+        }
+
+        .btn-lace:hover:not(:disabled) {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 20px rgba(26, 71, 42, 0.4);
+        }
+
+        .btn-continue {
+          background: #38a169;
+          color: white;
+          margin-top: 16px;
+        }
+
+        .btn-continue:hover:not(:disabled) {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 20px rgba(56, 161, 105, 0.4);
         }
 
         .btn-large:disabled {
           opacity: 0.6;
           cursor: not-allowed;
           transform: none;
+        }
+
+        .btn-connected {
+          background: #48bb78 !important;
+          cursor: default;
+        }
+
+        .btn-connected:hover {
+          transform: none !important;
+          box-shadow: none !important;
+        }
+
+        .btn-disabled-mock {
+          background: #a0aec0 !important;
+          cursor: not-allowed;
+          position: relative;
+        }
+
+        .btn-disabled-mock:hover {
+          transform: none !important;
+          box-shadow: none !important;
+        }
+
+        .tooltip {
+          visibility: hidden;
+          position: absolute;
+          bottom: 100%;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #2d3748;
+          color: white;
+          padding: 12px 16px;
+          border-radius: 8px;
+          font-size: 13px;
+          font-weight: 400;
+          white-space: normal;
+          width: 280px;
+          text-align: left;
+          z-index: 100;
+          margin-bottom: 8px;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+          line-height: 1.4;
+        }
+
+        .tooltip::after {
+          content: '';
+          position: absolute;
+          top: 100%;
+          left: 50%;
+          transform: translateX(-50%);
+          border: 8px solid transparent;
+          border-top-color: #2d3748;
+        }
+
+        .tooltip-wrapper {
+          position: relative;
+          display: inline-block;
+          width: 100%;
+        }
+
+        .tooltip-wrapper:hover .tooltip {
+          visibility: visible;
+        }
+
+        .tooltip code {
+          background: #4a5568;
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-family: monospace;
+          font-size: 11px;
         }
 
         .error-text {
@@ -129,6 +293,60 @@ export class WalletScreen {
           margin: 4px 0;
         }
 
+        .wallet-section {
+          margin: 16px 0;
+        }
+
+        .wallet-section-title {
+          font-size: 12px;
+          font-weight: 600;
+          color: #a0aec0;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 8px;
+        }
+
+        .divider {
+          display: flex;
+          align-items: center;
+          margin: 24px 0;
+        }
+
+        .divider-line {
+          flex: 1;
+          height: 1px;
+          background: #e2e8f0;
+        }
+
+        .divider-text {
+          padding: 0 16px;
+          color: #a0aec0;
+          font-size: 14px;
+        }
+
+        .connection-status {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          margin-top: 8px;
+          font-size: 14px;
+        }
+
+        .status-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+        }
+
+        .status-connected {
+          background: #48bb78;
+        }
+
+        .status-disconnected {
+          background: #e53e3e;
+        }
+
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
@@ -137,28 +355,76 @@ export class WalletScreen {
         .connecting {
           animation: pulse 1.5s ease-in-out infinite;
         }
+
+        .hidden {
+          display: none !important;
+        }
       </style>
 
       <div class="wallet-container">
         <div class="wallet-card">
           <h1>Go Fish</h1>
           <p class="subtitle">A blockchain card game</p>
+          <p class="mode-label">${modeLabel}</p>
 
           <div class="wallet-info">
-            <p>Connect your wallet to start playing</p>
+            <p>${isMockMode ? 'Connect your wallet to start playing' : 'Connect both wallets to start playing'}</p>
             <p class="wallet-status" id="wallet-status"></p>
           </div>
 
-          <button id="connect-wallet-btn" class="btn-large">
-            Connect Wallet
-          </button>
+          <div class="wallet-buttons">
+            <div class="wallet-section">
+              <div class="wallet-section-title">Midnight Network (ZK Privacy)</div>
+              ${isMockMode ? `
+                <div class="tooltip-wrapper">
+                  <button id="connect-lace-btn" class="btn-large btn-lace btn-disabled-mock" disabled>
+                    Connect Lace Wallet
+                  </button>
+                  <div class="tooltip">
+                    Midnight contract is being mocked in development mode.<br><br>
+                    To use the real Midnight network, restart without the mock flag:<br>
+                    <code>deno task dev</code>
+                  </div>
+                </div>
+              ` : `
+                <button id="connect-lace-btn" class="btn-large btn-lace ${this.laceConnected ? 'btn-connected' : ''}">
+                  ${this.laceConnected ? 'Lace Connected' : 'Connect Lace Wallet'}
+                </button>
+              `}
+              <div class="connection-status">
+                <span class="status-dot ${isMockMode ? 'status-disconnected' : (this.laceConnected ? 'status-connected' : 'status-disconnected')}"></span>
+                <span>${isMockMode ? 'Mocked (dev mode)' : (this.laceConnected ? 'Connected' : 'Not connected')}</span>
+              </div>
+            </div>
+
+            <div class="divider">
+              <div class="divider-line"></div>
+              <span class="divider-text">${isMockMode ? 'then' : 'and'}</span>
+              <div class="divider-line"></div>
+            </div>
+
+            <div class="wallet-section">
+              <div class="wallet-section-title">EVM Network (Game State)</div>
+              <button id="connect-evm-btn" class="btn-large btn-evm ${this.evmConnected ? 'btn-connected' : ''}">
+                ${this.evmConnected ? 'MetaMask Connected' : 'Connect MetaMask'}
+              </button>
+              <div class="connection-status">
+                <span class="status-dot ${this.evmConnected ? 'status-connected' : 'status-disconnected'}"></span>
+                <span>${this.evmConnected ? 'Connected' : 'Not connected'}</span>
+              </div>
+            </div>
+
+            <button id="continue-btn" class="btn-large btn-continue ${this.areAllRequiredWalletsConnected() ? '' : 'hidden'}">
+              Continue to Game
+            </button>
+          </div>
 
           <p class="error-text" id="error-text"></p>
 
           <div class="wallet-details">
             <p class="small-text">Supported wallets:</p>
-            <p class="small-text">• MetaMask</p>
-            <p class="small-text">• Any EVM-compatible injected wallet</p>
+            <p class="small-text">• Lace (Midnight Network - ZK privacy)${isMockMode ? ' [mocked]' : ''}</p>
+            <p class="small-text">• MetaMask (EVM - game state)</p>
           </div>
         </div>
       </div>
@@ -167,59 +433,148 @@ export class WalletScreen {
   }
 
   private attachEventListeners(): void {
-    this.connectButton = document.getElementById('connect-wallet-btn') as HTMLButtonElement;
+    this.connectEvmButton = document.getElementById('connect-evm-btn') as HTMLButtonElement;
+    this.connectLaceButton = document.getElementById('connect-lace-btn') as HTMLButtonElement;
+    this.continueButton = document.getElementById('continue-btn') as HTMLButtonElement;
     this.statusText = document.getElementById('wallet-status');
     this.errorText = document.getElementById('error-text');
 
-    this.connectButton?.addEventListener('click', () => this.handleConnectWallet());
+    this.connectEvmButton?.addEventListener('click', () => {
+      if (!this.evmConnected) {
+        this.handleConnectEvmWallet();
+      }
+    });
+
+    this.connectLaceButton?.addEventListener('click', () => {
+      if (!this.laceConnected) {
+        this.handleConnectLaceWallet();
+      }
+    });
+
+    this.continueButton?.addEventListener('click', () => {
+      if (this.areAllRequiredWalletsConnected()) {
+        this.dispatchNavigate('name-entry');
+      }
+    });
   }
 
-  private async handleConnectWallet(): Promise<void> {
-    if (!this.connectButton || !this.statusText || !this.errorText) return;
+  private async handleConnectEvmWallet(): Promise<void> {
+    if (!this.connectEvmButton || !this.statusText || !this.errorText) return;
+
+    this.selectedWalletType = 'evm';
 
     // Disable button and show loading state
-    this.connectButton.disabled = true;
-    this.connectButton.textContent = 'Connecting...';
-    this.connectButton.classList.add('connecting');
+    this.setButtonLoading(this.connectEvmButton, true, 'evm');
     this.errorText.textContent = '';
-    this.statusText.textContent = 'Opening wallet...';
+    this.statusText.textContent = 'Opening MetaMask...';
 
     try {
       // Attempt to connect wallet
       const result = await EffectstreamBridge.userWalletLogin({
         mode: 0, // WalletMode.EvmInjected
-        preferBatchedMode: false,
       });
 
       if (result.success) {
         const address = EffectstreamBridge.getWalletAddress();
-        console.log('Wallet connected successfully:', address);
+        console.log('EVM wallet connected successfully:', address);
 
-        this.statusText.textContent = `Connected: ${this.formatAddress(address || '')}`;
+        this.evmConnected = true;
 
-        // Wait a moment to show success, then navigate
-        setTimeout(() => {
-          this.dispatchNavigate('name-entry');
-        }, 1000);
+        // If all wallets connected, navigate immediately without re-rendering
+        if (this.areAllRequiredWalletsConnected()) {
+          this.statusText.textContent = `Connected! Proceeding...`;
+          this.connectEvmButton.textContent = 'MetaMask Connected';
+          this.connectEvmButton.classList.remove('connecting');
+          this.connectEvmButton.classList.add('btn-connected');
+
+          setTimeout(() => {
+            this.dispatchNavigate('name-entry');
+          }, 300);
+        } else {
+          // Need more wallets, re-render to show updated state
+          this.statusText.textContent = `EVM: ${this.formatAddress(address || '')}`;
+          this.render();
+        }
       } else {
         // Connection failed
         this.handleConnectionError(result.errorMessage || 'Failed to connect wallet');
       }
     } catch (error) {
-      console.error('Error connecting wallet:', error);
+      console.error('Error connecting EVM wallet:', error);
       this.handleConnectionError(
         error instanceof Error ? error.message : 'Unknown error occurred'
       );
     }
   }
 
-  private handleConnectionError(message: string): void {
-    if (!this.connectButton || !this.statusText || !this.errorText) return;
+  private async handleConnectLaceWallet(): Promise<void> {
+    if (!this.connectLaceButton || !this.statusText || !this.errorText) return;
 
-    this.connectButton.disabled = false;
-    this.connectButton.textContent = 'Connect Wallet';
-    this.connectButton.classList.remove('connecting');
-    this.statusText.textContent = '';
+    this.selectedWalletType = 'lace';
+
+    // Disable button and show loading state
+    this.setButtonLoading(this.connectLaceButton, true, 'lace');
+    this.errorText.textContent = '';
+    this.statusText.textContent = 'Opening Lace wallet...';
+
+    try {
+      // Attempt to connect Lace wallet
+      const result = await LaceWalletBridge.laceWalletLogin();
+
+      if (result.success) {
+        const address = result.address || LaceWalletBridge.getLaceAddress();
+        console.log('Lace wallet connected successfully:', address);
+
+        this.laceConnected = true;
+
+        // If all wallets connected, navigate immediately without re-rendering
+        if (this.areAllRequiredWalletsConnected()) {
+          this.statusText.textContent = `Connected! Proceeding...`;
+          this.connectLaceButton.textContent = 'Lace Connected';
+          this.connectLaceButton.classList.remove('connecting');
+          this.connectLaceButton.classList.add('btn-connected');
+
+          setTimeout(() => {
+            this.dispatchNavigate('name-entry');
+          }, 300);
+        } else {
+          // Need more wallets, re-render to show updated state
+          this.statusText.textContent = `Lace: ${this.formatAddress(address || '')}`;
+          this.render();
+        }
+      } else {
+        // Connection failed
+        this.handleConnectionError(result.errorMessage || 'Failed to connect Lace wallet');
+      }
+    } catch (error) {
+      console.error('Error connecting Lace wallet:', error);
+      this.handleConnectionError(
+        error instanceof Error ? error.message : 'Unknown error occurred'
+      );
+    }
+  }
+
+  private setButtonLoading(button: HTMLButtonElement, loading: boolean, type: WalletType): void {
+    if (loading) {
+      button.disabled = true;
+      button.textContent = 'Connecting...';
+      button.classList.add('connecting');
+    } else {
+      button.disabled = false;
+      button.textContent = type === 'evm' ? 'Connect MetaMask' : 'Connect Lace Wallet';
+      button.classList.remove('connecting');
+    }
+  }
+
+  private handleConnectionError(message: string): void {
+    if (!this.statusText || !this.errorText) return;
+
+    // Re-render to reset button states
+    this.render();
+
+    this.errorText = document.getElementById('error-text');
+    if (!this.errorText) return;
+
     this.errorText.textContent = `Error: ${message}`;
 
     // Show user-friendly error messages
@@ -227,6 +582,12 @@ export class WalletScreen {
       this.errorText.textContent = 'Connection cancelled. Please try again.';
     } else if (message.includes('No injected')) {
       this.errorText.textContent = 'Please install MetaMask or another Web3 wallet.';
+    } else if (message.includes('Lace wallet not found') || message.includes('extension installed')) {
+      this.errorText.textContent = 'Please install the Lace wallet browser extension.';
+    } else if (message.includes('No compatible Midnight wallet')) {
+      this.errorText.textContent = 'Please update your Lace wallet to a compatible version.';
+    } else if (message.includes('Network ID mismatch')) {
+      this.errorText.textContent = 'Network mismatch. Please switch to the Preview network in Lace.';
     }
   }
 

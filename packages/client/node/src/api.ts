@@ -35,8 +35,8 @@ function getDB(): Pool {
   return dbPool;
 }
 
-// Rank names for display
-const RANK_NAMES = ['Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King'];
+// Rank names for display - simplified deck (7 ranks)
+const RANK_NAMES = ['Ace', '2', '3', '4', '5', '6', '7'];
 
 /**
  * Persistent game log storage - maintains full log history per game
@@ -195,6 +195,9 @@ export function clearGameLog(lobbyId: string): void {
   gameLogStorage.delete(lobbyId);
 }
 
+// Check if we're using the TypeScript-compiled contract (mock mode)
+const USE_TYPESCRIPT_CONTRACT = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+
 export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   // Add CORS headers for all routes
   server.addHook('onRequest', async (request, reply) => {
@@ -208,6 +211,19 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
    */
   server.get("/api/health", async (request, reply) => {
     return { status: "ok", timestamp: Date.now() };
+  });
+
+  /**
+   * Config endpoint - tells frontend which mode we're running in
+   * USE_TYPESCRIPT_CONTRACT=true: Mock mode, only EVM wallet needed
+   * USE_TYPESCRIPT_CONTRACT=false: Production mode, both EVM and Lace wallets needed
+   */
+  server.get("/api/config", async (request, reply) => {
+    return {
+      useMockedMidnight: USE_TYPESCRIPT_CONTRACT,
+      requiresLaceWallet: !USE_TYPESCRIPT_CONTRACT,
+      requiresEvmWallet: true, // Always need EVM for Paima Engine
+    };
   });
 
   /**

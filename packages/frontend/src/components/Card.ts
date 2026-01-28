@@ -91,7 +91,7 @@ export class CardComponent {
   }
 
   /**
-   * Render a book (completed set of 4)
+   * Render a book (completed set of 3 - simplified deck)
    */
   static renderBook(rank: Rank): string {
     return `
@@ -104,6 +104,7 @@ export class CardComponent {
 
   /**
    * Get card color based on suit
+   * Simplified deck: hearts (red), diamonds (red), clubs (black)
    */
   private static getCardColor(suit: Suit): string {
     return suit === 'hearts' || suit === 'diamonds' ? '#dc2626' : '#1f2937';
@@ -111,14 +112,14 @@ export class CardComponent {
 
   /**
    * Get suit symbol
+   * Simplified deck: 3 suits only (hearts, diamonds, clubs)
    */
   private static getSuitSymbol(suit: Suit): string {
     const symbols: Record<Suit, string> = {
       hearts: '♥',
       diamonds: '♦',
       clubs: '♣',
-      spades: '♠',
     };
-    return symbols[suit];
+    return symbols[suit] || '?';
   }
 }

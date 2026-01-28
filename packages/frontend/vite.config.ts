@@ -21,12 +21,13 @@ export default defineConfig({
     target: 'esnext',
     commonjsOptions: {
       transformMixedEsModules: true,
+      extensions: ['.js', '.cjs'],
+      ignoreDynamicRequires: true,
     },
   },
   optimizeDeps: {
-    exclude: [
-      '@midnight-ntwrk/onchain-runtime-v1',
-      '@midnight-ntwrk/compact-runtime',
+    include: [
+      // CommonJS modules that need pre-bundling for ESM compatibility
       'object-inspect',
       'side-channel',
       'call-bind',
@@ -34,6 +35,10 @@ export default defineConfig({
       'has-symbols',
       'has-proto',
       'function-bind',
+    ],
+    exclude: [
+      '@midnight-ntwrk/onchain-runtime-v1',
+      '@midnight-ntwrk/compact-runtime',
     ],
     esbuildOptions: {
       target: 'esnext',

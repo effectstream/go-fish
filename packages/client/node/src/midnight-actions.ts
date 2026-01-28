@@ -3,7 +3,7 @@
  * This runs on the Paima node and provides write access to the contract
  */
 
-import { Contract, type Witnesses } from '../../../shared/contracts/midnight/go-fish-contract/managed/contract/index.js';
+import { Contract } from '../../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
 import type { CircuitContext } from '@midnight-ntwrk/compact-runtime';
 import {
   createConstructorContext,
@@ -119,25 +119,16 @@ const JUBJUB_SCALAR_FIELD_ORDER =
  */
 const playerSecrets = new Map<string, bigint>();
 
-// Singleton contract instance
-let actionContract: Contract<PrivateState, Witnesses<PrivateState>> | null = null;
+// Singleton contract instance (using any for flexibility with Contract's generic types)
+let actionContract: any = null;
 let actionContext: CircuitContext<PrivateState> | null = null;
 
 /**
- * Helper: Split a field element into high and low 64-bit parts
- */
-function splitFieldBits(fieldValue: bigint): [bigint, bigint] {
-  const TWO_POW_64 = BigInt(1) << BigInt(64);
-  const low = fieldValue % TWO_POW_64;
-  const high = fieldValue / TWO_POW_64;
-  return [high, low];
-}
-
-/**
  * Witness functions for backend (generates secrets)
+ * Type is any to avoid complex generic type mismatches with the Contract class
  */
-const actionWitnesses: Witnesses<PrivateState> = {
-  getFieldInverse: (context, x) => {
+const actionWitnesses: any = {
+  getFieldInverse: (context: any, x: bigint) => {
     // Modular inverse calculation using Jubjub scalar field order
     if (x === 0n) {
       throw new Error('Cannot invert zero');
@@ -145,10 +136,12 @@ const actionWitnesses: Witnesses<PrivateState> = {
     return [context.privateState, modInverse(x, JUBJUB_SCALAR_FIELD_ORDER)];
   },
 
-  player_secret_key: (context, gameId, player) => {
+  player_secret_key: (context: any, gameId: Uint8Array, player: bigint) => {
     // ⚠️ INSECURE: Backend should NOT have access to player secrets!
     // Following example.test.ts pattern but this is for TESTING ONLY
-    const key = `${Buffer.from(gameId).toString('hex')}-${player}`;
+    // Convert Uint8Array to hex string for key
+    const hexGameId = Array.from(new Uint8Array(gameId)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const key = `${hexGameId}-${player}`;
 
     // Check if we already have a secret for this player/game
     if (playerSecrets.has(key)) {
@@ -163,11 +156,7 @@ const actionWitnesses: Witnesses<PrivateState> = {
     return [context.privateState, secret];
   },
 
-  split_field_bits: (context, f) => {
-    return [context.privateState, splitFieldBits(f)];
-  },
-
-  shuffle_seed: (context, gameId, player) => {
+  shuffle_seed: (context: any, gameId: Uint8Array, player: bigint) => {
     // Generate deterministic shuffle seed as Uint8Array(32)
     const seed = new Uint8Array(32);
 
@@ -180,17 +169,26 @@ const actionWitnesses: Witnesses<PrivateState> = {
     return [context.privateState, seed];
   },
 
-  get_sorted_deck_witness: (context, input) => {
-    // Sort the input array by weight (ascending order)
-    // input is Vector<52, WeightedCard> where WeightedCard = { point: CurvePoint, weight: bigint }
-    const sorted = [...input].sort((a: any, b: any) => {
-      const weightA = a.weight;
-      const weightB = b.weight;
-      if (weightA < weightB) return -1;
-      if (weightA > weightB) return 1;
-      return 0;
-    });
-    return [context.privateState, sorted];
+  get_sorted_deck_witness: (context: any, input: { x: bigint; y: bigint }[]) => {
+    // Assign random weights and sort (shuffles the deck)
+    // input is array of { x: bigint, y: bigint } curve points
+    const mappedPoints = input.map((point) => ({
+      x: point.x,
+      y: point.y,
+      weight: Math.floor(Math.random() * 1000000) | 0,
+    }));
+
+    // Bubble sort by weight
+    for (let i = 0; i < input.length; i++) {
+      for (let j = i + 1; j < input.length; j++) {
+        if (mappedPoints[i]!.weight > mappedPoints[j]!.weight) {
+          const temp = input[i];
+          input[i] = input[j]!;
+          input[j] = temp!;
+        }
+      }
+    }
+    return [context.privateState, mappedPoints.map((x) => ({ x: x.x, y: x.y }))];
   },
 };
 
@@ -241,7 +239,7 @@ export async function initializeActionContract(): Promise<void> {
     console.log('[MidnightActions] Initializing action contract...');
 
     // Create contract instance with action witnesses
-    actionContract = new Contract<PrivateState, Witnesses<PrivateState>>(actionWitnesses);
+    actionContract = new Contract(actionWitnesses);
 
     // Initialize contract state
     const { currentPrivateState, currentContractState, currentZswapLocalState } =
@@ -257,6 +255,13 @@ export async function initializeActionContract(): Promise<void> {
       ),
       costModel: CostModel.initialCostModel(),
     };
+
+    // Initialize the static deck mappings (required before any game can be created)
+    // This sets up reverseDeckCurveToCard and deckCurveToCard for all 21 cards
+    console.log('[MidnightActions] Initializing static deck mappings...');
+    const initDeckResult = actionContract.impureCircuits.init_deck(actionContext);
+    actionContext = initDeckResult.context;
+    console.log('[MidnightActions] Static deck initialized');
 
     console.log('[MidnightActions] Action contract initialized successfully');
   } catch (error) {
@@ -311,22 +316,22 @@ export async function getPlayerHand(
 
     const hand: Array<{ rank: number; suit: number }> = [];
 
-    // Iterate through all 52 cards (13 ranks × 4 suits)
+    // Iterate through all 21 cards (7 ranks × 3 suits) - simplified deck for Midnight contract
     // Yield to event loop frequently to prevent blocking Paima sync
     // Each circuit call is CPU-intensive WASM, so we yield often
     let cardCount = 0;
-    for (let rank = 0; rank < 13; rank++) {
-      for (let suit = 0; suit < 4; suit++) {
+    for (let rank = 0; rank < 7; rank++) {
+      for (let suit = 0; suit < 3; suit++) {
         // Yield every 4 cards to give sync processes a chance to run
         if (cardCount > 0 && cardCount % 4 === 0) {
           await yieldToEventLoop();
         }
         cardCount++;
 
-        const cardIndex = rank + suit * 13;
+        const cardIndex = rank + suit * 7;
 
         try {
-          const checkResult = actionContract.impureCircuits.doesPlayerHaveSpecificCard(
+          const checkResult: any = actionContract.impureCircuits.doesPlayerHaveSpecificCard(
             actionContext,
             gameId,
             BigInt(playerId),
@@ -337,7 +342,7 @@ export async function getPlayerHand(
           if (checkResult.result) {
             hand.push({ rank, suit });
           }
-        } catch (error) {
+        } catch (_error) {
           // Card not in hand, continue
           continue;
         }
@@ -400,7 +405,7 @@ export async function askForCard(
     actionContext = result.context;
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     console.log('[MidnightActions] askForCard succeeded');
     return { success: true };
@@ -430,7 +435,7 @@ export async function goFish(
     actionContext = result.context;
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     // Invalidate hand cache since player drew a card
     invalidateHandCache(lobbyId, playerId);
@@ -463,7 +468,7 @@ export async function applyMask(
     actionContext = result.context;
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     console.log('[MidnightActions] applyMask succeeded');
     return { success: true };
@@ -503,7 +508,7 @@ export async function dealCards(
     }
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     // Invalidate hand cache since cards were dealt
     invalidateHandCache(lobbyId);
@@ -588,7 +593,7 @@ export async function respondToAsk(
     }
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     // Invalidate hand cache for both players since cards may have been transferred
     invalidateHandCache(lobbyId);
@@ -628,7 +633,7 @@ export async function afterGoFish(
     await checkAndScoreBooksInternal(gameId, playerId);
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     // Invalidate hand cache since turn changed
     invalidateHandCache(lobbyId);
@@ -663,7 +668,7 @@ export async function skipDrawDeckEmpty(
       actionContext = result.context;
 
       // Sync query context so queries see the updated state
-      syncQueryContextFromAction(actionContext);
+      syncQueryContextFromAction(actionContext!);
 
       // Invalidate hand cache since turn changed
       invalidateHandCache(lobbyId);
@@ -685,13 +690,13 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
   if (!actionContract || !actionContext) return;
 
   console.log(`[MidnightActions] Checking for books for player ${playerId}...`);
-  const rankNames = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  const rankNames = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
   let booksFound = 0;
 
-  // Check all 13 ranks for possible books
-  for (let rank = 0; rank < 13; rank++) {
+  // Check all 7 ranks for possible books (simplified deck)
+  for (let rank = 0; rank < 7; rank++) {
     try {
-      const result = actionContract.impureCircuits.checkAndScoreBook(
+      const result: any = actionContract.impureCircuits.checkAndScoreBook(
         actionContext,
         gameId,
         BigInt(playerId),
@@ -739,11 +744,12 @@ export async function checkAndScoreBooks(
     console.log(`[MidnightActions] checkAndScoreBooks(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     let booksScored = 0;
+    const rankNames = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
 
-    // Check all 13 ranks for possible books
-    for (let rank = 0; rank < 13; rank++) {
+    // Check all 7 ranks for possible books (simplified deck)
+    for (let rank = 0; rank < 7; rank++) {
       try {
-        const result = actionContract.impureCircuits.checkAndScoreBook(
+        const result: any = actionContract.impureCircuits.checkAndScoreBook(
           actionContext,
           gameId,
           BigInt(playerId),
@@ -753,22 +759,21 @@ export async function checkAndScoreBooks(
 
         if (result.result) {
           booksScored++;
-          const rankNames = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
           console.log(`[MidnightActions] Player ${playerId} completed a book of ${rankNames[rank]}s!`);
         }
-      } catch (error) {
-        // Errors are expected for ranks the player doesn't have all 4 of
+      } catch (_error) {
+        // Errors are expected for ranks the player doesn't have all 3 of
         continue;
       }
 
       // Yield occasionally to prevent blocking
-      if (rank % 4 === 3) {
+      if (rank % 3 === 2) {
         await yieldToEventLoop();
       }
     }
 
     // Sync query context so queries see the updated state
-    syncQueryContextFromAction(actionContext);
+    syncQueryContextFromAction(actionContext!);
 
     // Invalidate hand cache since cards may have been removed for books
     if (booksScored > 0) {
