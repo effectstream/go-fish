@@ -196,7 +196,32 @@ export function clearGameLog(lobbyId: string): void {
 }
 
 // Check if we're using the TypeScript-compiled contract (mock mode)
-const USE_TYPESCRIPT_CONTRACT = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+// First check env var, then fall back to runtime config file written by orchestrator
+function getUseTypescriptContract(): boolean {
+  // Check env var first
+  const envValue = Deno.env.get("USE_TYPESCRIPT_CONTRACT");
+  if (envValue !== undefined) {
+    const result = envValue === "true";
+    console.log(`[API] USE_TYPESCRIPT_CONTRACT from env: "${envValue}" -> mock mode: ${result}`);
+    return result;
+  }
+
+  // Fall back to runtime config file (written by start.dev.ts)
+  try {
+    const configPath = new URL("../runtime-config.json", import.meta.url);
+    const configText = Deno.readTextFileSync(configPath);
+    const config = JSON.parse(configText);
+    const result = config.useTypescriptContract === true;
+    console.log(`[API] USE_TYPESCRIPT_CONTRACT from config file -> mock mode: ${result}`);
+    return result;
+  } catch {
+    // Config file doesn't exist or is invalid - default to production mode
+    console.log(`[API] USE_TYPESCRIPT_CONTRACT: no env or config file -> mock mode: false (production default)`);
+    return false;
+  }
+}
+
+const USE_TYPESCRIPT_CONTRACT = getUseTypescriptContract();
 
 export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   // Add CORS headers for all routes

@@ -59,6 +59,17 @@ main(function* () {
         console.error("⚠ Failed to connect to Midnight indexer:", error);
         console.error("  Ensure indexer is running: deno task midnight:indexer");
       });
+
+    // NOTE: For now, we also initialize the action contract in production mode
+    // This allows the game to function using local state while Midnight infrastructure
+    // (proof server, indexer, etc.) is being set up. Eventually, actions should go
+    // through the Lace wallet directly.
+    initializeActionContract()
+      .then(() => console.log("✓ Midnight action contract initialized (local state for testing)"))
+      .catch((error) => {
+        console.error("⚠ Failed to initialize Midnight action contract:", error);
+        console.error("  Game actions will not work until Midnight infrastructure is ready");
+      });
   }
 
   yield* withEffectstreamStaticConfig(config, function* () {

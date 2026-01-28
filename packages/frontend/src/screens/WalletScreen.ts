@@ -33,9 +33,11 @@ export class WalletScreen {
   private laceConnected: boolean = false;
 
   // Config from backend
+  // Default to production mode (require both wallets) - safer default
+  // If the config fetch fails, better to require both than skip Lace accidentally
   private config: AppConfig = {
-    useMockedMidnight: true, // Default to mock mode until we fetch config
-    requiresLaceWallet: false,
+    useMockedMidnight: false,
+    requiresLaceWallet: true,
     requiresEvmWallet: true,
   };
 

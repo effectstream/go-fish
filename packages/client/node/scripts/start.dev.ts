@@ -77,4 +77,13 @@ if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
   config.processes[ComponentNames.COLLECTOR] = false;
 }
 
+// Write runtime config file for the backend to read
+// This is needed because env vars don't always propagate through the orchestrator
+const runtimeConfig = {
+  useTypescriptContract: Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true",
+};
+const configPath = new URL("../runtime-config.json", import.meta.url);
+await Deno.writeTextFile(configPath, JSON.stringify(runtimeConfig, null, 2));
+console.log(`[Orchestrator] Runtime config written: useTypescriptContract=${runtimeConfig.useTypescriptContract}`);
+
 await start(config);
