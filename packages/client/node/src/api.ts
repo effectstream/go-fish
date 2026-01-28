@@ -252,6 +252,33 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   });
 
   /**
+   * Get deployed contract address (for on-chain mode)
+   * Returns the Midnight contract address if a deployment file exists
+   */
+  server.get("/api/midnight/contract_address", async (request, reply) => {
+    try {
+      // Try to read the deployment file
+      const deploymentPath = new URL(
+        "../../../shared/contracts/midnight/contract-go-fish.undeployed.json",
+        import.meta.url
+      );
+      const deploymentText = await Deno.readTextFile(deploymentPath);
+      const deployment = JSON.parse(deploymentText);
+      return {
+        contractAddress: deployment.contractAddress || null,
+        networkId: deployment.networkId || "undeployed",
+      };
+    } catch {
+      // No deployment file exists yet
+      return {
+        contractAddress: null,
+        networkId: null,
+        message: "Contract not deployed. Run: deno task midnight:deploy",
+      };
+    }
+  });
+
+  /**
    * Get open lobbies (for lobby list)
    */
   server.get("/open_lobbies", async (request, reply) => {

@@ -37,6 +37,7 @@ export default defineConfig({
       'function-bind',
     ],
     exclude: [
+      // Midnight runtime packages that use WASM - must be excluded from pre-bundling
       '@midnight-ntwrk/onchain-runtime-v1',
       '@midnight-ntwrk/compact-runtime',
     ],

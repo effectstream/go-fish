@@ -7,6 +7,7 @@ import { CardComponent } from '../components/Card';
 import type { GoFishGameState, GoFishPlayer, Rank, Suit } from '../../../shared/data-types/src/go-fish-types';
 import { getUniqueRanks } from '../../../shared/data-types/src/go-fish-types';
 import { getWalletAddress } from '../effectstreamBridge';
+import { MidnightService } from '../services/MidnightService';
 
 // Type for API game state response
 interface GameStateResponse {
@@ -103,13 +104,11 @@ export class GameScreen {
     this.previousHand = [...this.myDecryptedHand];
 
     try {
-      const response = await fetch(
-        `http://localhost:9999/game_state?lobby_id=${this.lobbyId}&wallet=${this.walletAddress}`
-      );
+      const gameState = await MidnightService.getGameState(this.lobbyId, this.walletAddress);
 
-      if (!response.ok) {
+      if (!gameState) {
         this.errorCount++;
-        console.error(`Failed to fetch game state: ${response.status} (error ${this.errorCount}/${GameScreen.MAX_ERRORS})`);
+        console.error(`Failed to fetch game state (error ${this.errorCount}/${GameScreen.MAX_ERRORS})`);
 
         // Only navigate away after multiple consecutive errors to handle transient issues
         if (this.errorCount >= GameScreen.MAX_ERRORS) {
@@ -121,7 +120,7 @@ export class GameScreen {
 
       // Reset error count on successful fetch
       this.errorCount = 0;
-      this.gameState = await response.json();
+      this.gameState = gameState;
     } catch (error) {
       this.errorCount++;
       console.error(`Error fetching game state (error ${this.errorCount}/${GameScreen.MAX_ERRORS}):`, error);
@@ -160,23 +159,16 @@ export class GameScreen {
 
     console.log(`[GameScreen] State: phase=${this.gameState.phase}, currentTurn=${this.gameState.currentTurn}, myPlayerId=${this.gameState.playerId}, isMyTurn=${isMyTurn}, myHandSize=${myHandSize}`);
 
-    // Decrypt player's hand via backend API
+    // Decrypt player's hand via MidnightService
     if (myHandSize > 0 && this.gameState.playerId) {
       try {
-        const response = await fetch(
-          `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+        this.myDecryptedHand = await MidnightService.getPlayerHand(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2
         );
-
-        if (response.ok) {
-          const data = await response.json();
-          this.myDecryptedHand = data.hand || [];
-          console.log(`[GameScreen] Hand fetched: ${this.myDecryptedHand.length} cards for player ${this.gameState.playerId}`);
-        } else {
-          console.error('[GameScreen] Failed to fetch hand from backend:', response.status);
-          this.myDecryptedHand = [];
-        }
+        console.log(`[GameScreen] Hand fetched: ${this.myDecryptedHand.length} cards for player ${this.gameState.playerId}`);
       } catch (error) {
-        console.error('[GameScreen] Error fetching hand from backend:', error);
+        console.error('[GameScreen] Error fetching hand:', error);
         this.myDecryptedHand = [];
       }
     } else {
@@ -618,10 +610,10 @@ export class GameScreen {
       console.log('[GameScreen] Starting automatic setup...');
 
       // Check current setup status
-      const statusResponse = await fetch(
-        `http://localhost:9999/api/midnight/setup_status?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+      const status = await MidnightService.getSetupStatus(
+        this.lobbyId,
+        this.gameState.playerId as 1 | 2
       );
-      const status = await statusResponse.json();
 
       console.log('[GameScreen] Setup status:', status);
 
@@ -629,16 +621,10 @@ export class GameScreen {
       // Use frontend-side cache to prevent duplicate attempts
       if (!this.maskApplied && !status.hasMaskApplied) {
         console.log('[GameScreen] Applying mask...');
-        const maskResponse = await fetch('http://localhost:9999/api/midnight/apply_mask', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lobby_id: this.lobbyId,
-            player_id: this.gameState.playerId
-          })
-        });
-
-        const maskResult = await maskResponse.json();
+        const maskResult = await MidnightService.applyMask(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2
+        );
         if (!maskResult.success) {
           // Check if error is "already applied" - treat as success and continue
           if (maskResult.errorMessage?.includes('already applied')) {
@@ -660,10 +646,10 @@ export class GameScreen {
       // Use frontend-side cache to prevent duplicate attempts
       if (!this.cardsDealt && !status.hasDealt) {
         // Re-fetch status to get latest opponent info
-        const updatedStatusResponse = await fetch(
-          `http://localhost:9999/api/midnight/setup_status?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+        const updatedStatus = await MidnightService.getSetupStatus(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2
         );
-        const updatedStatus = await updatedStatusResponse.json();
 
         if (!updatedStatus.opponentHasMaskApplied) {
           console.log('[GameScreen] Waiting for opponent to apply mask...');
@@ -680,16 +666,10 @@ export class GameScreen {
         }
 
         console.log(`[GameScreen] Player ${myPlayerId} dealing cards...`);
-        const dealResponse = await fetch('http://localhost:9999/api/midnight/deal_cards', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lobby_id: this.lobbyId,
-            player_id: this.gameState.playerId
-          })
-        });
-
-        const dealResult = await dealResponse.json();
+        const dealResult = await MidnightService.dealCards(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2
+        );
         if (!dealResult.success) {
           // Check if error is "already dealt" - treat as success
           if (dealResult.errorMessage?.includes('Player 1 must apply mask')) {
@@ -1401,24 +1381,17 @@ export class GameScreen {
         if (this.gameState) {
           try {
             // Step 1: Get hand before drawing to compare later
-            const handBeforeResponse = await fetch(
-              `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+            const handBefore = await MidnightService.getPlayerHand(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2
             );
-            const handBeforeData = await handBeforeResponse.json();
-            const handBefore = handBeforeData.hand || [];
             console.log('[GameScreen] Hand before Go Fish:', handBefore);
 
             // Step 2: Draw card from deck
-            const goFishResponse = await fetch('http://localhost:9999/api/midnight/go_fish', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lobby_id: this.lobbyId,
-                player_id: this.gameState.playerId
-              })
-            });
-
-            const goFishResult = await goFishResponse.json();
+            const goFishResult = await MidnightService.goFish(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2
+            );
 
             if (!goFishResult.success) {
               alert(`Failed to draw card: ${goFishResult.errorMessage}`);
@@ -1430,11 +1403,10 @@ export class GameScreen {
             console.log('[GameScreen] Go Fish draw succeeded');
 
             // Step 3: Get hand after drawing to find the new card
-            const handAfterResponse = await fetch(
-              `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+            const handAfter = await MidnightService.getPlayerHand(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2
             );
-            const handAfterData = await handAfterResponse.json();
-            const handAfter = handAfterData.hand || [];
             console.log('[GameScreen] Hand after Go Fish:', handAfter);
 
             // Step 4: Find the new card by comparing hands
@@ -1481,17 +1453,11 @@ export class GameScreen {
 
             // Step 5: Call afterGoFish to complete the turn
             console.log(`[GameScreen] Calling afterGoFish with drewRequestedCard=${drewRequestedCard}`);
-            const afterGoFishResponse = await fetch('http://localhost:9999/api/midnight/after_go_fish', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lobby_id: this.lobbyId,
-                player_id: this.gameState.playerId,
-                drew_requested_card: drewRequestedCard
-              })
-            });
-
-            const afterGoFishResult = await afterGoFishResponse.json();
+            const afterGoFishResult = await MidnightService.afterGoFish(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2,
+              drewRequestedCard
+            );
 
             if (afterGoFishResult.success) {
               console.log('[GameScreen] afterGoFish succeeded, turn complete');
@@ -1521,22 +1487,15 @@ export class GameScreen {
         if (this.gameState) {
           try {
             // Get hand before responding to compare later
-            const handBeforeResponse = await fetch(
-              `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+            const handBefore = await MidnightService.getPlayerHand(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2
             );
-            const handBeforeData = await handBeforeResponse.json();
-            const handBefore: Array<{ rank: number; suit: number }> = handBeforeData.hand || [];
 
-            const response = await fetch('http://localhost:9999/api/midnight/respond_to_ask', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lobby_id: this.lobbyId,
-                player_id: this.gameState.playerId
-              })
-            });
-
-            const result = await response.json();
+            const result = await MidnightService.respondToAsk(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2
+            );
 
             if (result.success) {
               console.log('[GameScreen] Respond to ask succeeded:', result);
@@ -1544,11 +1503,10 @@ export class GameScreen {
               // If cards were transferred (we lost cards), show notification
               if (result.hasCards && result.cardCount > 0) {
                 // Get hand after to find what cards were lost
-                const handAfterResponse = await fetch(
-                  `http://localhost:9999/api/midnight/player_hand?lobby_id=${this.lobbyId}&player_id=${this.gameState.playerId}`
+                const handAfter = await MidnightService.getPlayerHand(
+                  this.lobbyId,
+                  this.gameState.playerId as 1 | 2
                 );
-                const handAfterData = await handAfterResponse.json();
-                const handAfter: Array<{ rank: number; suit: number }> = handAfterData.hand || [];
 
                 // Find cards that were in handBefore but not in handAfter
                 const lostCards: Array<{ rank: number; suit: number }> = [];
@@ -1614,16 +1572,10 @@ export class GameScreen {
         if (this.gameState) {
           try {
             // Call skipDrawDeckEmpty to end the turn when deck is empty
-            const skipDrawResponse = await fetch('http://localhost:9999/api/midnight/skip_draw_deck_empty', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lobby_id: this.lobbyId,
-                player_id: this.gameState.playerId
-              })
-            });
-
-            const skipDrawResult = await skipDrawResponse.json();
+            const skipDrawResult = await MidnightService.skipDrawDeckEmpty(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2
+            );
 
             if (skipDrawResult.success) {
               console.log('[GameScreen] Skip draw (deck empty) succeeded, turn ended');
@@ -1710,17 +1662,11 @@ export class GameScreen {
             };
             const targetRank = rankMap[this.selectedRank] ?? 0;
 
-            const response = await fetch('http://localhost:9999/api/midnight/ask_for_card', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lobby_id: this.lobbyId,
-                player_id: this.gameState.playerId,
-                rank: targetRank
-              })
-            });
-
-            const result = await response.json();
+            const result = await MidnightService.askForCard(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2,
+              targetRank
+            );
 
             if (result.success) {
               console.log('[GameScreen] Ask for card succeeded');

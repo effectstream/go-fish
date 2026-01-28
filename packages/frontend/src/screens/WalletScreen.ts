@@ -8,6 +8,7 @@
 
 import * as EffectstreamBridge from '../effectstreamBridge';
 import * as LaceWalletBridge from '../laceWalletBridge';
+import { MidnightService } from '../services/MidnightService';
 
 // Wallet type selection
 type WalletType = 'evm' | 'lace';
@@ -528,6 +529,17 @@ export class WalletScreen {
         console.log('Lace wallet connected successfully:', address);
 
         this.laceConnected = true;
+
+        // Try to initialize on-chain service now that Lace is connected
+        // This enables real Midnight blockchain transactions in production mode
+        console.log('[WalletScreen] Attempting to initialize on-chain service...');
+        MidnightService.tryInitializeOnChain().then((initialized) => {
+          if (initialized) {
+            console.log('[WalletScreen] On-chain service initialized successfully');
+          } else {
+            console.log('[WalletScreen] On-chain service not initialized (mock mode or not ready)');
+          }
+        });
 
         // If all wallets connected, navigate immediately without re-rendering
         if (this.areAllRequiredWalletsConnected()) {
