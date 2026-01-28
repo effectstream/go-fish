@@ -35,6 +35,10 @@ export default defineConfig({
       'has-symbols',
       'has-proto',
       'function-bind',
+      // Include fp-ts and rxjs for Midnight SDK
+      'fp-ts',
+      'fp-ts/function',
+      'rxjs',
     ],
     exclude: [
       // Midnight runtime packages that use WASM - must be excluded from pre-bundling
