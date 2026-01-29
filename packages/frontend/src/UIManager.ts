@@ -13,7 +13,7 @@ import { GoFishGameService } from './services/GoFishGameService';
 
 export class UIManager {
   private currentScreen: string = 'wallet';
-  private gameManager: GameManager;
+  private _gameManager: GameManager;
   private container: HTMLElement;
 
   // Screen instances
@@ -25,7 +25,7 @@ export class UIManager {
   private resultsScreen: ResultsScreen;
 
   constructor(gameManager: GameManager) {
-    this.gameManager = gameManager;
+    this._gameManager = gameManager;
 
     // Create main container for dynamic screens
     this.container = document.createElement('div');

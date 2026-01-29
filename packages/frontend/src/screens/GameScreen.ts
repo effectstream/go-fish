@@ -535,7 +535,7 @@ export class GameScreen {
     this.updateModalContainer();
   }
 
-  private renderOpponent(player: GoFishPlayer, game: GoFishGameState): string {
+  private _renderOpponent(player: GoFishPlayer, game: GoFishGameState): string {
     const isCurrentTurn = game.players[game.currentTurnIndex].id === player.id;
 
     return `
@@ -740,7 +740,7 @@ export class GameScreen {
     // Setup now runs automatically - no manual buttons needed
   }
 
-  private renderActionPanel(game: GoFishGameState, currentPlayer: GoFishPlayer): string {
+  private _renderActionPanel(game: GoFishGameState, currentPlayer: GoFishPlayer): string {
     if (!currentPlayer || currentPlayer.hand.length === 0) {
       return `
         <div class="ask-action-panel">
@@ -799,11 +799,11 @@ export class GameScreen {
     `;
   }
 
-  private renderCenterPanel(isMyTurn: boolean): string {
+  private _renderCenterPanel(isMyTurn: boolean): string {
     if (!this.gameState) return '';
 
     const phase = this.gameState.phase;
-    const myPlayerId = this.gameState.playerId;
+    const _myPlayerId = this.gameState.playerId;
     const currentTurn = this.gameState.currentTurn;
 
     // Handle different game phases
@@ -1042,7 +1042,7 @@ export class GameScreen {
     `;
   }
 
-  private renderGameLog(): string {
+  private _renderGameLog(): string {
     const messages = this.gameService.getMessages(this.lobbyId);
 
     if (messages.length === 0) {

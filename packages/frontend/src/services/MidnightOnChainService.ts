@@ -74,7 +74,6 @@ let isInitialized = false;
 let providers: GoFishProviders | null = null;
 let deployedContract: DeployedGoFishContract | null = null;
 let goFishContractInstance: any = null;
-let goFishWitnesses: GoFishWitnesses | null = null;
 
 type ContractPrivateStateId = "counterPrivateState";
 
@@ -138,11 +137,12 @@ async function loadContractModule(): Promise<boolean> {
   try {
     // Try to load the contract from the shared module
     // This path would need to be adjusted based on how the contract is bundled
+    // Contract is a namespace that contains the Contract class
     const contractModule = await import("../../../shared/contracts/midnight/go-fish-contract/src/_index.ts");
 
-    const { Contract, witnesses } = contractModule;
-    goFishWitnesses = witnesses;
-    goFishContractInstance = new Contract(witnesses);
+    const { Contract: ContractNamespace, witnesses } = contractModule;
+    // ContractNamespace.Contract is the actual class constructor
+    goFishContractInstance = new ContractNamespace.Contract(witnesses);
 
     console.log("[MidnightOnChain] Loaded contract module successfully");
     return true;

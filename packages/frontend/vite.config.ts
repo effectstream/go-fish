@@ -8,7 +8,24 @@ export default defineConfig({
     wasm(),
     topLevelAwait(),
     nodePolyfills({
-      include: ['buffer', 'process'],
+      // Include all node polyfills needed by Midnight SDK
+      include: [
+        'buffer',
+        'process',
+        'crypto',
+        'path',
+        'fs',
+        'assert',
+        'stream',
+        'util',
+        'events',
+      ],
+      // Provide global polyfills
+      globals: {
+        Buffer: true,
+        global: true,
+        process: true,
+      },
     }),
   ],
   server: {
@@ -23,6 +40,10 @@ export default defineConfig({
       transformMixedEsModules: true,
       extensions: ['.js', '.cjs'],
       ignoreDynamicRequires: true,
+    },
+    rollupOptions: {
+      // Ensure WebSocket is treated correctly
+      external: [],
     },
   },
   optimizeDeps: {
@@ -39,6 +60,8 @@ export default defineConfig({
       'fp-ts',
       'fp-ts/function',
       'rxjs',
+      // Include isomorphic-ws for proper bundling
+      'isomorphic-ws',
     ],
     exclude: [
       // Midnight runtime packages that use WASM - must be excluded from pre-bundling
@@ -47,19 +70,25 @@ export default defineConfig({
     ],
     esbuildOptions: {
       target: 'esnext',
+      // Define global for Node.js modules
+      define: {
+        global: 'globalThis',
+      },
     },
   },
   resolve: {
     alias: {
-      // Force use of node: prefix for built-in modules
-      assert: 'node:assert',
-      buffer: 'node:buffer',
-      process: 'node:process',
+      // Map isomorphic-ws to native WebSocket in browser
+      'isomorphic-ws': 'ws',
     },
   },
   // Handle WASM files from Midnight runtime
   assetsInclude: ['**/*.wasm'],
   worker: {
     format: 'es',
+  },
+  define: {
+    // Define global for compatibility
+    global: 'globalThis',
   },
 });

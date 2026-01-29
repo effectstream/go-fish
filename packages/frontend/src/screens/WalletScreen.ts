@@ -27,7 +27,7 @@ export class WalletScreen {
   private continueButton: HTMLButtonElement | null = null;
   private statusText: HTMLElement | null = null;
   private errorText: HTMLElement | null = null;
-  private selectedWalletType: WalletType = 'evm';
+  private _selectedWalletType: WalletType = 'evm';
 
   // Connection state
   private evmConnected: boolean = false;
@@ -464,7 +464,7 @@ export class WalletScreen {
   private async handleConnectEvmWallet(): Promise<void> {
     if (!this.connectEvmButton || !this.statusText || !this.errorText) return;
 
-    this.selectedWalletType = 'evm';
+    this._selectedWalletType = 'evm';
 
     // Disable button and show loading state
     this.setButtonLoading(this.connectEvmButton, true, 'evm');
@@ -513,7 +513,7 @@ export class WalletScreen {
   private async handleConnectLaceWallet(): Promise<void> {
     if (!this.connectLaceButton || !this.statusText || !this.errorText) return;
 
-    this.selectedWalletType = 'lace';
+    this._selectedWalletType = 'lace';
 
     // Disable button and show loading state
     this.setButtonLoading(this.connectLaceButton, true, 'lace');

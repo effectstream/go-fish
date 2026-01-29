@@ -1,5 +1,6 @@
 import { GameManager } from './GameManager';
 import { UIManager } from './UIManager';
+import { MidnightService } from './services/MidnightService';
 
 /**
  * Main entry point for the Go Fish game frontend
@@ -7,14 +8,14 @@ import { UIManager } from './UIManager';
 
 class App {
   private gameManager: GameManager;
-  private uiManager: UIManager;
+  private _uiManager: UIManager;
 
   constructor() {
     console.log('Initializing Go Fish Game...');
 
     // Initialize managers
     this.gameManager = new GameManager();
-    this.uiManager = new UIManager(this.gameManager);
+    this._uiManager = new UIManager(this.gameManager);
 
     // Start the application
     this.init();
@@ -22,7 +23,10 @@ class App {
 
   private async init() {
     try {
-      // Initialize game manager first
+      // Initialize MidnightService first (loads config)
+      await MidnightService.initialize();
+
+      // Initialize game manager
       await this.gameManager.init();
 
       console.log('Go Fish Game initialized successfully');

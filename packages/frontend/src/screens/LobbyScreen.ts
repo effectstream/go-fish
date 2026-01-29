@@ -30,8 +30,8 @@ export class LobbyScreen {
 
   // Track pending transactions to prevent UI updates while processing
   private pendingReady: boolean = false;
-  private pendingLeave: boolean = false;
-  private pendingStart: boolean = false;
+  private _pendingLeave: boolean = false;
+  private _pendingStart: boolean = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -260,7 +260,7 @@ export class LobbyScreen {
     }
   }
 
-  private renderPlayer(player: GoFishPlayer, game: GoFishGameState): string {
+  private _renderPlayer(player: GoFishPlayer, game: GoFishGameState): string {
     const isHost = player.id === game.hostId;
     const isCurrentPlayer = player.id === this.gameService.getPlayerId();
 
@@ -304,7 +304,7 @@ export class LobbyScreen {
         btn.disabled = true;
         btn.textContent = 'Leaving...';
       }
-      this.pendingLeave = true;
+      this._pendingLeave = true;
 
       try {
         const result = await this.gameService.leaveLobby(this.lobbyId);
@@ -326,7 +326,7 @@ export class LobbyScreen {
           btn.textContent = 'Leave Lobby';
         }
       } finally {
-        this.pendingLeave = false;
+        this._pendingLeave = false;
       }
     });
 
@@ -370,7 +370,7 @@ export class LobbyScreen {
         btn.disabled = true;
         btn.textContent = 'Starting...';
       }
-      this.pendingStart = true;
+      this._pendingStart = true;
 
       try {
         const result = await EffectstreamBridge.startGame(this.lobbyId);
@@ -387,7 +387,7 @@ export class LobbyScreen {
             btn.disabled = false;
             btn.textContent = 'Start Game';
           }
-          this.pendingStart = false;
+          this._pendingStart = false;
         }
       } catch (error) {
         console.error('Error starting game:', error);
@@ -395,7 +395,7 @@ export class LobbyScreen {
           btn.disabled = false;
           btn.textContent = 'Start Game';
         }
-        this.pendingStart = false;
+        this._pendingStart = false;
       }
     });
   }

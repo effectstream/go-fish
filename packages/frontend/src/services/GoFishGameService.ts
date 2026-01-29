@@ -4,15 +4,11 @@
  */
 
 import type {
-  Card,
   Rank,
   GoFishGameState,
   GoFishPlayer,
   Lobby,
   ChatMessage,
-  AskAction,
-  DrawAction,
-  BookAction,
 } from '../../../shared/data-types/src/go-fish-types';
 
 import {
