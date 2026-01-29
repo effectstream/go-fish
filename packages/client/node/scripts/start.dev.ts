@@ -3,7 +3,81 @@ import { ComponentNames } from "@paimaexample/log";
 import { Value } from "@sinclair/typebox/value";
 import { launchEvm } from "@paimaexample/orchestrator/start-evm";
 
+// Check if we should skip Midnight infrastructure (when using TypeScript contract)
+const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+
+// Midnight infrastructure processes (only when not using TypeScript contract)
+const midnightProcesses = useTypescriptContract ? [] : [
+  /** MIDNIGHT-NODE-BLOCK */
+  {
+    name: "midnight-node",
+    args: [
+      "run", "-A", "--unstable-detect-cjs",
+      "npm:@paimaexample/npm-midnight-node@0.3.129",
+      "--dev", "--rpc-port", "9944",
+      "--state-pruning", "archive",
+      "--blocks-pruning", "archive",
+      "--public-addr", "/ip4/127.0.0.1",
+      "--unsafe-rpc-external"
+    ],
+    env: { CFG_PRESET: "dev" },
+    waitToExit: false,
+    type: "system-dependency",
+    link: "http://localhost:9944",
+    stopProcessAtPort: [9944],
+    dependsOn: [],
+  },
+  /** MIDNIGHT-NODE-BLOCK */
+
+  /** MIDNIGHT-INDEXER-BLOCK */
+  {
+    name: "midnight-indexer",
+    args: [
+      "run", "-A", "--unstable-detect-cjs",
+      "npm:@paimaexample/npm-midnight-indexer@0.3.129",
+      "--binary", "--clean"
+    ],
+    env: {
+      CONFIG_FILE: "../../../shared/contracts/midnight/indexer-standalone/config.yaml",
+      LEDGER_NETWORK_ID: "Undeployed",
+      SUBSTRATE_NODE_WS_URL: "ws://localhost:9944",
+      APP__INFRA__SECRET: crypto.randomUUID().replace(/-/g, "").toUpperCase(),
+      FEATURES_WALLET_ENABLED: "true",
+      APP__INFRA__NODE__URL: "ws://localhost:9944",
+    },
+    waitToExit: false,
+    type: "system-dependency",
+    link: "http://localhost:8088",
+    stopProcessAtPort: [8088],
+    dependsOn: ["midnight-node"],
+  },
+  /** MIDNIGHT-INDEXER-BLOCK */
+
+  /** MIDNIGHT-PROOF-SERVER-BLOCK */
+  {
+    name: "midnight-proof-server",
+    args: [
+      "run", "-A", "--unstable-detect-cjs",
+      "npm:@paimaexample/npm-midnight-proof-server@0.3.129"
+    ],
+    env: {
+      LEDGER_NETWORK_ID: "Undeployed",
+      RUST_BACKTRACE: "full",
+      SUBSTRATE_NODE_WS_URL: "ws://localhost:9944",
+    },
+    waitToExit: false,
+    type: "system-dependency",
+    link: "http://localhost:6300",
+    stopProcessAtPort: [6300],
+    dependsOn: ["midnight-node"],
+  },
+  /** MIDNIGHT-PROOF-SERVER-BLOCK */
+];
+
 const customProcesses = [
+  // Midnight infrastructure (skipped when USE_TYPESCRIPT_CONTRACT=true)
+  ...midnightProcesses,
+
   /** FRONTEND-BLOCK */
   {
     name: "install-frontend",
