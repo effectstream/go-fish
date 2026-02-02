@@ -75,7 +75,7 @@ let providers: GoFishProviders | null = null;
 let deployedContract: DeployedGoFishContract | null = null;
 let goFishContractInstance: any = null;
 
-type ContractPrivateStateId = "counterPrivateState";
+type ContractPrivateStateId = "privateState";
 
 type GoFishContract = Contract<PrivateState, GoFishWitnesses>;
 
@@ -191,9 +191,31 @@ function createWalletAndMidnightProvider(
           type: "TransactionToProve",
           transaction: transaction,
         };
-      } catch (e) {
-        console.error("[MidnightOnChain] Error balancing transaction:", e);
-        throw e;
+      } catch (e: any) {
+        // Extract detailed error info from FiberFailure
+        let errorDetails = "Unknown error";
+        if (e?.cause) {
+          // FiberFailure wraps the actual error in cause
+          const cause = e.cause;
+          if (cause?.error?.message) {
+            errorDetails = cause.error.message;
+          } else if (cause?.message) {
+            errorDetails = cause.message;
+          } else if (typeof cause === "string") {
+            errorDetails = cause;
+          } else {
+            errorDetails = JSON.stringify(cause, null, 2);
+          }
+        } else if (e?.message) {
+          errorDetails = e.message;
+        }
+        console.error("[MidnightOnChain] Error balancing transaction:", errorDetails);
+        console.error("[MidnightOnChain] Full error object:", e);
+        console.error("[MidnightOnChain] This usually means:");
+        console.error("  - Wallet doesn't have enough tDUST (use the faucet to get more)");
+        console.error("  - Wallet state is out of sync (try refreshing the page)");
+        console.error("  - Transaction is invalid");
+        throw new Error(`Failed to balance transaction: ${errorDetails}`);
       }
     },
     async submitTx(tx: ledger.FinalizedTransaction): Promise<ledger.TransactionId> {
@@ -245,6 +267,40 @@ async function initializeProviders(
 }
 
 /**
+ * Pre-flight check to verify indexer connectivity before attempting findDeployedContract
+ */
+async function checkIndexerConnectivity(): Promise<boolean> {
+  // Check HTTP endpoint
+  try {
+    console.log(`[MidnightOnChain] Checking indexer HTTP endpoint: ${BASE_URL_MIDNIGHT_INDEXER_API}`);
+    const response = await fetch(BASE_URL_MIDNIGHT_INDEXER_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "{ __typename }",
+      }),
+    });
+    if (!response.ok) {
+      console.error(`[MidnightOnChain] Indexer HTTP check failed: ${response.status} ${response.statusText}`);
+      return false;
+    }
+    const data = await response.json();
+    console.log("[MidnightOnChain] Indexer HTTP endpoint is reachable:", data);
+  } catch (error) {
+    console.error("[MidnightOnChain] Indexer HTTP endpoint not reachable:", error);
+    return false;
+  }
+
+  // Note: We skip the WebSocket pre-flight check because browser WebSocket API
+  // may not properly support the graphql-ws subprotocol that the indexer uses.
+  // The SDK's internal implementation (using graphql-ws package) handles this differently.
+  console.log("[MidnightOnChain] Skipping WebSocket pre-flight (SDK handles connection internally)");
+
+  console.log("[MidnightOnChain] Indexer connectivity checks passed");
+  return true;
+}
+
+/**
  * Join an existing deployed contract
  */
 async function joinContract(
@@ -255,15 +311,68 @@ async function joinContract(
     throw new Error("Contract module not loaded");
   }
 
-  const goFishContract = await findDeployedContract(provs, {
-    contractAddress: address,
-    contract: goFishContractInstance,
-    privateStateId: "counterPrivateState",
-    initialPrivateState: {},
+  console.log(`[MidnightOnChain] Attempting to find deployed contract at: ${address}`);
+
+  // Pre-flight check - verify indexer is accessible
+  const indexerOk = await checkIndexerConnectivity();
+  if (!indexerOk) {
+    throw new Error("Indexer connectivity check failed - ensure the indexer is running at " + BASE_URL_MIDNIGHT_INDEXER);
+  }
+
+  // Check if the contract exists in the indexer
+  try {
+    console.log("[MidnightOnChain] Querying indexer for contract existence...");
+    const contractQuery = await fetch(BASE_URL_MIDNIGHT_INDEXER_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `query GetContract($address: HexString!) {
+          contractState(address: $address) {
+            address
+          }
+        }`,
+        variables: { address: address },
+      }),
+    });
+    const contractData = await contractQuery.json();
+    console.log("[MidnightOnChain] Contract query result:", JSON.stringify(contractData));
+
+    if (!contractData.data?.contractState) {
+      console.warn(`[MidnightOnChain] Contract not found at address ${address} - it may not have been deployed or indexed yet`);
+    } else {
+      console.log("[MidnightOnChain] Contract found in indexer!");
+    }
+  } catch (queryError) {
+    console.warn("[MidnightOnChain] Could not query contract existence:", queryError);
+  }
+
+  // Add timeout to prevent hanging forever
+  const TIMEOUT_MS = 30000; // 30 seconds
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`findDeployedContract timed out after ${TIMEOUT_MS}ms - the indexer is reachable but findDeployedContract is not completing. This may indicate the contract was not found at address ${address}`));
+    }, TIMEOUT_MS);
   });
 
-  console.log(`[MidnightOnChain] Joined contract at address: ${address}`);
-  return goFishContract;
+  try {
+    console.log("[MidnightOnChain] Calling findDeployedContract...");
+    const goFishContract = await Promise.race([
+      findDeployedContract(provs, {
+        contractAddress: address,
+        contract: goFishContractInstance,
+        privateStateId: "privateState",
+        initialPrivateState: {},
+      }),
+      timeoutPromise,
+    ]);
+
+    console.log(`[MidnightOnChain] Joined contract at address: ${address}`);
+    return goFishContract;
+  } catch (error) {
+    console.error("[MidnightOnChain] findDeployedContract failed:", error);
+    throw error;
+  }
 }
 
 /**
@@ -316,6 +425,32 @@ export async function initializeOnChainService(): Promise<boolean> {
     deployedContract = await joinContract(providers, contractAddress);
     console.log("[MidnightOnChain] Contract joined successfully");
 
+    // Initialize static deck if not already done
+    // This is a one-time operation needed before any games can be created
+    // It submits a transaction to the chain to initialize the deck mappings
+    console.log("[MidnightOnChain] Checking if static deck needs initialization...");
+    try {
+      const callTx = (deployedContract as any).callTx;
+      if (callTx && typeof callTx.init_deck === "function") {
+        console.log("[MidnightOnChain] Calling init_deck to initialize static deck on-chain...");
+        console.log("[MidnightOnChain] This will submit a transaction to the chain and may take a moment...");
+        const result = await callTx.init_deck();
+        console.log("[MidnightOnChain] init_deck transaction submitted successfully:", result);
+      } else {
+        console.warn("[MidnightOnChain] init_deck function not found on contract - callTx:", Object.keys(callTx || {}));
+      }
+    } catch (initError: any) {
+      // Check if the error indicates the deck is already initialized
+      const errorMsg = initError?.message || String(initError);
+      if (errorMsg.includes("already initialized") || errorMsg.includes("Static deck")) {
+        console.log("[MidnightOnChain] Static deck appears to already be initialized (this is OK)");
+      } else {
+        // This is a real error - but we'll continue and let applyMask fail with a clearer message
+        console.error("[MidnightOnChain] init_deck failed with unexpected error:", initError);
+        console.error("[MidnightOnChain] Games may fail until init_deck succeeds");
+      }
+    }
+
     isInitialized = true;
     console.log("[MidnightOnChain] On-chain service fully initialized");
     return true;
@@ -359,9 +494,46 @@ function lobbyIdToGameId(lobbyId: string): Uint8Array {
   return gameId;
 }
 
+// Track whether we've successfully initialized the deck in this session
+let staticDeckInitialized = false;
+
 // ============================================================================
 // Contract Actions - Direct on-chain calls
 // ============================================================================
+
+/**
+ * Initialize the static deck (must be called once before any games)
+ * This is idempotent - calling it multiple times is safe
+ */
+export async function initializeStaticDeck(): Promise<{ success: boolean; errorMessage?: string }> {
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active" };
+  }
+
+  if (staticDeckInitialized) {
+    console.log("[MidnightOnChain] Static deck already initialized in this session");
+    return { success: true };
+  }
+
+  try {
+    console.log("[MidnightOnChain] Initializing static deck on-chain...");
+    const callTx = getCallTx();
+    await callTx.init_deck();
+    staticDeckInitialized = true;
+    console.log("[MidnightOnChain] Static deck initialized successfully!");
+    return { success: true };
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    // Check if already initialized (the contract checks this)
+    if (errorMsg.includes("already") || errorMsg.includes("Static deck")) {
+      console.log("[MidnightOnChain] Static deck was already initialized on-chain");
+      staticDeckInitialized = true;
+      return { success: true };
+    }
+    console.error("[MidnightOnChain] initializeStaticDeck failed:", error);
+    return { success: false, errorMessage: errorMsg };
+  }
+}
 
 /**
  * Apply mask action (setup phase)
@@ -372,6 +544,15 @@ export async function onChainApplyMask(
 ): Promise<{ success: boolean; errorMessage?: string }> {
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  // Ensure static deck is initialized before any game operation
+  if (!staticDeckInitialized) {
+    console.log("[MidnightOnChain] Ensuring static deck is initialized before applyMask...");
+    const initResult = await initializeStaticDeck();
+    if (!initResult.success) {
+      return { success: false, errorMessage: `Failed to initialize static deck: ${initResult.errorMessage}` };
+    }
   }
 
   try {
@@ -555,6 +736,7 @@ export const MidnightOnChainService = {
   isReady: isOnChainReady,
   getContractAddress,
   queryContractState,
+  initializeStaticDeck,
   // Actions
   applyMask: onChainApplyMask,
   dealCards: onChainDealCards,

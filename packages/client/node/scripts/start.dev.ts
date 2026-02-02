@@ -2,6 +2,13 @@ import { OrchestratorConfig, start } from "@paimaexample/orchestrator";
 import { ComponentNames } from "@paimaexample/log";
 import { Value } from "@sinclair/typebox/value";
 import { launchEvm } from "@paimaexample/orchestrator/start-evm";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Get absolute path to the midnight contracts directory
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const midnightContractsDir = path.resolve(__dirname, "../../../shared/contracts/midnight");
+const indexerConfigPath = path.join(midnightContractsDir, "indexer-standalone/config.yaml");
 
 // Check if we should skip Midnight infrastructure (when using TypeScript contract)
 const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
@@ -38,10 +45,11 @@ const midnightProcesses = useTypescriptContract ? [] : [
       "--binary", "--clean"
     ],
     env: {
-      CONFIG_FILE: "../../../shared/contracts/midnight/indexer-standalone/config.yaml",
+      CONFIG_FILE: indexerConfigPath,
       LEDGER_NETWORK_ID: "Undeployed",
       SUBSTRATE_NODE_WS_URL: "ws://localhost:9944",
-      APP__INFRA__SECRET: crypto.randomUUID().replace(/-/g, "").toUpperCase(),
+      // Secret must be at least 32 bytes (64 hex chars) - generate two UUIDs
+      APP__INFRA__SECRET: (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "").toUpperCase(),
       FEATURES_WALLET_ENABLED: "true",
       APP__INFRA__NODE__URL: "ws://localhost:9944",
     },

@@ -539,6 +539,8 @@ export class WalletScreen {
           } else {
             console.log('[WalletScreen] On-chain service not initialized (mock mode or not ready)');
           }
+        }).catch((error) => {
+          console.error('[WalletScreen] On-chain service initialization error:', error);
         });
 
         // If all wallets connected, navigate immediately without re-rendering

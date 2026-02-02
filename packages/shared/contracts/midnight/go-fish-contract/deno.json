@@ -7,7 +7,7 @@
         "./contract": "./src/managed/contract/index.js"
     },
     "tasks": {
-        "compact": "compact compile +0.27.0 src/game.compact src/managed",
+        "compact": "rm -rf src/managed/contract src/managed/compiler src/managed/keys src/managed/zkir && compact compile +0.27.0 src/game.compact src/managed",
         "contract:compile": "deno task compact"
     },
     "imports": {

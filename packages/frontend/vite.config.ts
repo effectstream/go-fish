@@ -1,7 +1,13 @@
-import { defineConfig } from 'vite';
+import { defineConfig, normalizePath } from 'vite';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
+import { viteStaticCopy } from 'vite-plugin-static-copy';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export default defineConfig({
   plugins: [
@@ -26,6 +32,61 @@ export default defineConfig({
         global: true,
         process: true,
       },
+    }),
+    // Copy zkConfig files (keys, zkir) for FetchZkConfigProvider
+    viteStaticCopy({
+      targets: [
+        {
+          // Copy verifier/prover keys
+          src: normalizePath(
+            path.resolve(
+              __dirname,
+              '..',
+              'shared',
+              'contracts',
+              'midnight',
+              'go-fish-contract',
+              'src',
+              'managed',
+              'keys',
+              '*',
+            ),
+          ),
+          dest: 'keys',
+        },
+        {
+          // Copy zkir files
+          src: normalizePath(
+            path.resolve(
+              __dirname,
+              '..',
+              'shared',
+              'contracts',
+              'midnight',
+              'go-fish-contract',
+              'src',
+              'managed',
+              'zkir',
+              '*',
+            ),
+          ),
+          dest: 'zkir',
+        },
+        {
+          // Copy contract address file
+          src: normalizePath(
+            path.resolve(
+              __dirname,
+              '..',
+              'shared',
+              'contracts',
+              'midnight',
+              'contract-go-fish.undeployed.json',
+            ),
+          ),
+          dest: 'contract_address',
+        },
+      ],
     }),
   ],
   server: {

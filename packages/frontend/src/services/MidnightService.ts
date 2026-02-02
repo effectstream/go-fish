@@ -110,7 +110,15 @@ export async function initialize(): Promise<boolean> {
  * Returns true if we're in production mode AND the on-chain service is ready
  */
 export function isOnChainModeActive(): boolean {
-  return !appConfig.useMockedMidnight && onChainInitialized && isOnChainReady();
+  const active = !appConfig.useMockedMidnight && onChainInitialized && isOnChainReady();
+  if (!active) {
+    console.log("[MidnightService] isOnChainModeActive=false because:", {
+      useMockedMidnight: appConfig.useMockedMidnight,
+      onChainInitialized,
+      isOnChainReady: isOnChainReady(),
+    });
+  }
+  return active;
 }
 
 /**
@@ -132,8 +140,14 @@ export async function tryInitializeOnChain(): Promise<boolean> {
   }
 
   console.log("[MidnightService] Attempting on-chain initialization...");
-  onChainInitialized = await initializeOnChainService();
-  return onChainInitialized;
+  try {
+    onChainInitialized = await initializeOnChainService();
+    console.log("[MidnightService] On-chain initialization result:", onChainInitialized, "isOnChainReady:", isOnChainReady());
+    return onChainInitialized;
+  } catch (error) {
+    console.error("[MidnightService] On-chain initialization failed:", error);
+    return false;
+  }
 }
 
 // ============================================================================

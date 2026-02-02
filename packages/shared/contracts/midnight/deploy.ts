@@ -22,7 +22,7 @@ import {
 } from "./go-fish-contract/src/_index.ts";
 
 const config: DeployConfig = {
-  contractName: "contract-go-fish",
+  contractName: "go-fish-contract",
   contractFileName: "contract-go-fish.undeployed.json",
   contractClass: Contract.Contract,
   witnesses,

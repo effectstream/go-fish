@@ -26,9 +26,19 @@ import {
   sampleSigningKey,
 } from "@midnight-ntwrk/compact-runtime";
 import {
-  getImpureCircuitIds,
   SucceedEntirely,
 } from "@midnight-ntwrk/midnight-js-types";
+
+/**
+ * Get impure circuit IDs from a contract instance.
+ * This replaces the removed getImpureCircuitIds from midnight-js-types@3.0.0
+ */
+function getImpureCircuitIds(contract: any): string[] {
+  if (contract.impureCircuits && typeof contract.impureCircuits === "object") {
+    return Object.keys(contract.impureCircuits);
+  }
+  return [];
+}
 import {
   buildWalletFacade,
   getInitialShieldedState,
@@ -134,9 +144,9 @@ function createTtl(): Date {
 
 function checkEnvVariables(): void {
   if (!Deno.env.get("MIDNIGHT_STORAGE_PASSWORD")) {
-    throw new Error(
-      "MIDNIGHT_STORAGE_PASSWORD is not set (Use a 16 char string)",
-    );
+    // Set a default password for local development
+    Deno.env.set("MIDNIGHT_STORAGE_PASSWORD", "devpassword12345");
+    log.info("MIDNIGHT_STORAGE_PASSWORD not set, using default for local dev");
   }
 }
 
