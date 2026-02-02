@@ -16,9 +16,10 @@ let connectedAPI: any | null = null;
 let contractAddress: string | null = null;
 
 // Network ID for Midnight network
-// The Lace Midnight Preview wallet uses the "preview" network
+// For local development with the undeployed network, use "undeployed"
+// For testnet, use "preview" (Lace Midnight Preview wallet)
 // Valid values: "undeployed", "testnet", "testnet-02", "devnet", "preview"
-const MIDNIGHT_NETWORK_ID = "preview";
+const MIDNIGHT_NETWORK_ID = "undeployed";
 const COMPATIBLE_CONNECTOR_API_VERSION = ">=1.0.0";
 
 /**
