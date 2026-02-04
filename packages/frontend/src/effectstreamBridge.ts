@@ -1,6 +1,10 @@
 /**
  * Effectstream Bridge - Handles blockchain interactions and wallet management
  * Bridges the frontend to Paima Engine (Effectstream) and smart contracts
+ *
+ * Uses a local wallet (auto-generated in browser) for EVM interactions,
+ * removing the need for MetaMask or other external EVM wallets.
+ * Players only need Lace wallet for Midnight ZK operations.
  */
 
 import {
@@ -10,6 +14,10 @@ import {
   type Wallet,
 } from "@paimaexample/wallets";
 import { hardhat } from "viem/chains";
+import { ethers } from "ethers";
+
+// WalletMode enum value for EvmEthers (avoiding isolatedModules issue)
+const WALLET_MODE_EVM_ETHERS = 1;
 
 // Contract addresses from deployment
 const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
@@ -17,49 +25,146 @@ const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 // Paima Engine API endpoint
 const PAIMA_API_URL = "http://localhost:9999";
 
-// Global wallet instance
+// Global wallet instance (local wallet - auto-generated)
 let wallet: Wallet | null = null;
 
-// Paima Engine configuration
+// Paima Engine configuration - NOT using batching, wallet pays for gas directly
 const paimaEngineConfig = new PaimaEngineConfig(
   "go-fish",
   "mainEvmRPC",
   PAIMA_L2_CONTRACT_ADDRESS,
   hardhat as any, // Type compatibility with viem versions
-  undefined,
-  undefined,
-  false,
+  undefined,      // use default abi
+  undefined,      // no batcher url
+  false,          // useBatching = false
 );
 
+// Hardhat pre-funded account private keys (Account #0 through #9)
+// These accounts each have 10000 ETH on the local Hardhat chain
+const HARDHAT_ACCOUNTS = [
+  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Account #0
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // Account #1
+  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a", // Account #2
+  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6", // Account #3
+  "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a", // Account #4
+  "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba", // Account #5
+  "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e", // Account #6
+  "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356", // Account #7
+  "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97", // Account #8
+  "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6", // Account #9
+];
+
+// Local storage key for which Hardhat account to use
+const LOCAL_WALLET_INDEX_KEY = "go-fish-local-wallet-index";
+
 /**
- * Connect to user's wallet (MetaMask/injected wallet)
+ * Get or assign a Hardhat account index for this browser session
+ */
+function getOrAssignAccountIndex(): number {
+  let indexStr = localStorage.getItem(LOCAL_WALLET_INDEX_KEY);
+
+  if (!indexStr) {
+    // Assign a random account index (1-9, keeping 0 for other purposes)
+    const index = Math.floor(Math.random() * 9) + 1;
+    localStorage.setItem(LOCAL_WALLET_INDEX_KEY, String(index));
+    console.log('[EffectstreamBridge] Assigned Hardhat account #' + index);
+    return index;
+  }
+
+  return parseInt(indexStr, 10);
+}
+
+/**
+ * Get the private key for the assigned Hardhat account
+ */
+function getPrivateKey(): string {
+  const index = getOrAssignAccountIndex();
+  console.log('[EffectstreamBridge] Using Hardhat account #' + index);
+  return HARDHAT_ACCOUNTS[index];
+}
+
+/**
+ * Initialize a local wallet using a pre-funded Hardhat account
+ * This removes the need for MetaMask - wallet is assigned automatically
+ * Uses ethers.js directly without external services like thirdweb
+ */
+async function initializeLocalWallet(): Promise<Wallet | null> {
+  if (wallet) return wallet;
+
+  try {
+    // Get a pre-funded Hardhat account
+    const privateKey = getPrivateKey();
+
+    // Create ethers wallet with a provider (ethers v5 syntax)
+    const provider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
+    const ethersWallet = new ethers.Wallet(privateKey, provider);
+
+    console.log('[EffectstreamBridge] Local wallet address:', ethersWallet.address);
+
+    // Login using the EvmEthers mode with our ethers wallet as the signer
+    const loginOptions = {
+      mode: WALLET_MODE_EVM_ETHERS,
+      preferBatchedMode: true,
+      connection: {
+        metadata: {
+          name: "ethers.localwallet",
+          displayName: "Go Fish Local Wallet",
+        },
+        api: ethersWallet,
+      },
+    };
+
+    const walletLoginResult = await walletLogin(loginOptions as any);
+    if (walletLoginResult.success) {
+      wallet = walletLoginResult.result;
+      console.log('[EffectstreamBridge] Local wallet initialized:', wallet.walletAddress);
+      return wallet;
+    }
+
+    console.error('[EffectstreamBridge] Failed to login with local wallet');
+    return null;
+  } catch (error) {
+    console.error('[EffectstreamBridge] Failed to initialize local wallet:', error);
+    return null;
+  }
+}
+
+/**
+ * Connect wallet - now uses auto-generated local wallet
+ * No MetaMask or external wallet required
  */
 export async function userWalletLogin({
-  mode = 0, // WalletMode.EvmInjected
+  mode = 0,
 }: {
   mode?: number;
 } = {}): Promise<{ success: boolean; errorMessage?: string }> {
   try {
-    const result = await walletLogin({
-      mode,
-      chain: paimaEngineConfig.paimaL2Chain,
-    });
+    // Always use local wallet - ignore mode parameter
+    const localWallet = await initializeLocalWallet();
 
-    if (result.success) {
-      wallet = result.result;
-      console.log('Wallet connected:', result.result.walletAddress);
+    if (localWallet) {
+      console.log('[EffectstreamBridge] Local wallet connected:', localWallet.walletAddress);
       return { success: true };
     } else {
-      console.error('Wallet connection failed:', result.errorMessage);
-      return { success: false, errorMessage: result.errorMessage };
+      return { success: false, errorMessage: 'Failed to initialize local wallet' };
     }
   } catch (error) {
-    console.error('Error connecting wallet:', error);
+    console.error('[EffectstreamBridge] Error connecting wallet:', error);
     return {
       success: false,
       errorMessage: error instanceof Error ? error.message : 'Unknown error',
     };
   }
+}
+
+/**
+ * Ensure wallet is initialized before any operation
+ */
+async function ensureWallet(): Promise<Wallet | null> {
+  if (!wallet) {
+    return await initializeLocalWallet();
+  }
+  return wallet;
 }
 
 /**
@@ -84,8 +189,9 @@ export async function createLobby(
   lobbyName: string,
   maxPlayers: number
 ): Promise<{ success: boolean; lobbyId?: string; errorMessage?: string }> {
-  if (!wallet) {
-    return { success: false, errorMessage: "Wallet not connected" };
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
   }
 
   try {
@@ -94,7 +200,7 @@ export async function createLobby(
     const params = ["createdLobby", playerName, lobbyName, maxPlayers];
 
     // Send transaction without waiting for processing (to avoid timeout)
-    const result = await sendTransaction(wallet, params, paimaEngineConfig, "no-wait");
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to create lobby" };
@@ -107,7 +213,7 @@ export async function createLobby(
     await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Query for the user's most recent lobby
-    const walletAddress = wallet.walletAddress;
+    const walletAddress = currentWallet.walletAddress;
     const response = await fetch(
       `${PAIMA_API_URL}/user_lobbies?wallet=${walletAddress}&page=0&count=1`
     );
@@ -140,14 +246,15 @@ export async function joinLobby(
   playerName: string,
   lobbyId: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (!wallet) {
-    return { success: false, errorMessage: "Wallet not connected" };
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
   }
 
   try {
     // Grammar expects: joinedLobby|playerName|lobbyID
     const params = ["joinedLobby", playerName, lobbyId];
-    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to join lobby" };
@@ -174,14 +281,15 @@ export async function joinLobby(
 export async function toggleReady(
   lobbyId: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (!wallet) {
-    return { success: false, errorMessage: "Wallet not connected" };
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
   }
 
   try {
     // Grammar expects: toggledReady|lobbyID
     const params = ["toggledReady", lobbyId];
-    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to toggle ready" };
@@ -204,14 +312,15 @@ export async function toggleReady(
 export async function startGame(
   lobbyId: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (!wallet) {
-    return { success: false, errorMessage: "Wallet not connected" };
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
   }
 
   try {
     // Grammar expects: startedGame|lobbyID
     const params = ["startedGame", lobbyId];
-    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to start game" };
@@ -234,14 +343,15 @@ export async function startGame(
 export async function leaveLobby(
   lobbyId: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (!wallet) {
-    return { success: false, errorMessage: "Wallet not connected" };
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
   }
 
   try {
     // Grammar expects: leftLobby|lobbyID
     const params = ["leftLobby", lobbyId];
-    const result = await sendTransaction(wallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to leave lobby" };
@@ -345,13 +455,14 @@ export async function submitGameAction(
   actionType: string,
   ...params: any[]
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (!wallet) {
-    return { success: false, errorMessage: "Wallet not connected" };
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
   }
 
   try {
     const txParams = ["gameAction", lobbyId, actionType, ...params];
-    const result = await sendTransaction(wallet, txParams, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, txParams, paimaEngineConfig);
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to submit action" };

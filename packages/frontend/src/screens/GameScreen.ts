@@ -655,7 +655,12 @@ export class GameScreen {
         );
 
         if (!updatedStatus.opponentHasMaskApplied) {
-          console.log('[GameScreen] Waiting for opponent to apply mask...');
+          console.log('[GameScreen] Waiting for opponent to apply mask... will retry in 2s');
+          // Schedule a retry since we're waiting for opponent
+          setTimeout(() => {
+            this.setupAttempted = false;
+            this.render();  // Trigger re-render which will call runAutomaticSetup again
+          }, 2000);
           return; // Don't mark as complete, retry later
         }
 
@@ -664,7 +669,12 @@ export class GameScreen {
 
         // Player 2 must wait for Player 1 to deal first
         if (myPlayerId === 2 && !updatedStatus.opponentHasDealt) {
-          console.log('[GameScreen] Player 2 waiting for Player 1 to deal first...');
+          console.log('[GameScreen] Player 2 waiting for Player 1 to deal first... will retry in 2s');
+          // Schedule a retry since we're waiting for opponent
+          setTimeout(() => {
+            this.setupAttempted = false;
+            this.render();  // Trigger re-render which will call runAutomaticSetup again
+          }, 2000);
           return; // Don't deal yet, retry later
         }
 
