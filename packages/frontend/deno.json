@@ -5,12 +5,29 @@
   "compilerOptions": {
     "lib": ["ESNext", "DOM"]
   },
+  "tasks": {
+    "dev": "deno run -A --node-modules-dir=auto npm:vite"
+  },
   "imports": {
     "assert": "node:assert",
     "buffer": "node:buffer",
     "process": "node:process",
     "crypto": "node:crypto",
     "stream": "node:stream",
-    "util": "node:util"
-  }
+    "util": "node:util",
+    "tls": "node:tls",
+    "net": "node:net",
+    "fs": "node:fs",
+    "path": "node:path",
+    "os": "node:os",
+    "events": "node:events",
+    "http": "node:http",
+    "https": "node:https",
+    "url": "node:url",
+    "querystring": "node:querystring",
+    "zlib": "node:zlib",
+    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1",
+    "@midnight-ntwrk/onchain-runtime-v1": "npm:@midnight-ntwrk/onchain-runtime-v1@1.0.0-alpha.5"
+  },
+  "nodeModulesDir": "auto"
 }

@@ -24,6 +24,8 @@ import {
   sampleContractAddress,
   createConstructorContext,
   CostModel,
+  ChargedState,
+  StateValue,
 } from '@midnight-ntwrk/compact-runtime';
 
 // Private state type (empty for now, can be extended)
@@ -52,11 +54,17 @@ export async function initializeMidnightContract(): Promise<{ success: boolean; 
       contract.initialState(createConstructorContext({}, '0'.repeat(64)));
 
     // Create circuit context
+    // QueryContext expects a ChargedState - wrap if we got a StateValue
+    const contractStateData = currentContractState.data;
+    const chargedState = contractStateData instanceof StateValue
+      ? new ChargedState(contractStateData)
+      : contractStateData;
+
     circuitContext = {
       currentPrivateState,
       currentZswapLocalState,
       currentQueryContext: new QueryContext(
-        currentContractState.data,
+        chargedState,
         sampleContractAddress(),
       ),
       costModel: CostModel.initialCostModel(),

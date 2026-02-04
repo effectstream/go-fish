@@ -39,6 +39,7 @@ export class GameScreen {
   private previousHand: Array<{ rank: number; suit: number }> = []; // Track previous hand for diff
   private setupInProgress: boolean = false;
   private setupCompleted: boolean = false;
+  private setupAttempted: boolean = false;  // Prevents spamming wallet with transaction requests
   private maskApplied: boolean = false;  // Track if we've applied mask (frontend-side cache)
   private cardsDealt: boolean = false;   // Track if we've dealt cards (frontend-side cache)
   private isHidden: boolean = false;     // Track if screen has been hidden to prevent stale renders
@@ -144,7 +145,9 @@ export class GameScreen {
     // Check if we're in setup/dealing phase
     if (this.gameState.phase === 'dealing') {
       // Automatically run setup if not already completed
-      if (!this.setupCompleted && !this.setupInProgress) {
+      // Only start setup once - don't spam wallet requests
+      if (!this.setupCompleted && !this.setupInProgress && !this.setupAttempted) {
+        this.setupAttempted = true;  // Mark that we've started an attempt
         this.runAutomaticSetup();
       }
       this.renderSetupPhase();
@@ -693,7 +696,11 @@ export class GameScreen {
       this.setupCompleted = true;
     } catch (error: any) {
       console.error('[GameScreen] Automatic setup failed:', error);
-      // Don't mark as completed so it can retry
+      // Reset setupAttempted after a delay so user can retry
+      // This prevents immediate retry spam while allowing eventual retry
+      setTimeout(() => {
+        this.setupAttempted = false;
+      }, 30000);  // Allow retry after 30 seconds
     } finally {
       this.setupInProgress = false;
     }

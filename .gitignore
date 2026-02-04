@@ -33,3 +33,6 @@ deno.lock
 # Logs
 logs/
 *.log
+
+# Midnight database
+packages/shared/contracts/midnight/midnight-level-db-deploy/*

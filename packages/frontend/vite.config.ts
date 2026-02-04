@@ -127,7 +127,9 @@ export default defineConfig({
     exclude: [
       // Midnight runtime packages that use WASM - must be excluded from pre-bundling
       '@midnight-ntwrk/onchain-runtime-v1',
+      '@midnight-ntwrk/onchain-runtime-v2',
       '@midnight-ntwrk/compact-runtime',
+      '@midnight-ntwrk/compact-js',
     ],
     esbuildOptions: {
       target: 'esnext',
@@ -141,6 +143,9 @@ export default defineConfig({
     alias: {
       // Map isomorphic-ws to native WebSocket in browser
       'isomorphic-ws': 'ws',
+      // Force consistent versions of Midnight runtime packages to avoid ChargedState mismatch
+      '@midnight-ntwrk/compact-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/compact-runtime'),
+      '@midnight-ntwrk/onchain-runtime-v1': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v1'),
     },
   },
   // Handle WASM files from Midnight runtime

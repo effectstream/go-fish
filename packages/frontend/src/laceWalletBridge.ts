@@ -1,26 +1,29 @@
 /**
  * Lace Wallet Bridge - Handles Midnight Lace wallet connection
  *
- * This module connects to the Lace Midnight wallet browser extension directly
- * via window.midnight (not through Cardano wallet APIs).
- *
- * Note: The actual contract interaction happens via the backend in production mode.
- * The Lace wallet is used for authentication and signing transactions.
+ * This module connects to the Lace Midnight wallet browser extension.
+ * It tries @paimaexample/wallets first, then falls back to direct window.midnight access.
  */
 
+import { walletLogin, WalletMode } from "@paimaexample/wallets";
+import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import type { ConnectedAPI } from "@midnight-ntwrk/dapp-connector-api";
 import semver from "semver";
 
 // State
 let laceWalletAddress: string | null = null;
-let connectedAPI: any | null = null;
+let connectedAPI: ConnectedAPI | null = null;
 let contractAddress: string | null = null;
+let paimaWalletResult: any = null;
 
 // Network ID for Midnight network
 // For local development with the undeployed network, use "undeployed"
 // For testnet, use "preview" (Lace Midnight Preview wallet)
-// Valid values: "undeployed", "testnet", "testnet-02", "devnet", "preview"
-const MIDNIGHT_NETWORK_ID = "undeployed";
+const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
 const COMPATIBLE_CONNECTOR_API_VERSION = ">=1.0.0";
+
+// Set the network ID globally before any wallet operations
+setNetworkId(MIDNIGHT_NETWORK_ID);
 
 /**
  * Get contract address from deployment file
@@ -38,10 +41,9 @@ const fetchContractAddress = async (): Promise<string | null> => {
 };
 
 /**
- * Connect directly to the Midnight Lace wallet via window.midnight
- * This is how effectstream-midnight connects to the wallet.
+ * Direct connection to window.midnight (fallback method)
  */
-async function connectToMidnightWallet(): Promise<any> {
+async function connectDirectToMidnight(): Promise<ConnectedAPI> {
   const midnight = (window as any).midnight;
 
   if (!midnight) {
@@ -59,18 +61,23 @@ async function connectToMidnightWallet(): Promise<any> {
   }
 
   const [name, api] = wallets[0];
-  console.log(`[LaceWalletBridge] Connecting to wallet: ${name} (version ${api.apiVersion})`);
+  console.log(`[LaceWalletBridge] Direct connect to wallet: ${name} (version ${api.apiVersion})`);
+  console.log(`[LaceWalletBridge] Requesting network ID: ${MIDNIGHT_NETWORK_ID}`);
 
-  // Set the password provider directly on the API object (don't spread it)
-  // Spreading loses the private field context which causes "attempted to get private field on non-instance"
-  api.privateStoragePasswordProvider = async () => "PAIMA_STORAGE_PASSWORD";
+  // Set password provider
+  const passwordProvider = async () => "PAIMA_STORAGE_PASSWORD";
+  const apiWithPassword: any = { ...api };
+  if (typeof apiWithPassword.connect !== "function") {
+    apiWithPassword.connect = api.connect.bind(api);
+  }
+  apiWithPassword.privateStoragePasswordProvider = passwordProvider;
 
   // Connect to the wallet with our network ID
-  return await api.connect(MIDNIGHT_NETWORK_ID);
+  return await apiWithPassword.connect(MIDNIGHT_NETWORK_ID);
 }
 
 /**
- * Login with Lace wallet by connecting directly to window.midnight
+ * Login with Lace wallet - tries @paimaexample/wallets first, then direct connection
  */
 export async function laceWalletLogin(): Promise<{
   success: boolean;
@@ -78,11 +85,32 @@ export async function laceWalletLogin(): Promise<{
   errorMessage?: string;
 }> {
   try {
-    // Connect directly to Midnight wallet (not through @paimaexample/wallets)
-    connectedAPI = await connectToMidnightWallet();
+    console.log(`[LaceWalletBridge] Logging in with network ID: ${MIDNIGHT_NETWORK_ID}`);
+
+    // First try @paimaexample/wallets
+    try {
+      const result = await walletLogin({
+        // @ts-ignore - WalletMode.Midnight = 2
+        mode: WalletMode.Midnight,
+        networkId: MIDNIGHT_NETWORK_ID,
+      });
+
+      if (result.success) {
+        console.log("[LaceWalletBridge] Connected via @paimaexample/wallets");
+        paimaWalletResult = result.result;
+        connectedAPI = paimaWalletResult.provider.getConnection().api as ConnectedAPI;
+      } else {
+        console.log("[LaceWalletBridge] @paimaexample/wallets failed, trying direct connection...");
+        throw new Error("Paima wallet failed");
+      }
+    } catch (paimaError) {
+      // Fallback to direct window.midnight connection
+      console.log("[LaceWalletBridge] Falling back to direct window.midnight connection");
+      connectedAPI = await connectDirectToMidnight();
+    }
 
     // Get shielded addresses from the wallet
-    const addresses = await connectedAPI.getShieldedAddresses();
+    const addresses = await connectedAPI!.getShieldedAddresses();
 
     // The shielded address is the wallet address for Midnight
     laceWalletAddress = addresses.shieldedAddress || null;
@@ -96,14 +124,7 @@ export async function laceWalletLogin(): Promise<{
   } catch (error) {
     console.error("[LaceWalletBridge] Login failed:", error);
 
-    // Provide helpful error messages
     let errorMessage = error instanceof Error ? error.message : "Unknown error";
-
-    if (errorMessage.includes("midnight") || errorMessage.includes("Midnight")) {
-      // Keep the message as-is, it's already helpful
-    } else if (errorMessage.includes("Extension installed")) {
-      // Keep the message as-is
-    }
 
     return {
       success: false,
@@ -136,8 +157,15 @@ export function getDeployedContractAddress(): string | null {
 /**
  * Get the connected API instance (for advanced usage)
  */
-export function getConnectedAPI(): any | null {
+export function getConnectedAPI(): ConnectedAPI | null {
   return connectedAPI;
+}
+
+/**
+ * Get the Paima wallet result (for contract interaction)
+ */
+export function getPaimaWallet(): any {
+  return paimaWalletResult;
 }
 
 /**
@@ -182,6 +210,7 @@ export function disconnectLaceWallet(): void {
   connectedAPI = null;
   laceWalletAddress = null;
   contractAddress = null;
+  paimaWalletResult = null;
   console.log("[LaceWalletBridge] Wallet disconnected");
 }
 
@@ -192,6 +221,7 @@ export const LaceWalletBridge = {
   getLaceAddress,
   getDeployedContractAddress,
   getConnectedAPI,
+  getPaimaWallet,
   requestFaucetFunds,
   disconnectLaceWallet,
 };

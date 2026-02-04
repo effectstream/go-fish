@@ -320,14 +320,16 @@ async function joinContract(
   }
 
   // Check if the contract exists in the indexer
+  // Note: The GraphQL schema may vary between indexer versions, so we try multiple queries
   try {
     console.log("[MidnightOnChain] Querying indexer for contract existence...");
+    // Try the contractAction query which is more commonly available
     const contractQuery = await fetch(BASE_URL_MIDNIGHT_INDEXER_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        query: `query GetContract($address: HexString!) {
-          contractState(address: $address) {
+        query: `query GetContract($address: String!) {
+          contractAction(address: $address) {
             address
           }
         }`,
@@ -337,7 +339,9 @@ async function joinContract(
     const contractData = await contractQuery.json();
     console.log("[MidnightOnChain] Contract query result:", JSON.stringify(contractData));
 
-    if (!contractData.data?.contractState) {
+    if (contractData.errors) {
+      console.log("[MidnightOnChain] GraphQL query not supported by this indexer version - continuing anyway");
+    } else if (!contractData.data?.contractAction) {
       console.warn(`[MidnightOnChain] Contract not found at address ${address} - it may not have been deployed or indexed yet`);
     } else {
       console.log("[MidnightOnChain] Contract found in indexer!");
@@ -440,13 +444,30 @@ export async function initializeOnChainService(): Promise<boolean> {
         console.warn("[MidnightOnChain] init_deck function not found on contract - callTx:", Object.keys(callTx || {}));
       }
     } catch (initError: any) {
+      // Extract error message from FiberFailure if present
+      let errorMsg = initError?.message || "";
+      if (initError?.cause) {
+        const cause = initError.cause;
+        if (cause?.error?.message) {
+          errorMsg = cause.error.message;
+        } else if (cause?.message) {
+          errorMsg = cause.message;
+        } else if (typeof cause === "string") {
+          errorMsg = cause;
+        }
+      }
+      if (!errorMsg) {
+        errorMsg = String(initError);
+      }
+
       // Check if the error indicates the deck is already initialized
-      const errorMsg = initError?.message || String(initError);
-      if (errorMsg.includes("already initialized") || errorMsg.includes("Static deck")) {
+      if (errorMsg.includes("already initialized") || errorMsg.includes("Static deck") || errorMsg.includes("staticDeckInitialized")) {
         console.log("[MidnightOnChain] Static deck appears to already be initialized (this is OK)");
+        staticDeckInitialized = true;
       } else {
         // This is a real error - but we'll continue and let applyMask fail with a clearer message
-        console.error("[MidnightOnChain] init_deck failed with unexpected error:", initError);
+        console.error("[MidnightOnChain] init_deck failed with error:", errorMsg);
+        console.error("[MidnightOnChain] Full error object:", initError);
         console.error("[MidnightOnChain] Games may fail until init_deck succeeds");
       }
     }
