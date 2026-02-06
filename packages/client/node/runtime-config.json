@@ -1,3 +1,4 @@
 {
-  "useTypescriptContract": false
+  "useTypescriptContract": false,
+  "useBatcherMode": true
 }

@@ -19,8 +19,9 @@
  *   - Both EVM and Lace wallets required
  */
 
-import MidnightOnChainService, { isOnChainReady, initializeOnChainService } from "./MidnightOnChainService";
+import MidnightOnChainService, { isOnChainReady, initializeOnChainService, isBatcherMode } from "./MidnightOnChainService";
 import { isLaceConnected } from "../laceWalletBridge";
+import { isBatcherModeEnabled } from "../proving/batcher-providers";
 
 // Backend API base URL
 const BACKEND_URL = "http://localhost:9999";
@@ -122,7 +123,7 @@ export function isOnChainModeActive(): boolean {
 }
 
 /**
- * Try to initialize on-chain service (call after Lace wallet connects)
+ * Try to initialize on-chain service (call after Lace wallet connects or in batcher mode)
  */
 export async function tryInitializeOnChain(): Promise<boolean> {
   if (appConfig.useMockedMidnight) {
@@ -134,12 +135,16 @@ export async function tryInitializeOnChain(): Promise<boolean> {
     return true;
   }
 
-  if (!isLaceConnected()) {
-    console.warn("[MidnightService] Cannot initialize on-chain - Lace wallet not connected");
+  // Check if batcher mode is enabled
+  const batcherMode = isBatcherModeEnabled();
+
+  // In batcher mode, we don't need Lace wallet
+  if (!batcherMode && !isLaceConnected()) {
+    console.warn("[MidnightService] Cannot initialize on-chain - Lace wallet not connected (and batcher mode not enabled)");
     return false;
   }
 
-  console.log("[MidnightService] Attempting on-chain initialization...");
+  console.log("[MidnightService] Attempting on-chain initialization...", batcherMode ? "(batcher mode)" : "(wallet mode)");
   try {
     onChainInitialized = await initializeOnChainService();
     console.log("[MidnightService] On-chain initialization result:", onChainInitialized, "isOnChainReady:", isOnChainReady());

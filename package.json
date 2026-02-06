@@ -1,4 +1,8 @@
 {
+    "scripts": {
+        "dev:batcher": "cd packages/frontend && npm run dev:batcher",
+        "build:batcher": "cd packages/frontend && npm run build:batcher"
+    },
     "dependencies": {
         "@electric-sql/pglite": "^0.3.14"
     },

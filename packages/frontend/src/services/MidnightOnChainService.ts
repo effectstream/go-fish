@@ -14,6 +14,7 @@
  */
 
 import { getConnectedAPI, isLaceConnected } from "../laceWalletBridge";
+import { isBatcherModeEnabled, initializeBatcherProviders } from "../proving/batcher-providers";
 
 // Import Midnight SDK packages
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
@@ -27,6 +28,7 @@ import type {
 import {
   type DeployedContract,
   findDeployedContract,
+  deployContract,
   type FoundContract,
 } from "@midnight-ntwrk/midnight-js-contracts";
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
@@ -63,8 +65,8 @@ type PrivateState = Record<string, never>;
 const BASE_URL_MIDNIGHT_INDEXER = "http://127.0.0.1:8088";
 const BASE_WS_MIDNIGHT_INDEXER = "ws://127.0.0.1:8088";
 const BASE_URL_PROOF_SERVER = "http://127.0.0.1:6300";
-const BASE_URL_MIDNIGHT_INDEXER_API = `${BASE_URL_MIDNIGHT_INDEXER}/api/v1/graphql`;
-const BASE_URL_MIDNIGHT_INDEXER_WS = `${BASE_WS_MIDNIGHT_INDEXER}/api/v1/graphql/ws`;
+const BASE_URL_MIDNIGHT_INDEXER_API = `${BASE_URL_MIDNIGHT_INDEXER}/api/v3/graphql`;
+const BASE_URL_MIDNIGHT_INDEXER_WS = `${BASE_WS_MIDNIGHT_INDEXER}/api/v3/graphql/ws`;
 
 const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
 
@@ -74,6 +76,7 @@ let isInitialized = false;
 let providers: GoFishProviders | null = null;
 let deployedContract: DeployedGoFishContract | null = null;
 let goFishContractInstance: any = null;
+let batcherModeActive = false;
 
 type ContractPrivateStateId = "privateState";
 
@@ -301,7 +304,45 @@ async function checkIndexerConnectivity(): Promise<boolean> {
 }
 
 /**
- * Join an existing deployed contract
+ * Deploy a new contract (only used in batcher mode)
+ */
+async function deployNewContract(
+  provs: GoFishProviders,
+): Promise<DeployedGoFishContract> {
+  if (!goFishContractInstance) {
+    throw new Error("Contract module not loaded");
+  }
+
+  console.log("[MidnightOnChain] Deploying new contract via batcher...");
+
+  const DEPLOY_TIMEOUT_MS = 120000; // 2 minutes for deployment
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`Contract deployment timed out after ${DEPLOY_TIMEOUT_MS}ms`));
+    }, DEPLOY_TIMEOUT_MS);
+  });
+
+  try {
+    const deployed = await Promise.race([
+      deployContract(provs as any, {
+        contract: goFishContractInstance,
+        privateStateId: "privateState",
+        initialPrivateState: {},
+      }),
+      timeoutPromise,
+    ]);
+
+    console.log(`[MidnightOnChain] Contract deployed at: ${deployed.deployTxData.public.contractAddress}`);
+    return deployed as unknown as DeployedGoFishContract;
+  } catch (error) {
+    console.error("[MidnightOnChain] Contract deployment failed:", error);
+    throw error;
+  }
+}
+
+/**
+ * Join an existing deployed contract, or deploy if in batcher mode and contract not found
  */
 async function joinContract(
   provs: GoFishProviders,
@@ -320,7 +361,7 @@ async function joinContract(
   }
 
   // Check if the contract exists in the indexer
-  // Note: The GraphQL schema may vary between indexer versions, so we try multiple queries
+  let contractFoundInIndexer = false;
   try {
     console.log("[MidnightOnChain] Querying indexer for contract existence...");
     // Try the contractAction query which is more commonly available
@@ -342,9 +383,20 @@ async function joinContract(
     if (contractData.errors) {
       console.log("[MidnightOnChain] GraphQL query not supported by this indexer version - continuing anyway");
     } else if (!contractData.data?.contractAction) {
-      console.warn(`[MidnightOnChain] Contract not found at address ${address} - it may not have been deployed or indexed yet`);
+      console.warn(`[MidnightOnChain] Contract not found at address ${address}`);
+      // NOTE: Automatic deployment via batcher is currently not supported due to protocol version mismatch
+      // between the newer Midnight SDK (ledger-v6) and the batcher's midnight-ledger-prototype.
+      // The batcher expects network ID 0 but the SDK sends 109.
+      // For now, the contract must be deployed manually before using batcher mode.
+      if (batcherModeActive) {
+        console.warn("[MidnightOnChain] Batcher mode - contract needs to be deployed manually");
+        console.warn("[MidnightOnChain] The midnight-batcher uses an older protocol version that's incompatible with the current SDK");
+        console.warn("[MidnightOnChain] Game will proceed with Effectstream only (no ZK features)");
+        throw new Error("Contract not deployed - Midnight ZK features unavailable in batcher mode until contract is deployed");
+      }
     } else {
       console.log("[MidnightOnChain] Contract found in indexer!");
+      contractFoundInIndexer = true;
     }
   } catch (queryError) {
     console.warn("[MidnightOnChain] Could not query contract existence:", queryError);
@@ -381,6 +433,9 @@ async function joinContract(
 
 /**
  * Initialize the on-chain service
+ * Supports two modes:
+ * 1. Wallet mode (default): Uses Lace wallet for transaction signing
+ * 2. Batcher mode: Uses batcher service for transaction submission (no wallet required)
  */
 export async function initializeOnChainService(): Promise<boolean> {
   if (isInitialized) {
@@ -388,7 +443,12 @@ export async function initializeOnChainService(): Promise<boolean> {
     return true;
   }
 
-  if (!isLaceConnected()) {
+  // Check if batcher mode is enabled
+  batcherModeActive = isBatcherModeEnabled();
+
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Batcher mode enabled - no Lace wallet required");
+  } else if (!isLaceConnected()) {
     console.warn("[MidnightOnChain] Lace wallet not connected");
     return false;
   }
@@ -396,9 +456,12 @@ export async function initializeOnChainService(): Promise<boolean> {
   try {
     console.log("[MidnightOnChain] Initializing on-chain service...");
 
-    const connectedAPI = getConnectedAPI();
-    if (!connectedAPI) {
-      throw new Error("Lace wallet API not available");
+    // In wallet mode, we need the connected API
+    if (!batcherModeActive) {
+      const connectedAPI = getConnectedAPI();
+      if (!connectedAPI) {
+        throw new Error("Lace wallet API not available");
+      }
     }
 
     // Load contract module
@@ -418,15 +481,30 @@ export async function initializeOnChainService(): Promise<boolean> {
       return true;
     }
 
-    // Get shielded addresses from wallet
-    const shieldedAddresses = await connectedAPI.getShieldedAddresses();
+    // Initialize providers based on mode
+    if (batcherModeActive) {
+      console.log("[MidnightOnChain] Initializing batcher mode providers...");
+      providers = await initializeBatcherProviders();
+      console.log("[MidnightOnChain] Batcher mode providers initialized");
+    } else {
+      const connectedAPI = getConnectedAPI()!;
+      // Get shielded addresses from wallet
+      const shieldedAddresses = await connectedAPI.getShieldedAddresses();
+      // Initialize wallet-based providers
+      providers = await initializeProviders(connectedAPI, shieldedAddresses);
+      console.log("[MidnightOnChain] Wallet mode providers initialized");
+    }
 
-    // Initialize providers
-    providers = await initializeProviders(connectedAPI, shieldedAddresses);
-    console.log("[MidnightOnChain] Providers initialized");
-
-    // Join the contract
+    // Join the contract (or deploy if not found in batcher mode)
     deployedContract = await joinContract(providers, contractAddress);
+    // Update contract address in case we deployed a new one
+    if (deployedContract && (deployedContract as any).deployTxData?.public?.contractAddress) {
+      const newAddress = (deployedContract as any).deployTxData.public.contractAddress;
+      if (newAddress !== contractAddress) {
+        console.log(`[MidnightOnChain] Contract was deployed at new address: ${newAddress}`);
+        contractAddress = newAddress;
+      }
+    }
     console.log("[MidnightOnChain] Contract joined successfully");
 
     // Initialize static deck if not already done
@@ -485,9 +563,20 @@ export async function initializeOnChainService(): Promise<boolean> {
 
 /**
  * Check if on-chain service is ready for direct chain calls
+ * In batcher mode, Lace wallet is not required
  */
 export function isOnChainReady(): boolean {
+  if (batcherModeActive) {
+    return isInitialized && deployedContract !== null;
+  }
   return isInitialized && deployedContract !== null && isLaceConnected();
+}
+
+/**
+ * Check if batcher mode is active
+ */
+export function isBatcherMode(): boolean {
+  return batcherModeActive;
 }
 
 /**
@@ -755,6 +844,7 @@ export async function queryContractState(): Promise<any | null> {
 export const MidnightOnChainService = {
   initialize: initializeOnChainService,
   isReady: isOnChainReady,
+  isBatcherMode,
   getContractAddress,
   queryContractState,
   initializeStaticDeck,

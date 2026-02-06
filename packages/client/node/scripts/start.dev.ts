@@ -13,6 +13,12 @@ const indexerConfigPath = path.join(midnightContractsDir, "indexer-standalone/co
 // Check if we should skip Midnight infrastructure (when using TypeScript contract)
 const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
 
+// Check if batcher mode is enabled (run frontend in batcher mode, no Lace wallet needed)
+const useBatcherMode = Deno.env.get("USE_BATCHER_MODE") === "true";
+
+// Path to midnight-batcher wrapper script (waits for indexer before starting)
+const midnightBatcherScript = path.resolve(__dirname, "start-midnight-batcher.ts");
+
 // Midnight infrastructure processes (only when not using TypeScript contract)
 const midnightProcesses = useTypescriptContract ? [] : [
   /** MIDNIGHT-NODE-BLOCK */
@@ -82,9 +88,31 @@ const midnightProcesses = useTypescriptContract ? [] : [
   /** MIDNIGHT-PROOF-SERVER-BLOCK */
 ];
 
+// Midnight batcher service (only when batcher mode is enabled)
+// This is a Rust service that handles Midnight ZK transactions without requiring Lace wallet
+// Uses a wrapper script that waits for the indexer to be ready before starting
+const midnightBatcherProcesses = useBatcherMode && !useTypescriptContract ? [
+  /** MIDNIGHT-BATCHER-BLOCK */
+  {
+    name: "midnight-batcher",
+    args: [
+      "run", "-A", "--unstable-detect-cjs",
+      midnightBatcherScript,
+    ],
+    waitToExit: false,
+    type: "system-dependency",
+    link: "http://localhost:8000",
+    stopProcessAtPort: [8000],
+    dependsOn: ["midnight-node", "midnight-indexer"],
+  },
+  /** MIDNIGHT-BATCHER-BLOCK */
+] : [];
+
 const customProcesses = [
   // Midnight infrastructure (skipped when USE_TYPESCRIPT_CONTRACT=true)
   ...midnightProcesses,
+  // Midnight batcher for wallet-less mode (only when USE_BATCHER_MODE=true)
+  ...midnightBatcherProcesses,
 
   /** FRONTEND-BLOCK */
   {
@@ -100,11 +128,12 @@ const customProcesses = [
     name: "serve-frontend",
     command: "npm",
     cwd: "../../frontend",
-    args: ["run", "dev"],
+    // Use batcher mode script when USE_BATCHER_MODE=true (no Lace wallet needed)
+    args: useBatcherMode ? ["run", "dev:batcher"] : ["run", "dev"],
     waitToExit: false,
     link: "http://localhost:3000",
     type: "system-dependency",
-    dependsOn: ["install-frontend"],
+    dependsOn: useBatcherMode ? ["install-frontend", "midnight-batcher"] : ["install-frontend"],
     logs: "none",
   },
   /** FRONTEND-BLOCK */
@@ -163,9 +192,10 @@ if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
 // This is needed because env vars don't always propagate through the orchestrator
 const runtimeConfig = {
   useTypescriptContract: Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true",
+  useBatcherMode: Deno.env.get("USE_BATCHER_MODE") === "true",
 };
 const configPath = new URL("../runtime-config.json", import.meta.url);
 await Deno.writeTextFile(configPath, JSON.stringify(runtimeConfig, null, 2));
-console.log(`[Orchestrator] Runtime config written: useTypescriptContract=${runtimeConfig.useTypescriptContract}`);
+console.log(`[Orchestrator] Runtime config written: useTypescriptContract=${runtimeConfig.useTypescriptContract}, useBatcherMode=${runtimeConfig.useBatcherMode}`);
 
 await start(config);

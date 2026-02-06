@@ -86,6 +86,33 @@ export default defineConfig({
           ),
           dest: 'contract_address',
         },
+        {
+          // Copy @paima/midnight-vm-bindings WASM file for web worker
+          src: normalizePath(
+            path.resolve(
+              __dirname,
+              'node_modules',
+              '@paima',
+              'midnight-vm-bindings',
+              '*.wasm',
+            ),
+          ),
+          dest: 'wasm',
+        },
+        {
+          // Copy worker helper JS files from midnight-vm-bindings
+          src: normalizePath(
+            path.resolve(
+              __dirname,
+              'node_modules',
+              '@paima',
+              'midnight-vm-bindings',
+              'snippets',
+              '**/*',
+            ),
+          ),
+          dest: 'wasm/snippets',
+        },
       ],
     }),
   ],
@@ -93,6 +120,18 @@ export default defineConfig({
     port: 3000,
     fs: {
       strict: false,
+    },
+    // Required headers for SharedArrayBuffer (multi-threaded WASM)
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  preview: {
+    // Required headers for SharedArrayBuffer in preview mode
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   build: {
@@ -130,6 +169,8 @@ export default defineConfig({
       '@midnight-ntwrk/onchain-runtime-v2',
       '@midnight-ntwrk/compact-runtime',
       '@midnight-ntwrk/compact-js',
+      // WASM bindings with nested worker pattern - must be excluded to preserve import.meta.url
+      '@paima/midnight-vm-bindings',
     ],
     esbuildOptions: {
       target: 'esnext',
@@ -152,6 +193,16 @@ export default defineConfig({
   assetsInclude: ['**/*.wasm'],
   worker: {
     format: 'es',
+    plugins: () => [
+      wasm(),
+      topLevelAwait(),
+    ],
+    rollupOptions: {
+      output: {
+        chunkFileNames: 'assets/worker/[name]-[hash].js',
+        assetFileNames: 'assets/worker/[name]-[hash].js',
+      },
+    },
   },
   define: {
     // Define global for compatibility

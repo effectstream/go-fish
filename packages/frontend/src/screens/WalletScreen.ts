@@ -10,6 +10,7 @@
 import * as EffectstreamBridge from '../effectstreamBridge';
 import * as LaceWalletBridge from '../laceWalletBridge';
 import { MidnightService } from '../services/MidnightService';
+import { isBatcherModeEnabled } from '../proving/batcher-providers';
 
 // Config from backend
 interface AppConfig {
@@ -46,14 +47,36 @@ export class WalletScreen {
     // Check existing Lace connection
     this.laceConnected = LaceWalletBridge.isLaceConnected();
 
+    // Check if batcher mode is enabled (no Lace wallet required)
+    const batcherMode = isBatcherModeEnabled();
+    if (batcherMode) {
+      console.log('[WalletScreen] Batcher mode enabled - no Lace wallet required');
+    }
+
     // Initialize the local EVM wallet automatically (no user interaction needed)
     console.log('[WalletScreen] Initializing local EVM wallet...');
     await EffectstreamBridge.userWalletLogin();
     console.log('[WalletScreen] Local EVM wallet ready');
 
-    // If in mock mode or Lace already connected, proceed
-    if (this.config.useMockedMidnight || this.laceConnected) {
+    // If in mock mode, batcher mode, or Lace already connected, proceed
+    if (this.config.useMockedMidnight || batcherMode || this.laceConnected) {
       console.log('[WalletScreen] Proceeding to game...');
+
+      // If batcher mode is enabled, initialize on-chain service now
+      // (in wallet mode, this happens after Lace connection)
+      if (batcherMode && !this.config.useMockedMidnight) {
+        console.log('[WalletScreen] Initializing batcher mode on-chain service...');
+        MidnightService.tryInitializeOnChain().then((initialized) => {
+          if (initialized) {
+            console.log('[WalletScreen] Batcher mode on-chain service initialized');
+          } else {
+            console.log('[WalletScreen] Batcher mode on-chain service not ready yet');
+          }
+        }).catch((error) => {
+          console.error('[WalletScreen] Batcher mode initialization error:', error);
+        });
+      }
+
       this.dispatchNavigate('name-entry');
       return;
     }

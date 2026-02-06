@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:batcher": "vite --mode batcher",
     "build": "tsc && vite build",
+    "build:batcher": "tsc && vite build --mode batcher",
     "preview": "vite preview",
     "serve": "npx http-server ./dist"
   },
@@ -19,6 +21,7 @@
     "vite-plugin-wasm": "^3.5.0"
   },
   "dependencies": {
+    "@paima/midnight-vm-bindings": "^0.3.1",
     "@midnight-ntwrk/compact-runtime": "0.11.0-rc.1",
     "@midnight-ntwrk/dapp-connector-api": "4.0.0-beta.2",
     "@midnight-ntwrk/ledger-v6": "6.1.0-alpha.6",
