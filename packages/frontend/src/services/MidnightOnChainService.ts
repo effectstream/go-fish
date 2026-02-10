@@ -18,37 +18,41 @@ import { isBatcherModeEnabled, initializeBatcherProviders } from "../proving/bat
 
 // Import Midnight SDK packages
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
-import { fromHex, toHex } from "@midnight-ntwrk/compact-runtime";
-import * as ledger from "@midnight-ntwrk/ledger-v6";
-import type {
-  CoinPublicKey,
-  EncPublicKey,
-  ShieldedCoinInfo,
-} from "@midnight-ntwrk/ledger-v6";
+import {
+  Transaction,
+  type CoinInfo,
+  type TransactionId,
+} from "@midnight-ntwrk/ledger";
+import { getRuntimeNetworkId, setNetworkId, NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import {
   type DeployedContract,
+  type FoundContract,
   findDeployedContract,
   deployContract,
-  type FoundContract,
 } from "@midnight-ntwrk/midnight-js-contracts";
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
-import { assertIsContractAddress } from "@midnight-ntwrk/midnight-js-utils";
-import {
-  setNetworkId,
-  type NetworkId,
-} from "@midnight-ntwrk/midnight-js-network-id";
+import { assertIsContractAddress, fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
 import type {
-  BalancedProvingRecipe,
+  BalancedTransaction,
+  UnbalancedTransaction,
   ImpureCircuitId,
-  MidnightProvider,
   MidnightProviders,
-  WalletProvider,
   Contract,
 } from "@midnight-ntwrk/midnight-js-types";
-import type { ConnectedAPI } from "@midnight-ntwrk/dapp-connector-api";
+import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
+
+// Custom type for the connected wallet API (combines DAppConnectorWalletAPI with shielded address access)
+interface ConnectedAPI extends DAppConnectorWalletAPI {
+  getShieldedAddresses(): Promise<{
+    shieldedAddress: string;
+    shieldedCoinPublicKey: string;
+    shieldedEncryptionPublicKey: string;
+  }>;
+  balanceUnsealedTransaction(tx: string): Promise<{ tx: string }>;
+}
 
 // Import the contract - path needs to be resolved at runtime
 // For now, we'll type it manually since the contract may not be available as npm package
@@ -65,13 +69,15 @@ type PrivateState = Record<string, never>;
 const BASE_URL_MIDNIGHT_INDEXER = "http://127.0.0.1:8088";
 const BASE_WS_MIDNIGHT_INDEXER = "ws://127.0.0.1:8088";
 const BASE_URL_PROOF_SERVER = "http://127.0.0.1:6300";
-const BASE_URL_MIDNIGHT_INDEXER_API = `${BASE_URL_MIDNIGHT_INDEXER}/api/v3/graphql`;
-const BASE_URL_MIDNIGHT_INDEXER_WS = `${BASE_WS_MIDNIGHT_INDEXER}/api/v3/graphql/ws`;
+// Using /api/v1/graphql for midnight-js SDK v2.0.0 (matching midnight-game-2)
+const BASE_URL_MIDNIGHT_INDEXER_API = `${BASE_URL_MIDNIGHT_INDEXER}/api/v1/graphql`;
+const BASE_URL_MIDNIGHT_INDEXER_WS = `${BASE_WS_MIDNIGHT_INDEXER}/api/v1/graphql/ws`;
 
-const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
+const MIDNIGHT_NETWORK_ID = NetworkId.Undeployed;
 
 // Service state
-let contractAddress: string | null = null;
+let contractAddressRaw: string | null = null;  // 32-byte address for indexer queries
+let contractAddressNormalized: string | null = null;  // 34-byte address for SDK
 let isInitialized = false;
 let providers: GoFishProviders | null = null;
 let deployedContract: DeployedGoFishContract | null = null;
@@ -99,9 +105,39 @@ type ShieldedAddresses = Awaited<
 >;
 
 /**
- * Load contract address from backend config or deployment file
+ * Normalize contract address for SDK compatibility.
+ *
+ * Different SDK versions may expect different address formats.
+ * This function normalizes addresses as needed.
  */
-async function loadContractAddress(): Promise<string | null> {
+function normalizeContractAddress(address: string): string {
+  // Remove any 0x prefix if present
+  const cleanAddress = address.startsWith("0x") ? address.slice(2) : address;
+
+  // Expected lengths
+  const EXPECTED_BYTES = 34;
+  const EXPECTED_HEX_LENGTH = EXPECTED_BYTES * 2; // 68 hex chars
+
+  if (cleanAddress.length === EXPECTED_HEX_LENGTH) {
+    // Already correct length
+    return cleanAddress;
+  }
+
+  if (cleanAddress.length === 64) {
+    // 32-byte address from compact-runtime 0.11.0 - pad with 2-byte prefix
+    console.log("[MidnightOnChain] Normalizing 32-byte address to 34-byte format");
+    return "0000" + cleanAddress;
+  }
+
+  console.warn(`[MidnightOnChain] Unexpected contract address length: ${cleanAddress.length} hex chars`);
+  return cleanAddress;
+}
+
+/**
+ * Load contract address from backend config or deployment file
+ * Returns both raw (32-byte) and normalized (34-byte) addresses
+ */
+async function loadContractAddress(): Promise<{ raw: string; normalized: string } | null> {
   // First try to get from backend config
   try {
     const response = await fetch("http://localhost:9999/api/midnight/contract_address");
@@ -109,7 +145,8 @@ async function loadContractAddress(): Promise<string | null> {
       const data = await response.json();
       if (data.contractAddress) {
         console.log("[MidnightOnChain] Got contract address from backend");
-        return data.contractAddress;
+        const raw = data.contractAddress;
+        return { raw, normalized: normalizeContractAddress(raw) };
       }
     }
   } catch (error) {
@@ -118,12 +155,13 @@ async function loadContractAddress(): Promise<string | null> {
 
   // Fall back to static deployment file
   try {
-    const response = await fetch("/contract_address/contract-go-fish.undeployed.json");
+    const response = await fetch("/contract_address/go-fish-contract.undeployed.json");
     if (response.ok) {
       const data = await response.json();
       if (data.contractAddress) {
         console.log("[MidnightOnChain] Got contract address from static file");
-        return data.contractAddress;
+        const raw = data.contractAddress;
+        return { raw, normalized: normalizeContractAddress(raw) };
       }
     }
   } catch (error) {
@@ -158,47 +196,35 @@ async function loadContractModule(): Promise<boolean> {
 
 /**
  * Create wallet and midnight provider from connected wallet API
+ * Uses ledger v4 with getRuntimeNetworkId() for serialization
  */
 function createWalletAndMidnightProvider(
   connectedAPI: ConnectedAPI,
-  coinPublicKey: CoinPublicKey,
-  encryptionPublicKey: EncPublicKey,
-): WalletProvider & MidnightProvider {
+  coinPublicKey: string,
+  encryptionPublicKey: string,
+): { coinPublicKey: string; encryptionPublicKey: string; balanceTx: any; submitTx: any } {
   return {
-    getCoinPublicKey(): CoinPublicKey {
-      return coinPublicKey;
-    },
-    getEncryptionPublicKey(): EncPublicKey {
-      return encryptionPublicKey;
-    },
+    coinPublicKey,
+    encryptionPublicKey,
     async balanceTx(
-      tx: ledger.UnprovenTransaction,
-      _newCoins?: ShieldedCoinInfo[],
-      _ttl?: Date,
-    ): Promise<BalancedProvingRecipe> {
+      tx: UnbalancedTransaction,
+      _newCoins?: CoinInfo[],
+    ): Promise<BalancedTransaction> {
       try {
         console.log("[MidnightOnChain] Balancing transaction via wallet");
-        const serializedTx = toHex(tx.serialize());
+        // Serialize with network ID for ledger v4
+        const serializedTx = toHex(tx.serialize(getRuntimeNetworkId()));
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
-        const transaction = ledger.Transaction.deserialize<
-          ledger.SignatureEnabled,
-          ledger.PreProof,
-          ledger.PreBinding
-        >(
-          "signature",
-          "pre-proof",
-          "pre-binding",
+        // Deserialize with network ID for ledger v4
+        const transaction = Transaction.deserialize(
           fromHex(received.tx),
+          getRuntimeNetworkId(),
         );
-        return {
-          type: "TransactionToProve",
-          transaction: transaction,
-        };
+        return transaction as unknown as BalancedTransaction;
       } catch (e: any) {
         // Extract detailed error info from FiberFailure
         let errorDetails = "Unknown error";
         if (e?.cause) {
-          // FiberFailure wraps the actual error in cause
           const cause = e.cause;
           if (cause?.error?.message) {
             errorDetails = cause.error.message;
@@ -214,15 +240,14 @@ function createWalletAndMidnightProvider(
         }
         console.error("[MidnightOnChain] Error balancing transaction:", errorDetails);
         console.error("[MidnightOnChain] Full error object:", e);
-        console.error("[MidnightOnChain] This usually means:");
-        console.error("  - Wallet doesn't have enough tDUST (use the faucet to get more)");
-        console.error("  - Wallet state is out of sync (try refreshing the page)");
-        console.error("  - Transaction is invalid");
         throw new Error(`Failed to balance transaction: ${errorDetails}`);
       }
     },
-    async submitTx(tx: ledger.FinalizedTransaction): Promise<ledger.TransactionId> {
-      await connectedAPI.submitTransaction(toHex(tx.serialize()));
+    async submitTx(tx: BalancedTransaction): Promise<TransactionId> {
+      // Submit transaction directly - the wallet API handles the serialization
+      // Cast to any since BalancedTransaction from ledger and Transaction from zswap
+      // are structurally compatible but have different nominal types
+      await connectedAPI.submitTransaction(tx as any);
       const txIdentifiers = tx.identifiers();
       const txId = txIdentifiers[0];
       console.log("[MidnightOnChain] Submitted transaction:", txId);
@@ -245,8 +270,8 @@ async function initializeProviders(
 
   const walletAndMidnightProvider = createWalletAndMidnightProvider(
     connectedAPI,
-    shieldedCoinPublicKey as CoinPublicKey,
-    shieldedEncryptionPublicKey as EncPublicKey,
+    shieldedCoinPublicKey,
+    shieldedEncryptionPublicKey,
   );
 
   const zkConfigPath = window.location.origin;
@@ -343,16 +368,22 @@ async function deployNewContract(
 
 /**
  * Join an existing deployed contract, or deploy if in batcher mode and contract not found
+ *
+ * @param provs The providers to use
+ * @param rawAddress The raw 32-byte contract address (for indexer queries)
+ * @param normalizedAddress The normalized 34-byte contract address (for findDeployedContract)
  */
 async function joinContract(
   provs: GoFishProviders,
-  address: string,
+  rawAddress: string,
+  normalizedAddress: string,
 ): Promise<DeployedGoFishContract> {
   if (!goFishContractInstance) {
     throw new Error("Contract module not loaded");
   }
 
-  console.log(`[MidnightOnChain] Attempting to find deployed contract at: ${address}`);
+  console.log(`[MidnightOnChain] Attempting to find deployed contract at: ${rawAddress}`);
+  console.log(`[MidnightOnChain] Normalized address for SDK: ${normalizedAddress}`);
 
   // Pre-flight check - verify indexer is accessible
   const indexerOk = await checkIndexerConnectivity();
@@ -360,7 +391,7 @@ async function joinContract(
     throw new Error("Indexer connectivity check failed - ensure the indexer is running at " + BASE_URL_MIDNIGHT_INDEXER);
   }
 
-  // Check if the contract exists in the indexer
+  // Check if the contract exists in the indexer (use raw address for indexer query)
   let contractFoundInIndexer = false;
   try {
     console.log("[MidnightOnChain] Querying indexer for contract existence...");
@@ -374,7 +405,7 @@ async function joinContract(
             address
           }
         }`,
-        variables: { address: address },
+        variables: { address: rawAddress },
       }),
     });
     const contractData = await contractQuery.json();
@@ -383,22 +414,19 @@ async function joinContract(
     if (contractData.errors) {
       console.log("[MidnightOnChain] GraphQL query not supported by this indexer version - continuing anyway");
     } else if (!contractData.data?.contractAction) {
-      console.warn(`[MidnightOnChain] Contract not found at address ${address}`);
-      // NOTE: Automatic deployment via batcher is currently not supported due to protocol version mismatch
-      // between the newer Midnight SDK (ledger-v6) and the batcher's midnight-ledger-prototype.
-      // The batcher expects network ID 0 but the SDK sends 109.
-      // For now, the contract must be deployed manually before using batcher mode.
-      if (batcherModeActive) {
-        console.warn("[MidnightOnChain] Batcher mode - contract needs to be deployed manually");
-        console.warn("[MidnightOnChain] The midnight-batcher uses an older protocol version that's incompatible with the current SDK");
-        console.warn("[MidnightOnChain] Game will proceed with Effectstream only (no ZK features)");
-        throw new Error("Contract not deployed - Midnight ZK features unavailable in batcher mode until contract is deployed");
-      }
+      console.warn(`[MidnightOnChain] Contract not found via contractAction query at address ${rawAddress}`);
+      console.warn("[MidnightOnChain] This may be due to indexer schema differences - will try findDeployedContract anyway");
+      // Don't fail here - the contractAction query may use a different schema than findDeployedContract
+      // Let findDeployedContract try to find the contract using its own queries
     } else {
       console.log("[MidnightOnChain] Contract found in indexer!");
       contractFoundInIndexer = true;
     }
-  } catch (queryError) {
+  } catch (queryError: any) {
+    // Re-throw errors that we explicitly threw (batcher mode not deployed)
+    if (queryError?.message?.includes("Contract not deployed")) {
+      throw queryError;
+    }
     console.warn("[MidnightOnChain] Could not query contract existence:", queryError);
   }
 
@@ -407,15 +435,15 @@ async function joinContract(
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => {
-      reject(new Error(`findDeployedContract timed out after ${TIMEOUT_MS}ms - the indexer is reachable but findDeployedContract is not completing. This may indicate the contract was not found at address ${address}`));
+      reject(new Error(`findDeployedContract timed out after ${TIMEOUT_MS}ms - the indexer is reachable but findDeployedContract is not completing. This may indicate the contract was not found at address ${rawAddress}`));
     }, TIMEOUT_MS);
   });
 
   try {
-    console.log("[MidnightOnChain] Calling findDeployedContract...");
+    console.log("[MidnightOnChain] Calling findDeployedContract with normalized address...");
     const goFishContract = await Promise.race([
       findDeployedContract(provs, {
-        contractAddress: address,
+        contractAddress: normalizedAddress,
         contract: goFishContractInstance,
         privateStateId: "privateState",
         initialPrivateState: {},
@@ -423,7 +451,7 @@ async function joinContract(
       timeoutPromise,
     ]);
 
-    console.log(`[MidnightOnChain] Joined contract at address: ${address}`);
+    console.log(`[MidnightOnChain] Joined contract at address: ${rawAddress}`);
     return goFishContract;
   } catch (error) {
     console.error("[MidnightOnChain] findDeployedContract failed:", error);
@@ -473,13 +501,15 @@ export async function initializeOnChainService(): Promise<boolean> {
     }
 
     // Load contract address
-    contractAddress = await loadContractAddress();
-    if (!contractAddress) {
+    const addressResult = await loadContractAddress();
+    if (!addressResult) {
       console.warn("[MidnightOnChain] No contract address found");
       console.warn("[MidnightOnChain] Deploy the contract first: deno task midnight:deploy");
       isInitialized = true;
       return true;
     }
+    contractAddressRaw = addressResult.raw;
+    contractAddressNormalized = addressResult.normalized;
 
     // Initialize providers based on mode
     if (batcherModeActive) {
@@ -496,13 +526,15 @@ export async function initializeOnChainService(): Promise<boolean> {
     }
 
     // Join the contract (or deploy if not found in batcher mode)
-    deployedContract = await joinContract(providers, contractAddress);
+    // Pass both raw (for indexer) and normalized (for SDK) addresses
+    deployedContract = await joinContract(providers, contractAddressRaw, contractAddressNormalized);
     // Update contract address in case we deployed a new one
     if (deployedContract && (deployedContract as any).deployTxData?.public?.contractAddress) {
       const newAddress = (deployedContract as any).deployTxData.public.contractAddress;
-      if (newAddress !== contractAddress) {
+      if (newAddress !== contractAddressRaw) {
         console.log(`[MidnightOnChain] Contract was deployed at new address: ${newAddress}`);
-        contractAddress = newAddress;
+        contractAddressRaw = newAddress;
+        contractAddressNormalized = normalizeContractAddress(newAddress);
       }
     }
     console.log("[MidnightOnChain] Contract joined successfully");
@@ -814,24 +846,24 @@ export async function onChainSkipDrawDeckEmpty(
 }
 
 /**
- * Get contract address
+ * Get contract address (raw 32-byte version)
  */
 export function getContractAddress(): string | null {
-  return contractAddress;
+  return contractAddressRaw;
 }
 
 /**
  * Query contract state from indexer
  */
 export async function queryContractState(): Promise<any | null> {
-  if (!providers || !contractAddress) {
+  if (!providers || !contractAddressNormalized) {
     return null;
   }
 
   try {
-    assertIsContractAddress(contractAddress as ContractAddress);
+    assertIsContractAddress(contractAddressNormalized as ContractAddress);
     const contractState = await providers.publicDataProvider.queryContractState(
-      contractAddress as ContractAddress,
+      contractAddressNormalized as ContractAddress,
     );
     return contractState;
   } catch (error) {

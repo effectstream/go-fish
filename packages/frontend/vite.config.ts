@@ -81,7 +81,7 @@ export default defineConfig({
               'shared',
               'contracts',
               'midnight',
-              'contract-go-fish.undeployed.json',
+              'go-fish-contract.undeployed.json',
             ),
           ),
           dest: 'contract_address',
@@ -165,10 +165,9 @@ export default defineConfig({
     ],
     exclude: [
       // Midnight runtime packages that use WASM - must be excluded from pre-bundling
-      '@midnight-ntwrk/onchain-runtime-v1',
-      '@midnight-ntwrk/onchain-runtime-v2',
+      '@midnight-ntwrk/onchain-runtime',
       '@midnight-ntwrk/compact-runtime',
-      '@midnight-ntwrk/compact-js',
+      '@midnight-ntwrk/ledger',
       // WASM bindings with nested worker pattern - must be excluded to preserve import.meta.url
       '@paima/midnight-vm-bindings',
     ],
@@ -184,8 +183,11 @@ export default defineConfig({
     alias: {
       // Map isomorphic-ws to native WebSocket in browser
       'isomorphic-ws': 'ws',
-      // Force consistent versions of Midnight runtime packages to avoid ChargedState mismatch
-      '@midnight-ntwrk/compact-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/compact-runtime'),
+      // Shim compact-runtime to provide compatibility between v0.11.0 and midnight-js v2.0.0
+      // midnight-js v2.0.0 expects `constructorContext` but v0.11.0 exports `createConstructorContext`
+      '@midnight-ntwrk/compact-runtime': path.resolve(__dirname, 'src/midnight-shim.ts'),
+      // Force consistent version of onchain-runtime
+      '@midnight-ntwrk/onchain-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime'),
       '@midnight-ntwrk/onchain-runtime-v1': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v1'),
     },
   },

@@ -23,7 +23,7 @@ import {
 
 const config: DeployConfig = {
   contractName: "go-fish-contract",
-  contractFileName: "contract-go-fish.undeployed.json",
+  contractFileName: "go-fish-contract.undeployed.json",
   contractClass: Contract.Contract,
   witnesses,
   privateStateId: "privateState",

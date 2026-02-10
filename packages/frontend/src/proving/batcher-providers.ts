@@ -9,55 +9,47 @@
  *
  * This enables a seamless user experience where users don't need
  * to install or configure any wallet extensions.
+ *
+ * Based on midnight-game-2's batcher implementation using ledger v4.
  */
 
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
-import type {
-  BalancedProvingRecipe,
-  ProofProvider,
-  ProveTxConfig,
-  ProvenTransaction,
+import {
+  type BalancedTransaction,
+  type ProofProvider,
+  type ProveTxConfig,
+  type UnbalancedTransaction,
+  createUnbalancedTx,
 } from "@midnight-ntwrk/midnight-js-types";
-import type {
-  CoinPublicKey,
-  EncPublicKey,
-  FinalizedTransaction,
-  ShieldedCoinInfo,
-  TransactionId,
-  UnprovenTransaction,
-} from "@midnight-ntwrk/ledger-v6";
-import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import {
+  type CoinInfo,
+  Transaction,
+  type TransactionId,
+  type UnprovenTransaction,
+} from "@midnight-ntwrk/ledger";
+import { getRuntimeNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import type { ProverMessage, ProverResponse } from "./worker-types";
 import type { GoFishProviders } from "../services/MidnightOnChainService";
 
 // Circuit keys type for go-fish contract
 type GoFishCircuitKeys = string;
 
-// Network ID for Midnight - matches MidnightOnChainService
-const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
-
 type WebWorkerPromiseCallbacks = {
   resolve: (
-    value: ProvenTransaction | PromiseLike<ProvenTransaction>
+    value: UnbalancedTransaction | PromiseLike<UnbalancedTransaction>
   ) => void;
   reject: (reason?: unknown) => void;
 };
 
 /**
  * Web Worker based proof provider that generates ZK proofs locally
- *
- * Note: In this batcher mode implementation, the proof generation
- * returns the raw bytes from the prover which are then passed to
- * the batcher for submission. The batcher handles deserialization.
  */
 class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
   nextId: number;
   requests: Map<number, WebWorkerPromiseCallbacks>;
   worker: Worker | undefined;
-  // Store raw bytes for submission
-  private lastProvenTxBytes: Uint8Array | null = null;
 
   constructor() {
     this.nextId = 0;
@@ -72,10 +64,6 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
     }
   }
 
-  getLastProvenTxBytes(): Uint8Array | null {
-    return this.lastProvenTxBytes;
-  }
-
   async setupResponseHandler() {
     this.worker!.onmessage = (event: MessageEvent<ProverResponse>) => {
       const { type, data, message, requestId } = event.data;
@@ -87,15 +75,12 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
           break;
         case "success":
           if (callbacks && data) {
-            // Store the raw proven transaction bytes
-            this.lastProvenTxBytes = data;
-            // Return a mock ProvenTransaction that we'll use with the batcher
-            // The batcher will handle the actual deserialization
-            const mockProvenTx = {
-              _rawBytes: data,
-              serialize: () => data,
-            } as unknown as ProvenTransaction;
-            callbacks.resolve(mockProvenTx);
+            // Deserialize using ledger v4 with network ID
+            const unbalancedTx = Transaction.deserialize(
+              data,
+              getRuntimeNetworkId()
+            );
+            callbacks.resolve(createUnbalancedTx(unbalancedTx));
             this.requests.delete(requestId!);
           }
           break;
@@ -159,12 +144,13 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
   async proveTx(
     tx: UnprovenTransaction,
     proveTxConfig?: ProveTxConfig<GoFishCircuitKeys>
-  ): Promise<ProvenTransaction> {
+  ): Promise<UnbalancedTransaction> {
     if (this.worker !== undefined) {
       return new Promise((resolve, reject) => {
         this.requests.set(this.nextId, { resolve, reject });
 
-        const serializedTx = tx.serialize();
+        // Serialize with network ID for ledger v4
+        const serializedTx = tx.serialize(getRuntimeNetworkId());
 
         this.worker!.postMessage({
           type: "prove",
@@ -297,9 +283,6 @@ export function isBatcherModeEnabled(): boolean {
 export async function initializeBatcherProviders(): Promise<GoFishProviders> {
   console.log("[BatcherProviders] Initializing batcher mode providers...");
 
-  // Set network ID
-  setNetworkId(MIDNIGHT_NETWORK_ID);
-
   const batcherAddress = await getBatcherAddress();
   const batcherAddressParts = batcherAddress.split("|");
 
@@ -314,53 +297,43 @@ export async function initializeBatcherProviders(): Promise<GoFishProviders> {
   await webWorkerProofProvider.initializeWorker();
   await webWorkerProofProvider.setupResponseHandler();
 
-  const indexerHttpUrl = import.meta.env.VITE_INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v3/graphql";
-  const indexerWsUrl = import.meta.env.VITE_INDEXER_WS_URL || "ws://127.0.0.1:8088/api/v3/graphql/ws";
+  const indexerHttpUrl = import.meta.env.VITE_INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v1/graphql";
+  const indexerWsUrl = import.meta.env.VITE_INDEXER_WS_URL || "ws://127.0.0.1:8088/api/v1/graphql/ws";
 
   console.log("[BatcherProviders] Using indexer:", indexerHttpUrl);
-
-  // Create wallet provider that uses batcher's keys
-  const walletProvider = {
-    getCoinPublicKey(): CoinPublicKey {
-      return coinPublicKey as CoinPublicKey;
-    },
-    getEncryptionPublicKey(): EncPublicKey {
-      return encryptionPublicKey as EncPublicKey;
-    },
-    balanceTx(
-      tx: UnprovenTransaction,
-      _newCoins?: ShieldedCoinInfo[]
-    ): Promise<BalancedProvingRecipe> {
-      // In batcher mode, we return a NothingToProve recipe
-      // The batcher will handle balancing on its end
-      return Promise.resolve({
-        type: "NothingToProve",
-        transaction: tx as unknown as FinalizedTransaction,
-      } as BalancedProvingRecipe);
-    },
-  };
 
   return {
     privateStateProvider: levelPrivateStateProvider({
       privateStateStoreName: "go-fish-private-state",
-      // Provide wallet provider for encryption key derivation
-      walletProvider,
     }),
     zkConfigProvider: new FetchZkConfigProvider(
       window.location.origin,
       fetch.bind(window)
     ),
-    proofProvider: webWorkerProofProvider as ProofProvider<any>,
+    proofProvider: webWorkerProofProvider,
     publicDataProvider: indexerPublicDataProvider(
       indexerHttpUrl,
       indexerWsUrl
     ),
-    walletProvider,
+    walletProvider: {
+      // Use the batcher's address since we don't have a wallet
+      coinPublicKey: coinPublicKey,
+      encryptionPublicKey: encryptionPublicKey,
+      balanceTx(
+        tx: UnbalancedTransaction,
+        _newCoins: CoinInfo[]
+      ): Promise<BalancedTransaction> {
+        // In batcher mode, return the transaction as-is
+        // The batcher will handle balancing
+        // @ts-expect-error - batcher handles the actual balancing
+        return tx;
+      },
+    },
     midnightProvider: {
-      submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
-        // Get the raw bytes from the transaction
-        const raw = tx.serialize();
-        return postTxToBatcher(raw) as Promise<TransactionId>;
+      submitTx(tx: BalancedTransaction): Promise<TransactionId> {
+        // Serialize with network ID for ledger v4
+        const raw = tx.serialize(getRuntimeNetworkId());
+        return postTxToBatcher(raw);
       },
     },
   };

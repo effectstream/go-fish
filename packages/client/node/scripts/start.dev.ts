@@ -16,8 +16,9 @@ const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true"
 // Check if batcher mode is enabled (run frontend in batcher mode, no Lace wallet needed)
 const useBatcherMode = Deno.env.get("USE_BATCHER_MODE") === "true";
 
-// Path to midnight-batcher wrapper script (waits for indexer before starting)
-const midnightBatcherScript = path.resolve(__dirname, "start-midnight-batcher.ts");
+// Path to TypeScript batcher (replaces Rust batcher due to viewing key compatibility issues)
+// The Rust batcher at midnight-batcher/ has incompatible viewing key encoding with Docker indexer 2.2.7+
+const tsBatcherScript = path.resolve(__dirname, "ts-batcher.ts");
 
 // Midnight infrastructure processes (only when not using TypeScript contract)
 const midnightProcesses = useTypescriptContract ? [] : [
@@ -43,21 +44,20 @@ const midnightProcesses = useTypescriptContract ? [] : [
   /** MIDNIGHT-NODE-BLOCK */
 
   /** MIDNIGHT-INDEXER-BLOCK */
+  // Note: Using npm package which provides indexer v3.0.0-alpha.21 binary.
+  // The npm package handles all configuration automatically.
+  // Uses /api/v3/graphql endpoint - SDK v2.0.0 may have compatibility issues.
   {
     name: "midnight-indexer",
     args: [
       "run", "-A", "--unstable-detect-cjs",
       "npm:@paimaexample/npm-midnight-indexer@0.3.129",
-      "--binary", "--clean"
+      "--standalone",
     ],
     env: {
-      CONFIG_FILE: indexerConfigPath,
       LEDGER_NETWORK_ID: "Undeployed",
       SUBSTRATE_NODE_WS_URL: "ws://localhost:9944",
-      // Secret must be at least 32 bytes (64 hex chars) - generate two UUIDs
-      APP__INFRA__SECRET: (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "").toUpperCase(),
-      FEATURES_WALLET_ENABLED: "true",
-      APP__INFRA__NODE__URL: "ws://localhost:9944",
+      APP__INFRA__SECRET: "LOCALDEVSECRET123456789ABCDEF",
     },
     waitToExit: false,
     type: "system-dependency",
@@ -89,15 +89,15 @@ const midnightProcesses = useTypescriptContract ? [] : [
 ];
 
 // Midnight batcher service (only when batcher mode is enabled)
-// This is a Rust service that handles Midnight ZK transactions without requiring Lace wallet
-// Uses a wrapper script that waits for the indexer to be ready before starting
+// This is a TypeScript service that handles Midnight ZK transactions without requiring Lace wallet
+// Uses a simple HTTP API compatible with the Rust batcher
 const midnightBatcherProcesses = useBatcherMode && !useTypescriptContract ? [
   /** MIDNIGHT-BATCHER-BLOCK */
   {
     name: "midnight-batcher",
     args: [
       "run", "-A", "--unstable-detect-cjs",
-      midnightBatcherScript,
+      tsBatcherScript,
     ],
     waitToExit: false,
     type: "system-dependency",

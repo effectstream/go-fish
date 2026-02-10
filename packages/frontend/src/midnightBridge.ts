@@ -20,12 +20,10 @@ import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-run
 // Ledger type placeholder (empty in this contract)
 type Ledger = Record<string, never>;
 import {
-  QueryContext,
   sampleContractAddress,
   createConstructorContext,
+  createCircuitContext,
   CostModel,
-  ChargedState,
-  StateValue,
 } from '@midnight-ntwrk/compact-runtime';
 
 // Private state type (empty for now, can be extended)
@@ -50,25 +48,20 @@ export async function initializeMidnightContract(): Promise<{ success: boolean; 
     contract = new Contract(witnesses);
 
     // Initialize contract state (constructor creates static deck)
+    // For local simulation, pass an EncodedCoinPublicKey with 32 bytes directly
+    // This bypasses the string encoding that expects a specific format
+    const dummyCoinPublicKey = { bytes: new Uint8Array(32) };
+    const initContext = createConstructorContext({}, dummyCoinPublicKey);
     const { currentPrivateState, currentContractState, currentZswapLocalState } =
-      contract.initialState(createConstructorContext({}, '0'.repeat(64)));
+      contract.initialState(initContext);
 
-    // Create circuit context
-    // QueryContext expects a ChargedState - wrap if we got a StateValue
-    const contractStateData = currentContractState.data;
-    const chargedState = contractStateData instanceof StateValue
-      ? new ChargedState(contractStateData)
-      : contractStateData;
-
-    circuitContext = {
-      currentPrivateState,
+    // Create circuit context using the helper function
+    circuitContext = createCircuitContext(
+      sampleContractAddress(),
       currentZswapLocalState,
-      currentQueryContext: new QueryContext(
-        chargedState,
-        sampleContractAddress(),
-      ),
-      costModel: CostModel.initialCostModel(),
-    };
+      currentContractState,
+      currentPrivateState,
+    );
 
     // Initialize the static deck mappings (required before any game can be created)
     // This sets up reverseDeckCurveToCard and deckCurveToCard for all 21 cards

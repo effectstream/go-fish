@@ -6,7 +6,7 @@
  */
 
 import type { ProveTxConfig } from "@midnight-ntwrk/midnight-js-types";
-import type { NetworkId as JsNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import { NetworkId as JsNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import {
   WasmProver,
   MidnightWasmParamsProvider,
@@ -16,7 +16,7 @@ import {
 } from "@paima/midnight-vm-bindings";
 
 // Network ID constant (matching MidnightOnChainService)
-const MIDNIGHT_NETWORK_ID: JsNetworkId = "undeployed";
+const MIDNIGHT_NETWORK_ID = JsNetworkId.Undeployed;
 
 export async function proveTxLocally<K extends string>(
   baseUrl: string,
@@ -52,7 +52,7 @@ export async function proveTxLocally<K extends string>(
   let unbalancedTxRaw = await prover.prove_tx(
     rng,
     tx,
-    networkId === "undeployed"
+    networkId === JsNetworkId.Undeployed
       ? NetworkId.undeployed()
       : NetworkId.testnet(),
     zkConfig,

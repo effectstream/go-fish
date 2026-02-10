@@ -6,9 +6,20 @@
  */
 
 import { walletLogin, WalletMode } from "@paimaexample/wallets";
-import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import type { ConnectedAPI } from "@midnight-ntwrk/dapp-connector-api";
+import { setNetworkId, NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
 import semver from "semver";
+
+// Custom type for the connected wallet API (combines DAppConnectorWalletAPI with shielded address access)
+// This interface represents the API returned after connecting to the wallet
+interface ConnectedAPI extends DAppConnectorWalletAPI {
+  getShieldedAddresses(): Promise<{
+    shieldedAddress: string;
+    shieldedCoinPublicKey: string;
+    shieldedEncryptionPublicKey: string;
+  }>;
+  balanceUnsealedTransaction(tx: string): Promise<{ tx: string }>;
+}
 
 // State
 let laceWalletAddress: string | null = null;
@@ -17,9 +28,9 @@ let contractAddress: string | null = null;
 let paimaWalletResult: any = null;
 
 // Network ID for Midnight network
-// For local development with the undeployed network, use "undeployed"
-// For testnet, use "preview" (Lace Midnight Preview wallet)
-const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
+// For local development with the undeployed network, use NetworkId.Undeployed
+// For testnet, use NetworkId.TestNet (Lace Midnight Preview wallet)
+const MIDNIGHT_NETWORK_ID = NetworkId.Undeployed;
 const COMPATIBLE_CONNECTOR_API_VERSION = ">=1.0.0";
 
 // Set the network ID globally before any wallet operations
@@ -30,7 +41,7 @@ setNetworkId(MIDNIGHT_NETWORK_ID);
  */
 const fetchContractAddress = async (): Promise<string | null> => {
   try {
-    const r = await fetch("contract_address/contract-go-fish.undeployed.json");
+    const r = await fetch("contract_address/go-fish-contract.undeployed.json");
     const json = await r.json();
     console.log("[LaceWalletBridge] Contract address:", json.contractAddress);
     return json.contractAddress;
