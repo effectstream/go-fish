@@ -6,7 +6,7 @@
  */
 
 import type { ProveTxConfig } from "@midnight-ntwrk/midnight-js-types";
-import { NetworkId as JsNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import type { NetworkId as JsNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import {
   WasmProver,
   MidnightWasmParamsProvider,
@@ -16,7 +16,7 @@ import {
 } from "@paima/midnight-vm-bindings";
 
 // Network ID constant (matching MidnightOnChainService)
-const MIDNIGHT_NETWORK_ID = JsNetworkId.Undeployed;
+const MIDNIGHT_NETWORK_ID: JsNetworkId = "undeployed";
 
 export async function proveTxLocally<K extends string>(
   baseUrl: string,
@@ -49,10 +49,11 @@ export async function proveTxLocally<K extends string>(
 
   const startTime = performance.now();
 
-  let unbalancedTxRaw = await prover.prove_tx(
+  // In SDK v3, prove_tx returns a proven transaction (with ZK proofs attached)
+  let provenTxRaw = await prover.prove_tx(
     rng,
     tx,
-    networkId === JsNetworkId.Undeployed
+    networkId === "undeployed"
       ? NetworkId.undeployed()
       : NetworkId.testnet(),
     zkConfig,
@@ -61,8 +62,8 @@ export async function proveTxLocally<K extends string>(
 
   const endTime = performance.now();
   console.log(
-    `[LocalProving] Proved unbalanced tx in: ${Math.floor(endTime - startTime)} ms`
+    `[LocalProving] Proved tx in: ${Math.floor(endTime - startTime)} ms`
   );
 
-  return unbalancedTxRaw;
+  return provenTxRaw;
 }

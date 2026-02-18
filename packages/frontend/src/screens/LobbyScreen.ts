@@ -32,6 +32,8 @@ export class LobbyScreen {
   private pendingReady: boolean = false;
   private _pendingLeave: boolean = false;
   private _pendingStart: boolean = false;
+  private fetchFailCount: number = 0;
+  private static readonly MAX_FETCH_FAILS = 5; // Allow up to 5 consecutive 404s before navigating away
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -42,6 +44,7 @@ export class LobbyScreen {
     this.lobbyId = lobbyId;
     this.hasRenderedOnce = false;
     this.previousLobbyState = null;
+    this.fetchFailCount = 0;
     await this.render();
     // Poll every 3 seconds to reduce database pressure
     // This prevents mutex deadlocks during block processing and Midnight queries
@@ -58,10 +61,28 @@ export class LobbyScreen {
     // Fetch lobby state from API
     const response = await fetch(`http://localhost:9999/lobby_state?lobby_id=${this.lobbyId}`);
     if (!response.ok) {
-      console.error('Failed to fetch lobby state');
-      this.dispatchEvent('navigate', { screen: 'lobby-list' });
+      this.fetchFailCount++;
+      // After lobby creation, EffectStream may not have processed the transaction yet.
+      // Tolerate several consecutive failures before giving up.
+      if (this.fetchFailCount >= LobbyScreen.MAX_FETCH_FAILS) {
+        console.error(`Failed to fetch lobby state ${this.fetchFailCount} times, navigating away`);
+        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+      } else {
+        console.warn(`Lobby state not available yet (attempt ${this.fetchFailCount}/${LobbyScreen.MAX_FETCH_FAILS}), will retry...`);
+        // Show a loading state if we haven't rendered anything yet
+        if (!this.hasRenderedOnce) {
+          this.container.innerHTML = `
+            <div class="lobby-screen">
+              <div class="lobby-header"><h1>Loading lobby...</h1></div>
+            </div>
+          `;
+        }
+      }
       return;
     }
+
+    // Reset fail counter on success
+    this.fetchFailCount = 0;
 
     const lobbyData: LobbyStateResponse = await response.json();
     if (!lobbyData) {
@@ -77,8 +98,14 @@ export class LobbyScreen {
     const lobbyName = lobbyData.lobby_name;
     const status = lobbyData.status;
 
+
     // If game started, navigate to game screen
     if (status === 'in_progress') {
+      // Stop polling before navigating to prevent duplicate navigation events
+      if (this.refreshInterval) {
+        clearInterval(this.refreshInterval);
+        this.refreshInterval = undefined;
+      }
       this.dispatchEvent('navigate', { screen: 'game', lobbyId: this.lobbyId });
       return;
     }

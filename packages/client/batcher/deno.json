@@ -9,15 +9,20 @@
     "dev": "deno run -A --unstable-detect-cjs src/main.ts"
   },
   "imports": {
-    "@paimaexample/batcher": "jsr:@paimaexample/batcher@0.3.128",
+    "@paimaexample/batcher": "./vendor/batcher/mod.ts",
     "@paimaexample/utils": "jsr:@paimaexample/utils@0.3.128",
     "@paimaexample/concise": "jsr:@paimaexample/concise@0.3.128",
     "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.3.128",
     "@paimaexample/crypto": "jsr:@paimaexample/crypto@0.3.128",
+    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.3.128",
     "effection": "npm:effection@^3.5.0",
     "@std/path": "jsr:@std/path@^1.1.3",
+    "@std/fs": "jsr:@std/fs@^1.0.19",
     "viem": "npm:viem@2.37.3",
     "viem/chains": "npm:viem@2.37.3/chains",
-    "@go-fish/data-types": "../../../packages/shared/data-types/src/mod.ts"
+    "@go-fish/data-types": "../../../packages/shared/data-types/src/mod.ts",
+    "@go-fish/midnight-contract": "../../../packages/shared/contracts/midnight/go-fish-contract/src/_index.ts",
+    "@go-fish/midnight-contract/contract": "../../../packages/shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js",
+    "@go-fish/midnight-contract/witnesses": "../../../packages/shared/contracts/midnight/go-fish-contract/src/witnesses.ts"
   }
 }

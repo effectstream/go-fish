@@ -4,6 +4,7 @@
 
 import { GoFishGameService } from '../services/GoFishGameService';
 import type { Lobby } from '../../../shared/data-types/src/go-fish-types';
+import { getWalletAddress, switchAccount, getLobbyState } from '../effectstreamBridge';
 
 export class LobbyListScreen {
   private container: HTMLElement;
@@ -54,8 +55,14 @@ export class LobbyListScreen {
           btn.addEventListener('click', (e) => {
             const target = e.target as HTMLElement;
             const lobbyId = target.dataset.lobbyId;
+            const isRejoin = target.dataset.isRejoin === 'true';
             if (lobbyId) {
-              this.joinLobby(lobbyId);
+              if (isRejoin) {
+                console.log('[LobbyListScreen] Rejoining lobby (already a member):', lobbyId);
+                this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+              } else {
+                this.joinLobby(lobbyId);
+              }
             }
           });
         });
@@ -162,6 +169,7 @@ export class LobbyListScreen {
         <button
           class="btn btn-primary join-btn"
           data-lobby-id="${lobby.id}"
+          data-is-rejoin="${lobby.isPlayerInLobby ? 'true' : 'false'}"
           ${lobby.playerCount >= lobby.maxPlayers && !lobby.isPlayerInLobby ? 'disabled' : ''}
         >
           ${lobby.isPlayerInLobby ? 'Rejoin' : (lobby.playerCount >= lobby.maxPlayers ? 'Full' : 'Join')}
@@ -197,8 +205,15 @@ export class LobbyListScreen {
       btn.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
         const lobbyId = target.dataset.lobbyId;
+        const isRejoin = target.dataset.isRejoin === 'true';
         if (lobbyId) {
-          this.joinLobby(lobbyId);
+          if (isRejoin) {
+            // Already in the lobby — just navigate, don't send another join transaction
+            console.log('[LobbyListScreen] Rejoining lobby (already a member):', lobbyId);
+            this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+          } else {
+            this.joinLobby(lobbyId);
+          }
         }
       });
     });
@@ -293,6 +308,34 @@ export class LobbyListScreen {
     this.pendingJoinLobbyId = lobbyId;
 
     try {
+      // Check for wallet collision with existing lobby players before joining.
+      // Two browsers can randomly pick the same Hardhat account index (1-9),
+      // causing both players to have the same wallet address and both getting playerId=1.
+      const lobbyResult = await getLobbyState(lobbyId);
+      if (lobbyResult.success && lobbyResult.lobby?.players) {
+        const myAddress = getWalletAddress()?.toLowerCase();
+        const existingAddresses = lobbyResult.lobby.players.map(
+          (p: any) => p.wallet_address
+        );
+        const hasCollision = existingAddresses.some(
+          (addr: string) => addr.toLowerCase() === myAddress
+        );
+
+        if (hasCollision) {
+          console.warn('[LobbyListScreen] Wallet collision detected with lobby host, switching account...');
+          const switched = await switchAccount(existingAddresses);
+          if (!switched) {
+            alert('Could not find a unique wallet. Please try again.');
+            if (joinBtn) { joinBtn.disabled = false; joinBtn.textContent = 'Join'; }
+            this.pendingJoinLobbyId = null;
+            return;
+          }
+          // Re-initialize game service with the new wallet address
+          await this.gameService.initializeWithWallet();
+          console.log('[LobbyListScreen] Switched to new wallet:', getWalletAddress());
+        }
+      }
+
       const success = await this.gameService.joinLobby(lobbyId);
       if (success) {
         this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });

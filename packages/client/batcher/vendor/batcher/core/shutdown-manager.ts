@@ -1,0 +1,187 @@
+import { lift } from "npm:effection@^3.5.0";
+import type { Operation } from "npm:effection@^3.5.0";
+import type { DefaultBatcherInput } from "./types.ts";
+import type { Batcher } from "./batcher.ts";
+
+export interface BatcherShutdownState {
+  isShuttingDown: boolean;
+  shutdownInitiatedAt: number | null;
+  shutdownTimeoutMs: number;
+  /** Set of adapter targets currently processing batches */
+  processingAdapters: Set<string>;
+}
+
+export interface ShutdownHooks<
+  T extends DefaultBatcherInput,
+> {
+  preShutdown?: (batcher: Batcher<T>) => Promise<void> | void;
+  stopAcceptingInputs?: (batcher: Batcher<T>) => Promise<void> | void;
+  waitForProcessing?: (batcher: Batcher<T>) => Promise<void> | void;
+  cleanup?: (batcher: Batcher<T>) => Promise<void> | void;
+  postShutdown?: (batcher: Batcher<T>) => Promise<void> | void;
+}
+
+/**
+ * Manages the graceful shutdown process for the batcher.
+ * Separated from the main Batcher class to improve maintainability.
+ */
+export class ShutdownManager<T extends DefaultBatcherInput> {
+  constructor(
+    private batcherInterface: {
+      shutdownState: BatcherShutdownState;
+      stopPolling(): void;
+      stopHttpServer(): Promise<void>;
+      cleanupResources(): Promise<void>;
+    },
+    private batcherInstance: any, // For hooks that need the full batcher
+  ) {}
+
+  /**
+   * Graceful shutdown - stop accepting new batches and wait for current processing to finish
+   * Effection-compatible version that can be used with yield*
+   */
+  *gracefulShutdownOp(
+    hooks?: ShutdownHooks<any>,
+    options?: { timeoutMs?: number; force?: boolean },
+  ): Operation<void> {
+    if (this.batcherInterface.shutdownState.isShuttingDown) return;
+
+    this.batcherInterface.shutdownState.isShuttingDown = true;
+    this.batcherInterface.shutdownState.shutdownInitiatedAt = Date.now();
+    this.batcherInterface.shutdownState.shutdownTimeoutMs =
+      options?.timeoutMs ??
+        this.batcherInterface.shutdownState.shutdownTimeoutMs;
+
+    console.log("Stopping batcher gracefully...");
+
+    try {
+      // Phase 1: Pre-shutdown (custom hook)
+      if (hooks?.preShutdown) {
+        yield* lift(hooks.preShutdown!)(this.batcherInstance);
+      }
+
+      // Phase 2: Stop accepting new inputs
+      this.batcherInterface.stopPolling();
+      yield* lift(this.batcherInstance.stopHttpServer)();
+      if (hooks?.stopAcceptingInputs) {
+        yield* lift(hooks.stopAcceptingInputs!)(this.batcherInstance);
+      }
+
+      // Phase 3: Wait for ongoing processing
+      yield* lift(this.waitForOngoingProcessing)(options?.timeoutMs);
+      if (hooks?.waitForProcessing) {
+        yield* lift(hooks.waitForProcessing!)(this.batcherInstance);
+      }
+
+      // Phase 4: Cleanup resources
+      yield* lift(this.batcherInstance.cleanupResources)();
+      if (hooks?.cleanup) {
+        yield* lift(hooks.cleanup!)(this.batcherInstance);
+      }
+
+      // Phase 5: Post-shutdown (custom hook)
+      if (hooks?.postShutdown) {
+        yield* lift(hooks.postShutdown!)(this.batcherInstance);
+      }
+
+      console.log("✅ Batcher shutdown complete");
+    } catch (error) {
+      console.error("❌ Error during graceful shutdown:", error);
+      if (options?.force) {
+        console.log("🔧 Force shutdown due to error");
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Graceful shutdown - stop accepting new batches and wait for current processing to finish
+   * Legacy async version for backward compatibility
+   */
+  async gracefulShutdown(
+    hooks?: ShutdownHooks<any>,
+    options?: { timeoutMs?: number; force?: boolean },
+  ): Promise<void> {
+    if (this.batcherInterface.shutdownState.isShuttingDown) return;
+
+    this.batcherInterface.shutdownState.isShuttingDown = true;
+    this.batcherInterface.shutdownState.shutdownInitiatedAt = Date.now();
+    this.batcherInterface.shutdownState.shutdownTimeoutMs =
+      options?.timeoutMs ??
+        this.batcherInterface.shutdownState.shutdownTimeoutMs;
+
+    console.log("Stopping batcher gracefully...");
+
+    try {
+      // Phase 1: Pre-shutdown (custom hook)
+      await hooks?.preShutdown?.(this.batcherInstance);
+
+      // Phase 2: Stop accepting new inputs
+      this.batcherInterface.stopPolling();
+      await this.batcherInstance.stopHttpServer();
+      await hooks?.stopAcceptingInputs?.(this.batcherInstance);
+
+      // Phase 3: Wait for ongoing processing
+      await this.waitForOngoingProcessing(options?.timeoutMs);
+      await hooks?.waitForProcessing?.(this.batcherInstance);
+
+      // Phase 4: Cleanup resources
+      await this.batcherInterface.cleanupResources();
+      await hooks?.cleanup?.(this.batcherInstance);
+
+      // Phase 5: Post-shutdown (custom hook)
+      await hooks?.postShutdown?.(this.batcherInstance);
+
+      console.log("✅ Batcher shutdown complete");
+    } catch (error) {
+      console.error("❌ Error during graceful shutdown:", error);
+      if (options?.force) {
+        console.log("🔧 Force shutdown due to error");
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Wait for any ongoing batch processing to complete
+   */
+  private async waitForOngoingProcessing(timeoutMs?: number): Promise<void> {
+    const timeout = timeoutMs ??
+      this.batcherInterface.shutdownState.shutdownTimeoutMs;
+    const startTime = Date.now();
+
+    const processingAdapters = this.batcherInterface.shutdownState.processingAdapters;
+
+    if (processingAdapters.size === 0) {
+      return;
+    }
+
+    console.log(`⏳ Waiting for ${processingAdapters.size} adapters to complete: ${[...processingAdapters].join(', ')}`);
+
+    while (processingAdapters.size > 0) {
+      if (Date.now() - startTime > timeout) {
+        throw new Error(
+          `Shutdown timeout: adapters still processing: ${[...processingAdapters].join(', ')}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  /**
+   * Get shutdown status information
+   * Returns backward-compatible isProcessingBatch derived from processingAdapters
+   */
+  getShutdownStatus(): BatcherShutdownState & { isProcessingBatch: boolean } {
+    return {
+      isShuttingDown: this.batcherInterface.shutdownState.isShuttingDown,
+      shutdownInitiatedAt:
+        this.batcherInterface.shutdownState.shutdownInitiatedAt,
+      shutdownTimeoutMs: this.batcherInterface.shutdownState.shutdownTimeoutMs,
+      processingAdapters: this.batcherInterface.shutdownState.processingAdapters,
+      isProcessingBatch: this.batcherInterface.shutdownState.processingAdapters.size > 0,
+    };
+  }
+}

@@ -1,21 +1,51 @@
 /**
- * Transaction Batcher - Batches user transactions to reduce on-chain costs
+ * Go Fish Transaction Batcher
+ *
+ * Batches user transactions for both EffectStream L2 and Midnight networks.
+ * Midnight transactions are processed individually (size-based batching with maxBatchSize=1).
  */
 
 import { main, suspend } from "effection";
-import { createNewBatcher } from "@paimaexample/batcher";
-import { config, storage } from "./config.ts";
+import { createNewBatcher, MidnightAdapter } from "@paimaexample/batcher";
+import { config, storage, BATCHER_DATA_DIR } from "./config.ts";
 import { effectstreaml2Adapter } from "./adapter-effectstreaml2.ts";
+import * as midnightAdapters from "./adapter-midnight.ts";
+
+// Clear stale batcher data on startup to prevent processing old transactions
+// This is important because old transactions may reference games that no longer exist
+// and would cause "Game does not exist" errors
+try {
+  await Deno.remove(BATCHER_DATA_DIR, { recursive: true });
+  console.log("🧹 Cleared stale batcher data from previous session");
+} catch (error) {
+  // Directory doesn't exist, that's fine
+  if (!(error instanceof Deno.errors.NotFound)) {
+    console.warn("⚠️ Could not clear batcher data:", error);
+  }
+}
 
 const batcher = createNewBatcher(config, storage);
 const batchIntervalMs = 100;
 
+// Add EffectStream L2 adapter with time-based batching
 batcher
   .addBlockchainAdapter("effectstreaml2", effectstreaml2Adapter, {
     criteriaType: "time",
     timeWindowMs: batchIntervalMs,
   })
   .setDefaultTarget("effectstreaml2");
+
+// Add Midnight adapters with time-based batching with very short window
+// This ensures transactions are processed quickly and sequentially
+// The MidnightAdapter handles the actual circuit invocation
+for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
+  if (adapter instanceof MidnightAdapter) {
+    batcher.addBlockchainAdapter(contract, adapter, {
+      criteriaType: "time",
+      timeWindowMs: 50, // Very short window to process transactions quickly
+    });
+  }
+}
 
 // Startup banner via state transition
 batcher
@@ -24,6 +54,9 @@ batcher
       `🎮 Go Fish Batcher startup - polling every ${publicConfig.pollingIntervalMs} ms\n` +
       `      | 📍 Default Target: ${publicConfig.defaultTarget}\n` +
       `      | ⛓️ Blockchain Adapter Targets: ${publicConfig.adapterTargets.join(", ")}\n` +
+      `      | 📦 Batching Criteria: ${Object.entries(publicConfig.criteriaTypes || {})
+        .map(([target, type]) => `${target}=${type}`)
+        .join(", ")}\n` +
       `      | 📋 Press Ctrl+C to stop gracefully`;
     console.log(banner);
   })

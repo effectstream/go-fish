@@ -11,7 +11,9 @@
     "node:start:testnet": "deno run -A --inspect --unstable-raw-imports src/main.testnet.ts",
 
     "dev": "EFFECTSTREAM_ENV=dev NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.dev.ts",
-    "testnet": "EFFECTSTREAM_ENV=testnet NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.testnet.ts"
+    "testnet": "EFFECTSTREAM_ENV=testnet NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.testnet.ts",
+
+    "midnight:setup": "EFFECTSTREAM_ENV=dev deno run -A --unstable-raw-imports scripts/setup-midnight.ts"
   },
   "imports": {
     // Local packages

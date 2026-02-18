@@ -6,7 +6,7 @@
  */
 
 import { walletLogin, WalletMode } from "@paimaexample/wallets";
-import { setNetworkId, NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
 import semver from "semver";
 
@@ -28,9 +28,9 @@ let contractAddress: string | null = null;
 let paimaWalletResult: any = null;
 
 // Network ID for Midnight network
-// For local development with the undeployed network, use NetworkId.Undeployed
-// For testnet, use NetworkId.TestNet (Lace Midnight Preview wallet)
-const MIDNIGHT_NETWORK_ID = NetworkId.Undeployed;
+// For local development with the undeployed network, use "undeployed"
+// For testnet, use "testnet" (Lace Midnight Preview wallet)
+const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
 const COMPATIBLE_CONNECTOR_API_VERSION = ">=1.0.0";
 
 // Set the network ID globally before any wallet operations

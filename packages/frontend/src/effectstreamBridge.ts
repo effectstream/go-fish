@@ -58,7 +58,8 @@ const HARDHAT_ACCOUNTS = [
 const LOCAL_WALLET_INDEX_KEY = "go-fish-local-wallet-index";
 
 /**
- * Get or assign a Hardhat account index for this browser session
+ * Get or assign a Hardhat account index for this browser session.
+ * Uses a random index from 1-9, stored in localStorage for persistence.
  */
 function getOrAssignAccountIndex(): number {
   let indexStr = localStorage.getItem(LOCAL_WALLET_INDEX_KEY);
@@ -72,6 +73,38 @@ function getOrAssignAccountIndex(): number {
   }
 
   return parseInt(indexStr, 10);
+}
+
+/**
+ * Switch to a different Hardhat account to avoid wallet address collisions.
+ * This is needed when two browsers randomly pick the same account index.
+ * Picks a new index that differs from the current one and the conflicting addresses.
+ */
+export async function switchAccount(avoidAddresses: string[]): Promise<boolean> {
+  const currentIndex = getOrAssignAccountIndex();
+  const avoidLower = avoidAddresses.map(a => a.toLowerCase());
+
+  // Try each account index (1-9) until we find one not in the avoid list
+  for (let candidate = 1; candidate <= 9; candidate++) {
+    if (candidate === currentIndex) continue;
+
+    const candidateKey = HARDHAT_ACCOUNTS[candidate];
+    const candidateWallet = new ethers.Wallet(candidateKey);
+    const candidateAddress = candidateWallet.address.toLowerCase();
+
+    if (!avoidLower.includes(candidateAddress)) {
+      console.log(`[EffectstreamBridge] Switching from account #${currentIndex} to #${candidate} to avoid collision`);
+      localStorage.setItem(LOCAL_WALLET_INDEX_KEY, String(candidate));
+
+      // Reset wallet so it gets re-initialized with the new account
+      wallet = null;
+      await initializeLocalWallet();
+      return true;
+    }
+  }
+
+  console.error('[EffectstreamBridge] Could not find a non-conflicting account');
+  return false;
 }
 
 /**

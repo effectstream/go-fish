@@ -1,6 +1,9 @@
 /**
  * Midnight Query Module - Backend utilities for querying Midnight contract state
  * This runs on the Paima node and provides read-only access to game state
+ *
+ * In batcher mode, queries are routed to the on-chain service which queries
+ * the Midnight indexer directly. In local mode, queries use a local simulation.
  */
 
 import { Contract } from '../../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
@@ -11,6 +14,43 @@ import {
   createConstructorContext,
   CostModel,
 } from '@midnight-ntwrk/compact-runtime';
+import {
+  queryOnChainSetupStatus,
+  queryOnChainGameState,
+  queryOnChainGamePhase,
+  queryGameExists,
+  initializeOnChainService,
+  isOnChainServiceAvailable,
+} from './midnight-onchain.ts';
+
+// Check if running in batcher mode (queries should use on-chain indexer)
+function isInBatcherMode(): boolean {
+  // Check environment variable first
+  const envBatcherMode = Deno.env.get("USE_BATCHER_MODE");
+  if (envBatcherMode === "true") {
+    console.log("[MidnightQuery] Batcher mode enabled via USE_BATCHER_MODE env");
+    return true;
+  }
+  // Check runtime config file
+  try {
+    const configPath = new URL("../runtime-config.json", import.meta.url);
+    console.log(`[MidnightQuery] Looking for config at: ${configPath.pathname}`);
+    const configText = Deno.readTextFileSync(configPath);
+    const config = JSON.parse(configText);
+    console.log(`[MidnightQuery] runtime-config.json: ${JSON.stringify(config)}`);
+    if (config.useBatcherMode === true) {
+      console.log("[MidnightQuery] Batcher mode enabled via runtime-config.json");
+      return true;
+    }
+  } catch (error) {
+    console.log(`[MidnightQuery] Could not read runtime-config.json: ${error}`);
+  }
+  console.log("[MidnightQuery] Batcher mode NOT enabled");
+  return false;
+}
+
+const USE_BATCHER_MODE = isInBatcherMode();
+console.log(`[MidnightQuery] === Final batcher mode setting: ${USE_BATCHER_MODE} ===`);
 
 // Private state type (backend doesn't need secrets)
 type PrivateState = Record<string, never>;
@@ -70,15 +110,25 @@ export function syncQueryContextFromAction(actionContext: CircuitContext<Private
 
 /**
  * Initialize query contract (call once on server startup)
+ * In batcher mode, initializes the on-chain service for indexer queries.
+ * In local mode, initializes a local circuit simulation.
  */
 export async function initializeQueryContract(): Promise<void> {
+  // In batcher mode, initialize the on-chain service instead
+  if (USE_BATCHER_MODE) {
+    console.log('[MidnightQuery] Batcher mode - initializing on-chain service...');
+    await initializeOnChainService();
+    console.log('[MidnightQuery] On-chain service initialized for batcher mode');
+    return;
+  }
+
   if (queryContract !== null) {
     console.log('[MidnightQuery] Contract already initialized');
     return;
   }
 
   try {
-    console.log('[MidnightQuery] Initializing query contract...');
+    console.log('[MidnightQuery] Initializing local query contract...');
 
     // Create contract instance with minimal witnesses
     queryContract = new Contract(queryWitnesses);
@@ -98,7 +148,7 @@ export async function initializeQueryContract(): Promise<void> {
       costModel: CostModel.initialCostModel(),
     };
 
-    console.log('[MidnightQuery] Query contract initialized successfully');
+    console.log('[MidnightQuery] Local query contract initialized successfully');
   } catch (error) {
     console.error('[MidnightQuery] Failed to initialize query contract:', error);
     throw error;
@@ -118,8 +168,22 @@ function lobbyIdToGameId(lobbyId: string): Uint8Array {
 
 /**
  * Query game phase from Midnight contract
+ * In batcher mode, queries the Midnight indexer directly.
  */
 export async function queryGamePhase(lobbyId: string): Promise<number | null> {
+  // In batcher mode, query the on-chain state via indexer
+  if (USE_BATCHER_MODE) {
+    try {
+      const phase = await queryOnChainGamePhase(lobbyId);
+      console.log(`[MidnightQuery] On-chain queryGamePhase(${lobbyId}): ${phase}`);
+      return phase;
+    } catch (error) {
+      console.error('[MidnightQuery] On-chain queryGamePhase failed:', error);
+      return null;
+    }
+  }
+
+  // Local mode
   try {
     if (!queryContract || !queryContext) {
       console.log('[MidnightQuery] queryGamePhase: contract not initialized');
@@ -428,9 +492,22 @@ export async function queryLastAskingPlayer(lobbyId: string): Promise<number | n
 
 /**
  * Query if player has applied their mask
- * Uses queue to prevent concurrent operations
+ * In batcher mode, queries the Midnight indexer directly.
+ * In local mode, uses the local circuit simulation.
  */
 export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
+  // In batcher mode, query the on-chain state via indexer
+  if (USE_BATCHER_MODE) {
+    try {
+      const status = await queryOnChainSetupStatus(lobbyId, playerId);
+      return status.hasMaskApplied;
+    } catch (error) {
+      console.error('[MidnightQuery] On-chain queryHasMaskApplied failed:', error);
+      return false;
+    }
+  }
+
+  // Local mode: use circuit simulation
   return enqueueQuery(async () => {
     try {
       if (!queryContract || !queryContext) {
@@ -454,11 +531,22 @@ export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Pro
 
 /**
  * Query if player has dealt cards (called dealCards)
- * Uses hasDealt circuit - returns true if player has called dealCards
- * Note: This is different from getCardsDealt which returns cards RECEIVED by the player
- * Uses queue to prevent concurrent operations
+ * In batcher mode, queries the Midnight indexer directly.
+ * In local mode, uses the local circuit simulation.
  */
 export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
+  // In batcher mode, query the on-chain state via indexer
+  if (USE_BATCHER_MODE) {
+    try {
+      const status = await queryOnChainSetupStatus(lobbyId, playerId);
+      return status.hasDealt;
+    } catch (error) {
+      console.error('[MidnightQuery] On-chain queryHasDealt failed:', error);
+      return false;
+    }
+  }
+
+  // Local mode: use circuit simulation
   return enqueueQuery(async () => {
     try {
       if (!queryContract || !queryContext) {
@@ -497,10 +585,32 @@ export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<b
 
 /**
  * Get comprehensive game state for API endpoint
- * Uses caching and request queuing to prevent database mutex deadlocks
+ * In batcher mode, queries the Midnight indexer directly.
+ * In local mode, uses caching and request queuing to prevent database mutex deadlocks.
  */
 export async function getGameState(lobbyId: string) {
-  // Check cache first
+  // In batcher mode, query the on-chain state via indexer
+  if (USE_BATCHER_MODE) {
+    try {
+      const state = await queryOnChainGameState(lobbyId);
+      return state;
+    } catch (error) {
+      console.error('[MidnightQuery] On-chain getGameState failed:', error);
+      // Return fallback state
+      return {
+        phase: "dealing",
+        currentTurn: 1,
+        scores: [0, 0],
+        handSizes: [7, 7],
+        deckCount: 38,
+        isGameOver: false,
+        lastAskedRank: null,
+        lastAskingPlayer: null,
+      };
+    }
+  }
+
+  // Local mode: Check cache first
   const cached = gameStateCache.get(lobbyId);
   const now = Date.now();
 

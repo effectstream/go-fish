@@ -42,6 +42,7 @@ export class GameScreen {
   private setupAttempted: boolean = false;  // Prevents spamming wallet with transaction requests
   private maskApplied: boolean = false;  // Track if we've applied mask (frontend-side cache)
   private cardsDealt: boolean = false;   // Track if we've dealt cards (frontend-side cache)
+  private indexerSyncWaited: boolean = false;  // Track if we've waited for indexer sync before dealing
   private isHidden: boolean = false;     // Track if screen has been hidden to prevent stale renders
   private errorCount: number = 0;        // Track consecutive errors before navigating away
   private hasRenderedOnce: boolean = false; // Track if initial render has happened
@@ -601,6 +602,36 @@ export class GameScreen {
   }
 
   /**
+   * Poll for setup status until a condition is met or timeout
+   * @param field - The field to check ('hasMaskApplied' or 'hasDealt')
+   * @param timeoutMs - Maximum time to wait in milliseconds
+   * @returns true if condition was met, false if timed out
+   */
+  private async pollForSetupStatus(
+    field: 'hasMaskApplied' | 'hasDealt',
+    timeoutMs: number
+  ): Promise<boolean> {
+    const startTime = Date.now();
+    const pollIntervalMs = 3000; // Poll every 3 seconds
+
+    while (Date.now() - startTime < timeoutMs) {
+      const status = await MidnightService.getSetupStatus(
+        this.lobbyId,
+        this.gameState!.playerId as 1 | 2
+      );
+
+      if (status[field]) {
+        return true;
+      }
+
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    return false; // Timed out
+  }
+
+  /**
    * Automatically run the setup sequence (applyMask + dealCards)
    * Checks state before each operation to avoid race conditions
    */
@@ -610,7 +641,7 @@ export class GameScreen {
     this.setupInProgress = true;
 
     try {
-      console.log('[GameScreen] Starting automatic setup...');
+      console.log(`[GameScreen] Starting automatic setup... lobbyId=${this.lobbyId}, myPlayerId=${this.gameState.playerId}, walletAddress=${this.walletAddress}`);
 
       // Check current setup status
       const status = await MidnightService.getSetupStatus(
@@ -628,17 +659,45 @@ export class GameScreen {
           this.lobbyId,
           this.gameState.playerId as 1 | 2
         );
+
+        // With wait-receipt mode, success means the transaction was confirmed on-chain
         if (!maskResult.success) {
           // Check if error is "already applied" - treat as success and continue
-          if (maskResult.errorMessage?.includes('already applied')) {
+          if (maskResult.errorMessage?.includes('already applied') ||
+              maskResult.errorMessage?.includes('Player has already applied')) {
             console.log('[GameScreen] Mask already applied (detected via error) - continuing');
             this.maskApplied = true;  // Mark as applied
+          } else if (maskResult.errorMessage?.includes('timed out') ||
+                     maskResult.errorMessage?.includes('NetworkError') ||
+                     maskResult.errorMessage?.includes('fetch')) {
+            // Timeout - the batcher might still be processing
+            // Poll to check if it actually succeeded
+            console.log('[GameScreen] Mask request timed out, polling for status...');
+            const confirmed = await this.pollForSetupStatus('hasMaskApplied', 30000);
+            if (confirmed) {
+              console.log('[GameScreen] Mask was applied despite timeout');
+              this.maskApplied = true;
+            } else {
+              console.log('[GameScreen] Mask not confirmed, will retry in 10 seconds');
+              setTimeout(() => {
+                this.setupAttempted = false;
+                this.render();
+              }, 10000);
+              return;
+            }
           } else {
-            throw new Error(`Apply mask failed: ${maskResult.errorMessage}`);
+            // Any other error - schedule retry
+            console.log(`[GameScreen] Mask request failed: ${maskResult.errorMessage}, will retry in 5 seconds`);
+            setTimeout(() => {
+              this.setupAttempted = false;
+              this.render();
+            }, 5000);
+            return;
           }
         } else {
-          console.log('[GameScreen] Mask applied successfully');
-          this.maskApplied = true;  // Mark as applied
+          // Success! Transaction was confirmed on-chain
+          console.log('[GameScreen] Mask applied successfully (confirmed on-chain)');
+          this.maskApplied = true;
         }
       } else {
         console.log('[GameScreen] Mask already applied, skipping');
@@ -664,6 +723,18 @@ export class GameScreen {
           return; // Don't mark as complete, retry later
         }
 
+        // Wait for the Midnight indexer to catch up before dealing (only once).
+        // The opponent's mask was just confirmed on-chain, but the batcher's
+        // callTx fetches state from the indexer, which may lag a few seconds
+        // behind the latest block. Without this delay, dealCards can crash
+        // with "unreachable" because the circuit asserts both masks are applied
+        // but the indexer still returns pre-mask state.
+        if (!this.indexerSyncWaited) {
+          console.log('[GameScreen] Opponent mask applied, waiting 8s for indexer to sync...');
+          await new Promise(resolve => setTimeout(resolve, 8000));
+          this.indexerSyncWaited = true;
+        }
+
         // Check dealing order - Player 1 must deal first, then Player 2
         const myPlayerId = this.gameState.playerId;
 
@@ -683,20 +754,62 @@ export class GameScreen {
           this.lobbyId,
           this.gameState.playerId as 1 | 2
         );
+
+        // With wait-receipt mode, success means the transaction was confirmed on-chain
         if (!dealResult.success) {
           // Check if error is "already dealt" - treat as success
-          if (dealResult.errorMessage?.includes('Player 1 must apply mask')) {
-            console.log('[GameScreen] Opponent has not applied mask yet, will retry...');
+          if (dealResult.errorMessage?.includes('must apply mask')) {
+            console.log('[GameScreen] A player has not applied mask yet, will retry...');
+            setTimeout(() => {
+              this.setupAttempted = false;
+              this.render();
+            }, 3000);
             return; // Don't mark as complete, retry later
-          } else if (dealResult.errorMessage?.includes('already dealt')) {
+          } else if (dealResult.errorMessage?.includes('already dealt') ||
+                     dealResult.errorMessage?.includes('has already dealt')) {
             console.log('[GameScreen] Cards already dealt (detected via error) - continuing');
             this.cardsDealt = true;  // Mark as dealt
+          } else if (dealResult.errorMessage?.includes('timed out') ||
+                     dealResult.errorMessage?.includes('NetworkError') ||
+                     dealResult.errorMessage?.includes('fetch')) {
+            // Timeout - the batcher might still be processing
+            // Poll to check if it actually succeeded
+            console.log('[GameScreen] Deal cards request timed out, polling for status...');
+            const confirmed = await this.pollForSetupStatus('hasDealt', 30000);
+            if (confirmed) {
+              console.log('[GameScreen] Cards were dealt despite timeout');
+              this.cardsDealt = true;
+            } else {
+              console.log('[GameScreen] Deal cards not confirmed, will retry in 10 seconds');
+              setTimeout(() => {
+                this.setupAttempted = false;
+                this.render();
+              }, 10000);
+              return;
+            }
+          } else if (dealResult.errorMessage?.includes('unreachable')) {
+            // WASM "unreachable" usually means a Compact assert failed — likely the
+            // indexer hasn't synced the latest state yet (e.g., opponent's mask).
+            // Retry with a longer delay to give the indexer more time.
+            console.log('[GameScreen] Deal cards hit WASM assert (likely stale indexer state), will retry in 10 seconds...');
+            setTimeout(() => {
+              this.setupAttempted = false;
+              this.render();
+            }, 10000);
+            return;
           } else {
-            throw new Error(`Deal cards failed: ${dealResult.errorMessage}`);
+            // Any other error - schedule retry
+            console.log(`[GameScreen] Deal cards failed: ${dealResult.errorMessage}, will retry in 5 seconds`);
+            setTimeout(() => {
+              this.setupAttempted = false;
+              this.render();
+            }, 5000);
+            return;
           }
         } else {
-          console.log('[GameScreen] Cards dealt successfully');
-          this.cardsDealt = true;  // Mark as dealt
+          // Success! Transaction was confirmed on-chain
+          console.log('[GameScreen] Cards dealt successfully (confirmed on-chain)');
+          this.cardsDealt = true;
         }
       } else {
         console.log('[GameScreen] Cards already dealt, skipping');
@@ -710,7 +823,8 @@ export class GameScreen {
       // This prevents immediate retry spam while allowing eventual retry
       setTimeout(() => {
         this.setupAttempted = false;
-      }, 30000);  // Allow retry after 30 seconds
+        this.render();  // Trigger re-render to retry setup
+      }, 10000);  // Allow retry after 10 seconds
     } finally {
       this.setupInProgress = false;
     }

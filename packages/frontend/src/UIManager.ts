@@ -77,6 +77,12 @@ export class UIManager {
   }
 
   showScreen(screenId: string, param?: string) {
+    // Check for duplicate navigation to game screen (prevents infinite loop)
+    if (screenId === 'game' && this.currentScreen === 'game' && this.gameScreen) {
+      console.log('Already showing game screen, ignoring duplicate navigation');
+      return;
+    }
+
     // Hide current screen
     this.hideCurrentScreen();
 

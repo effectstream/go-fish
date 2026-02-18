@@ -2,6 +2,12 @@ import { GameManager } from './GameManager';
 import { UIManager } from './UIManager';
 import { MidnightService } from './services/MidnightService';
 
+// IMPORTANT: Set Midnight network ID at top level before any other SDK imports
+// This must happen before any Midnight SDK modules are used
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+setNetworkId("undeployed");
+console.log('[Main] Midnight network ID set to undeployed');
+
 /**
  * Main entry point for the Go Fish game frontend
  */

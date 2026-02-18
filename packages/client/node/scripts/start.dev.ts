@@ -16,12 +16,26 @@ const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true"
 // Check if batcher mode is enabled (run frontend in batcher mode, no Lace wallet needed)
 const useBatcherMode = Deno.env.get("USE_BATCHER_MODE") === "true";
 
-// Path to TypeScript batcher (replaces Rust batcher due to viewing key compatibility issues)
-// The Rust batcher at midnight-batcher/ has incompatible viewing key encoding with Docker indexer 2.2.7+
-const tsBatcherScript = path.resolve(__dirname, "ts-batcher.ts");
+// Check if we should deploy the Midnight contract at startup (takes ~6 minutes)
+// Set DEPLOY_MIDNIGHT_CONTRACT=true to deploy, otherwise assumes contract is already deployed
+const deployMidnightContract = Deno.env.get("DEPLOY_MIDNIGHT_CONTRACT") === "true";
 
-// Midnight infrastructure processes (only when not using TypeScript contract)
-const midnightProcesses = useTypescriptContract ? [] : [
+// Check if Midnight infrastructure is already running (via midnight:setup)
+// Set SKIP_MIDNIGHT_INFRA=true to skip starting node/indexer/proof-server
+const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
+
+// Debug logging
+console.log(`[Orchestrator] USE_TYPESCRIPT_CONTRACT=${useTypescriptContract}, USE_BATCHER_MODE=${useBatcherMode}, DEPLOY_MIDNIGHT_CONTRACT=${deployMidnightContract}, SKIP_MIDNIGHT_INFRA=${skipMidnightInfra}`);
+
+// Path to GraphQL proxy (translates SDK v2.0.0 queries to indexer v3 schema)
+// Note: With SDK v3, this may no longer be needed
+const graphqlProxyScript = path.resolve(__dirname, "graphql-proxy.ts");
+
+// Path to cleanup script for indexer database
+const cleanupIndexerScript = path.resolve(__dirname, "cleanup-indexer-db.ts");
+
+// Midnight infrastructure processes (skipped when using TypeScript contract or SKIP_MIDNIGHT_INFRA=true)
+const midnightProcesses = (useTypescriptContract || skipMidnightInfra) ? [] : [
   /** MIDNIGHT-NODE-BLOCK */
   {
     name: "midnight-node",
@@ -43,6 +57,21 @@ const midnightProcesses = useTypescriptContract ? [] : [
   },
   /** MIDNIGHT-NODE-BLOCK */
 
+  /** MIDNIGHT-INDEXER-CLEANUP-BLOCK */
+  // Clear stale indexer database before starting - the database becomes invalid
+  // when the midnight-node restarts with a fresh chain state
+  {
+    name: "cleanup-indexer-db",
+    args: [
+      "run", "-A", "--unstable-detect-cjs",
+      cleanupIndexerScript,
+    ],
+    waitToExit: true,
+    type: "system-dependency",
+    dependsOn: ["midnight-node"],
+  },
+  /** MIDNIGHT-INDEXER-CLEANUP-BLOCK */
+
   /** MIDNIGHT-INDEXER-BLOCK */
   // Note: Using npm package which provides indexer v3.0.0-alpha.21 binary.
   // The npm package handles all configuration automatically.
@@ -53,17 +82,19 @@ const midnightProcesses = useTypescriptContract ? [] : [
       "run", "-A", "--unstable-detect-cjs",
       "npm:@paimaexample/npm-midnight-indexer@0.3.129",
       "--standalone",
+      "--binary",  // Use binary instead of Docker to avoid interactive prompt
     ],
     env: {
       LEDGER_NETWORK_ID: "Undeployed",
       SUBSTRATE_NODE_WS_URL: "ws://localhost:9944",
-      APP__INFRA__SECRET: "LOCALDEVSECRET123456789ABCDEF",
+      // Secret must be a valid hex string with even number of digits (32 bytes = 64 hex chars)
+      APP__INFRA__SECRET: "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
     },
     waitToExit: false,
     type: "system-dependency",
     link: "http://localhost:8088",
     stopProcessAtPort: [8088],
-    dependsOn: ["midnight-node"],
+    dependsOn: ["cleanup-indexer-db"],
   },
   /** MIDNIGHT-INDEXER-BLOCK */
 
@@ -88,31 +119,66 @@ const midnightProcesses = useTypescriptContract ? [] : [
   /** MIDNIGHT-PROOF-SERVER-BLOCK */
 ];
 
-// Midnight batcher service (only when batcher mode is enabled)
-// This is a TypeScript service that handles Midnight ZK transactions without requiring Lace wallet
-// Uses a simple HTTP API compatible with the Rust batcher
-const midnightBatcherProcesses = useBatcherMode && !useTypescriptContract ? [
-  /** MIDNIGHT-BATCHER-BLOCK */
+// GraphQL proxy (translates SDK v2.0.0 queries to indexer v3 schema)
+// This is necessary because SDK v2.0.0 expects 'contractAction' but indexer v3 has 'contract'
+const graphqlProxyProcesses = useBatcherMode && !useTypescriptContract ? [
+  /** GRAPHQL-PROXY-BLOCK */
   {
-    name: "midnight-batcher",
+    name: "graphql-proxy",
     args: [
       "run", "-A", "--unstable-detect-cjs",
-      tsBatcherScript,
+      graphqlProxyScript,
     ],
+    env: {
+      INDEXER_HTTP_URL: "http://127.0.0.1:8088/api/v3/graphql",
+      INDEXER_WS_URL: "ws://127.0.0.1:8088/api/v3/graphql/ws",
+    },
     waitToExit: false,
     type: "system-dependency",
-    link: "http://localhost:8000",
-    stopProcessAtPort: [8000],
-    dependsOn: ["midnight-node", "midnight-indexer"],
+    link: "http://localhost:8089",
+    stopProcessAtPort: [8089],
+    // Only depend on indexer if we're managing it here
+    dependsOn: skipMidnightInfra ? [] : ["midnight-indexer"],
   },
-  /** MIDNIGHT-BATCHER-BLOCK */
+  /** GRAPHQL-PROXY-BLOCK */
 ] : [];
+
+// Note: The old midnight-batcher (ts-batcher on port 8000) has been removed.
+// Midnight transactions are now handled by the Paima batcher (@go-fish/batcher on port 3334)
+// which uses MidnightAdapter for Midnight blockchain integration.
+
+// Midnight contract deployment (runs after infrastructure is ready)
+// Only deploys if DEPLOY_MIDNIGHT_CONTRACT=true AND we're managing the infra (not SKIP_MIDNIGHT_INFRA)
+// Using MIDNIGHT_DEPLOY_VERIFIER_KEYS_LIMIT=1 for faster deployment (only 1 verifier key)
+// Note: If using SKIP_MIDNIGHT_INFRA, the contract was already deployed by midnight:setup
+const midnightContractDeployment = deployMidnightContract && useBatcherMode && !useTypescriptContract && !skipMidnightInfra ? [
+  {
+    name: "midnight-contract-deploy",
+    args: [
+      "--unstable-detect-cjs", "-A",
+      "deploy.ts",
+    ],
+    env: {
+      MIDNIGHT_DEPLOY_VERIFIER_KEYS_LIMIT: "1",  // Quick deploy - only upload 1 verifier key
+    },
+    cwd: midnightContractsDir,  // Run from the midnight contracts directory
+    waitToExit: true,  // Wait for deployment to complete before starting batcher
+    type: "system-dependency",
+    dependsOn: ["midnight-proof-server", "midnight-indexer"],
+  },
+] : [];
+
+// Debug: log which processes will be launched
+console.log(`[Orchestrator] midnightProcesses: ${midnightProcesses.length} processes`);
+console.log(`[Orchestrator] graphqlProxyProcesses: ${graphqlProxyProcesses.length} processes`);
 
 const customProcesses = [
   // Midnight infrastructure (skipped when USE_TYPESCRIPT_CONTRACT=true)
   ...midnightProcesses,
-  // Midnight batcher for wallet-less mode (only when USE_BATCHER_MODE=true)
-  ...midnightBatcherProcesses,
+  // Deploy Midnight contract after infrastructure is ready (only in batcher mode)
+  ...midnightContractDeployment,
+  // GraphQL proxy for SDK v2 to indexer v3 translation (only when USE_BATCHER_MODE=true)
+  ...graphqlProxyProcesses,
 
   /** FRONTEND-BLOCK */
   {
@@ -133,7 +199,7 @@ const customProcesses = [
     waitToExit: false,
     link: "http://localhost:3000",
     type: "system-dependency",
-    dependsOn: useBatcherMode ? ["install-frontend", "midnight-batcher"] : ["install-frontend"],
+    dependsOn: useBatcherMode ? ["install-frontend", "batcher"] : ["install-frontend"],
     logs: "none",
   },
   /** FRONTEND-BLOCK */
@@ -157,7 +223,13 @@ const customProcesses = [
     type: "system-dependency",
     link: "http://localhost:3334",
     stopProcessAtPort: [3334],
-    dependsOn: [],
+    // Dependencies:
+    // - If deploying contract: wait for deployment
+    // - If midnight infra managed here: wait for proof server
+    // - If midnight infra external (SKIP_MIDNIGHT_INFRA): no midnight dependencies
+    dependsOn: deployMidnightContract && useBatcherMode && !useTypescriptContract && !skipMidnightInfra
+      ? ["midnight-contract-deploy"]
+      : (useBatcherMode && !useTypescriptContract && !skipMidnightInfra ? ["midnight-proof-server"] : []),
   },
   /** BATCHER-BLOCK */
 ];

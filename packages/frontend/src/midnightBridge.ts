@@ -2,20 +2,29 @@
  * Midnight Bridge - Frontend interface to Midnight Go Fish contract
  * Handles circuit calls, witness generation, and proof submission
  *
- * ✅ SECURITY: This is the CORRECT architecture
+ * ✅ SECURITY: This is the CORRECT architecture for Mental Poker
  *
  * Frontend responsibilities:
  * - Generate player secrets locally (NEVER send to backend)
+ * - Store secrets securely in encrypted localStorage (via PlayerKeyManager)
  * - Execute ZK circuits in browser
  * - Generate proofs
  * - Submit proofs to backend for verification
  *
- * Currently: Secrets are generated here correctly, but circuits are executed
- * on backend (INSECURE). See MIDNIGHT_SECURITY_ARCHITECTURE.md for migration plan.
+ * The PlayerKeyManager handles:
+ * - Cryptographically secure secret generation (full Jubjub scalar field)
+ * - Per-game key isolation
+ * - Persistent storage with session recovery
+ * - Automatic cleanup of expired sessions
  */
 
 import { Contract } from '../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
 import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-runtime';
+import {
+  PlayerKeyManager,
+  JUBJUB_SCALAR_FIELD_ORDER,
+  modInverse,
+} from './services/PlayerKeyManager';
 
 // Ledger type placeholder (empty in this contract)
 type Ledger = Record<string, never>;
@@ -23,19 +32,24 @@ import {
   sampleContractAddress,
   createConstructorContext,
   createCircuitContext,
-  CostModel,
 } from '@midnight-ntwrk/compact-runtime';
 
-// Private state type (empty for now, can be extended)
+// Private state type - now managed by PlayerKeyManager
 export type PrivateState = {
   playerSecretKey?: bigint;
   shuffleSeed?: Uint8Array;
+  currentGameId?: string; // Track which game we're working with
+  currentPlayerId?: 1 | 2;
 };
 
 // Midnight contract and state (using any for flexibility with Contract's generic types)
 let contract: any = null;
 let circuitContext: CircuitContext<PrivateState> | null = null;
 let privateState: PrivateState = {};
+
+// Current game context (for witness functions)
+let currentGameId: string | null = null;
+let currentPlayerId: (1 | 2) | null = null;
 
 /**
  * Initialize Midnight contract (call this once on app startup)
@@ -89,64 +103,22 @@ export function isMidnightConnected(): boolean {
 }
 
 /**
- * Generate player secret key (random within valid Jubjub scalar field range)
+ * Set current game context for witness functions
+ * Must be called before any circuit operations
  */
-function generatePlayerSecret(): bigint {
-  // In production, this should derive from wallet signature or secure random
-  // Secret must be in range [1, JUBJUB_SCALAR_FIELD_ORDER)
-  // Using smaller range for simplicity (but still secure for testing)
-  const secret = BigInt(Math.floor(Math.random() * 1000000)) + 1n;
-  privateState.playerSecretKey = secret;
-  return secret;
+export function setGameContext(gameId: string, playerId: 1 | 2): void {
+  currentGameId = gameId;
+  currentPlayerId = playerId;
+  console.log(`[MidnightBridge] Game context set: gameId=${gameId}, playerId=${playerId}`);
 }
-
-/**
- * Generate shuffle seed (random bytes)
- */
-function generateShuffleSeed(): Uint8Array {
-  const seed = new Uint8Array(32);
-  crypto.getRandomValues(seed);
-  privateState.shuffleSeed = seed;
-  return seed;
-}
-
-/**
- * Calculate modular multiplicative inverse using extended Euclidean algorithm
- */
-function modInverse(a: bigint, n: bigint): bigint {
-  if (a === 0n) {
-    throw new Error('Cannot invert zero');
-  }
-
-  let t = 0n;
-  let newT = 1n;
-  let r = n;
-  let newR = a;
-
-  while (newR !== 0n) {
-    const quotient = r / newR;
-    [t, newT] = [newT, t - quotient * newT];
-    [r, newR] = [newR, r - quotient * newR];
-  }
-
-  if (r > 1n) {
-    throw new Error('Scalar is not invertible');
-  }
-  if (t < 0n) {
-    t = t + n;
-  }
-
-  return t;
-}
-
-/**
- * Jubjub curve scalar field order
- */
-const JUBJUB_SCALAR_FIELD_ORDER =
-  6554484396890773809930967563523245729705921265872317281365359162392183254199n;
 
 /**
  * Witness implementations for client-side proof generation
+ *
+ * These use PlayerKeyManager for secure, per-game key management:
+ * - Secrets are generated using crypto.getRandomValues() over full Jubjub scalar field
+ * - Keys are isolated per game (different secret for each game)
+ * - Keys persist in encrypted localStorage for session recovery
  * Type is any to avoid complex generic type mismatches with the Contract class
  */
 export const witnesses: any = {
@@ -154,32 +126,47 @@ export const witnesses: any = {
     context: WitnessContext<Ledger, PrivateState>,
     x: bigint
   ): [PrivateState, bigint] => {
+    // Use modInverse from PlayerKeyManager
     const inverse = modInverse(x, JUBJUB_SCALAR_FIELD_ORDER);
     return [context.privateState, inverse];
   },
 
   player_secret_key: (
     context: WitnessContext<Ledger, PrivateState>,
-    _gameId: Uint8Array,
-    _player: bigint
+    gameIdBytes: Uint8Array,
+    player: bigint
   ): [PrivateState, bigint] => {
-    // Return stored secret or generate new one
-    if (!privateState.playerSecretKey) {
-      generatePlayerSecret();
-    }
-    return [context.privateState, privateState.playerSecretKey!];
+    // Convert gameId bytes to string for PlayerKeyManager
+    const gameId = currentGameId || new TextDecoder().decode(gameIdBytes).replace(/\0+$/, '');
+    const playerId = currentPlayerId || (Number(player) as 1 | 2);
+
+    // Get secret from PlayerKeyManager (generates if not exists)
+    const secret = PlayerKeyManager.getPlayerSecret(gameId, playerId);
+
+    // Also store in privateState for backwards compatibility
+    privateState.playerSecretKey = secret;
+
+    console.log(`[MidnightBridge] player_secret_key witness called for game=${gameId}, player=${playerId}`);
+    return [context.privateState, secret];
   },
 
   shuffle_seed: (
     context: WitnessContext<Ledger, PrivateState>,
-    _gameId: Uint8Array,
-    _player: bigint
+    gameIdBytes: Uint8Array,
+    player: bigint
   ): [PrivateState, Uint8Array] => {
-    // Return stored seed or generate new one
-    if (!privateState.shuffleSeed) {
-      generateShuffleSeed();
-    }
-    return [context.privateState, privateState.shuffleSeed!];
+    // Convert gameId bytes to string for PlayerKeyManager
+    const gameId = currentGameId || new TextDecoder().decode(gameIdBytes).replace(/\0+$/, '');
+    const playerId = currentPlayerId || (Number(player) as 1 | 2);
+
+    // Get shuffle seed from PlayerKeyManager (generates if not exists)
+    const seed = PlayerKeyManager.getShuffleSeed(gameId, playerId);
+
+    // Also store in privateState for backwards compatibility
+    privateState.shuffleSeed = seed;
+
+    console.log(`[MidnightBridge] shuffle_seed witness called for game=${gameId}, player=${playerId}`);
+    return [context.privateState, seed];
   },
 
   get_sorted_deck_witness: (
@@ -232,6 +219,9 @@ export async function applyMask(
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
 
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
     const gameId = lobbyIdToGameId(lobbyId);
 
     console.log(`[MidnightBridge] applyMask(gameId: ${lobbyId}, playerId: ${playerId})`);
@@ -268,6 +258,9 @@ export async function dealCards(
     if (!isMidnightConnected() || !contract || !circuitContext) {
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
 
     const gameId = lobbyIdToGameId(lobbyId);
 
@@ -307,6 +300,9 @@ export async function askForCard(
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
 
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
     const gameId = lobbyIdToGameId(lobbyId);
 
     console.log(`[MidnightBridge] askForCard(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${targetRank})`);
@@ -344,6 +340,9 @@ export async function respondToAsk(
     if (!isMidnightConnected() || !contract || !circuitContext) {
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
 
     const gameId = lobbyIdToGameId(lobbyId);
 
@@ -383,6 +382,9 @@ export async function goFish(
     if (!isMidnightConnected() || !contract || !circuitContext) {
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
 
     const gameId = lobbyIdToGameId(lobbyId);
 
@@ -424,6 +426,9 @@ export async function afterGoFish(
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
 
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
     const gameId = lobbyIdToGameId(lobbyId);
 
     console.log(`[MidnightBridge] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drew: ${drewRequestedCard})`);
@@ -462,6 +467,9 @@ export async function checkAndScoreBook(
     if (!isMidnightConnected() || !contract || !circuitContext) {
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
 
     const gameId = lobbyIdToGameId(lobbyId);
 
@@ -567,6 +575,9 @@ export async function getPlayerHand(
       return [];
     }
 
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightBridge] getPlayerHand(gameId: ${lobbyId}, playerId: ${playerId})`);
 
@@ -607,10 +618,14 @@ export async function getPlayerHand(
   }
 }
 
+// Re-export PlayerKeyManager for convenience
+export { PlayerKeyManager } from './services/PlayerKeyManager';
+
 // Export all functions as a single bridge object
 export const MidnightBridge = {
   initializeMidnightContract,
   isMidnightConnected,
+  setGameContext,
   applyMask,
   dealCards,
   askForCard,
@@ -622,6 +637,8 @@ export const MidnightBridge = {
   getScores,
   getPlayerHand,
   lobbyIdToGameId,
+  // Key management
+  PlayerKeyManager,
 };
 
 export default MidnightBridge;

@@ -27,7 +27,8 @@
     "querystring": "node:querystring",
     "zlib": "node:zlib",
     "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1",
-    "@midnight-ntwrk/onchain-runtime-v1": "npm:@midnight-ntwrk/onchain-runtime-v1@1.0.0-alpha.5"
+    "@midnight-ntwrk/onchain-runtime-v1": "npm:@midnight-ntwrk/onchain-runtime-v1@1.0.0-alpha.5",
+    "@midnight-ntwrk/ledger-v6": "npm:@midnight-ntwrk/ledger-v6@6.1.0-alpha.6"
   },
   "nodeModulesDir": "auto"
 }

@@ -18,9 +18,10 @@ import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 const PORT = 8000;
 const BATCHER_SEED = "0000000000000000000000000000000000000000000000000000000000000001";
 
-// Indexer URLs (v1 API for SDK 2.0.0 compatibility)
-const INDEXER_HTTP_URL = Deno.env.get("INDEXER_HTTP_URL") || "http://127.0.0.1:8088/api/v1/graphql";
-const INDEXER_WS_URL = Deno.env.get("INDEXER_WS_URL") || "ws://127.0.0.1:8088/api/v1/graphql/ws";
+// Indexer URLs - connect directly to indexer v3 API for health checks
+// The batcher doesn't need SDK compatibility, it just needs to verify the indexer is running
+const INDEXER_HTTP_URL = Deno.env.get("INDEXER_HTTP_URL") || "http://127.0.0.1:8088/api/v3/graphql";
+const INDEXER_WS_URL = Deno.env.get("INDEXER_WS_URL") || "ws://127.0.0.1:8088/api/v3/graphql/ws";
 const PROOF_SERVER_URL = Deno.env.get("PROOF_SERVER_URL") || "http://127.0.0.1:6300";
 const NODE_URL = Deno.env.get("NODE_URL") || "http://127.0.0.1:9944";
 

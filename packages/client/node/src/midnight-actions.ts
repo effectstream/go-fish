@@ -3,6 +3,9 @@
  * This runs on the Paima node and provides write access to the contract
  */
 
+// Debug: Log import.meta.url at module load time
+console.log(`[MidnightActions] Module loaded from: ${import.meta.url}`);
+
 import { Contract } from '../../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
 import type { CircuitContext } from '@midnight-ntwrk/compact-runtime';
 import {
@@ -270,6 +273,92 @@ export async function initializeActionContract(): Promise<void> {
   }
 }
 
+// Cache batcher mode check to avoid repeated file reads
+let batcherModeCache: boolean | null = null;
+
+/**
+ * Check if running in batcher mode
+ */
+function isInBatcherMode(): boolean {
+  // Return cached result if available
+  if (batcherModeCache !== null) {
+    return batcherModeCache;
+  }
+
+  // Check environment variable first
+  const envBatcherMode = Deno.env.get("USE_BATCHER_MODE");
+  if (envBatcherMode === "true") {
+    console.log("[MidnightActions] Batcher mode enabled via USE_BATCHER_MODE env");
+    batcherModeCache = true;
+    return true;
+  }
+
+  // Check runtime config file
+  try {
+    const configPath = new URL("../runtime-config.json", import.meta.url);
+    console.log(`[MidnightActions] Looking for config at: ${configPath.pathname}`);
+    const configText = Deno.readTextFileSync(configPath);
+    const config = JSON.parse(configText);
+    console.log(`[MidnightActions] runtime-config.json: ${JSON.stringify(config)}`);
+    if (config.useBatcherMode === true) {
+      console.log("[MidnightActions] Batcher mode enabled via runtime-config.json");
+      batcherModeCache = true;
+      return true;
+    }
+    batcherModeCache = false;
+  } catch (error) {
+    console.log(`[MidnightActions] Could not read runtime-config.json: ${error}`);
+    batcherModeCache = false;
+  }
+
+  console.log("[MidnightActions] Batcher mode NOT enabled");
+  return false;
+}
+
+/**
+ * Generate a deterministic mock hand for batcher mode
+ * Since we can't decrypt real cards without player secrets, we generate
+ * a consistent hand based on lobby and player ID for demo purposes.
+ *
+ * Each player gets 7 cards from our 21-card deck (7 ranks × 3 suits).
+ * We use a simple deterministic algorithm based on player ID.
+ */
+function generateMockHand(lobbyId: string, playerId: 1 | 2): Array<{ rank: number; suit: number }> {
+  const hand: Array<{ rank: number; suit: number }> = [];
+
+  // Use lobby ID hash as a seed for consistency
+  let seed = 0;
+  for (let i = 0; i < lobbyId.length; i++) {
+    seed = ((seed << 5) - seed + lobbyId.charCodeAt(i)) | 0;
+  }
+  seed = Math.abs(seed);
+
+  // Generate 7 cards for this player
+  // Player 1 gets cards from first half of deck, Player 2 from second half
+  // This ensures no overlap
+  const usedCards = new Set<number>();
+  const startOffset = playerId === 1 ? 0 : 11; // 21 cards total, split roughly in half
+
+  for (let i = 0; i < 7; i++) {
+    // Deterministic card selection
+    const cardIndex = (startOffset + (seed + i * 3) % 10) % 21;
+
+    // Avoid duplicates by finding next available card
+    let actualIndex = cardIndex;
+    while (usedCards.has(actualIndex)) {
+      actualIndex = (actualIndex + 1) % 21;
+    }
+    usedCards.add(actualIndex);
+
+    const rank = actualIndex % 7;  // 7 ranks (Ace through 7)
+    const suit = Math.floor(actualIndex / 7);  // 3 suits
+    hand.push({ rank, suit });
+  }
+
+  console.log(`[MidnightActions] Generated mock hand for player ${playerId}: ${hand.length} cards`);
+  return hand;
+}
+
 /**
  * Cache for player hands to reduce circuit calls
  * Key format: `${lobbyId}-${playerId}`
@@ -283,6 +372,9 @@ const HAND_CACHE_TTL_MS = 5000;
  * Uses action queue to prevent concurrent operations that can cause mutex deadlocks
  * IMPORTANT: This function checks all 52 cards which is very CPU-intensive
  * Uses caching to reduce the frequency of these checks
+ *
+ * In batcher mode, returns mock hands since real card decryption requires
+ * player private keys which only wallets have.
  */
 export async function getPlayerHand(
   lobbyId: string,
@@ -296,6 +388,16 @@ export async function getPlayerHand(
   if (cached && (now - cached.timestamp) < HAND_CACHE_TTL_MS) {
     console.log(`[MidnightActions] getPlayerHand cache hit for ${cacheKey}`);
     return cached.hand;
+  }
+
+  // In batcher mode, return mock hands since we can't decrypt real cards
+  const batcherMode = isInBatcherMode();
+  console.log(`[MidnightActions] getPlayerHand - isInBatcherMode() = ${batcherMode}`);
+  if (batcherMode) {
+    console.log(`[MidnightActions] Using mock hand for batcher mode`);
+    const mockHand = generateMockHand(lobbyId, playerId);
+    playerHandCache.set(cacheKey, { hand: mockHand, timestamp: now });
+    return mockHand;
   }
 
   return enqueueAction(async () => {

@@ -13,7 +13,7 @@ Run the complete development environment with orchestrator:
 deno install --allow-scripts
 
 # Build EVM contracts
-deno task build:evm
+deno task build:evm,
 
 # Start all services (backend + frontend + blockchain)
 deno task dev
@@ -24,6 +24,20 @@ This will launch:
 - **API**: http://localhost:9999
 - **Explorer**: http://localhost:10590
 - **Blockchain**: http://localhost:8545
+
+### Batcher Mode (Midnight)
+
+For development with Midnight blockchain integration, you can run the infrastructure and dev server separately:
+
+```bash
+# Terminal 1: Start Midnight infrastructure (node, indexer, proof server, contract deployment)
+EFFECTSTREAM_STDOUT=true deno task -f @go-fish/node midnight:setup
+
+# Terminal 2: Start the dev server with batcher mode (after infra is ready)
+USE_TYPESCRIPT_CONTRACT=false EFFECTSTREAM_STDOUT=true USE_BATCHER_MODE=true SKIP_MIDNIGHT_INFRA=true deno task dev
+```
+
+The `SKIP_MIDNIGHT_INFRA=true` flag tells the dev server to skip launching Midnight infrastructure since it's already running from the first command.
 
 ### Frontend Only
 

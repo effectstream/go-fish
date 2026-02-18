@@ -2,6 +2,10 @@ import { type WitnessContext } from "@midnight-ntwrk/compact-runtime";
 export type Ledger = {};
 export type PrivateState = {};
 
+/**
+ * Default keys for testing/development
+ * In production, these should be provided by the client via setPlayerSecrets()
+ */
 export const keys = {
   player1: BigInt(Math.floor(Math.random() * 1000000)),
   player2: BigInt(Math.floor(Math.random() * 1000000)),
@@ -9,7 +13,55 @@ export const keys = {
   shuffleSeed2: new Uint8Array(32).fill(Math.floor(Math.random() * 256)),
 };
 
-const getSecretKey = (index: number) => {
+/**
+ * Dynamic per-game secrets storage
+ * Key format: `${gameId}-${playerId}` where gameId is hex-encoded
+ *
+ * This allows the batcher to use client-provided secrets instead of
+ * the default hardcoded ones. Secrets are set before circuit execution
+ * and cleared after.
+ */
+const dynamicSecrets = new Map<string, { secret: bigint; shuffleSeed: Uint8Array }>();
+
+/**
+ * Set player secrets for a specific game
+ * Called by the batcher before executing a circuit call
+ */
+export function setPlayerSecrets(
+  gameIdHex: string,
+  playerId: 1 | 2,
+  secret: bigint,
+  shuffleSeed: Uint8Array
+): void {
+  const key = `${gameIdHex}-${playerId}`;
+  dynamicSecrets.set(key, { secret, shuffleSeed });
+  console.log(`[Witnesses] Set dynamic secrets for ${key}`);
+}
+
+/**
+ * Clear player secrets after circuit execution
+ */
+export function clearPlayerSecrets(gameIdHex: string, playerId: 1 | 2): void {
+  const key = `${gameIdHex}-${playerId}`;
+  dynamicSecrets.delete(key);
+  console.log(`[Witnesses] Cleared dynamic secrets for ${key}`);
+}
+
+/**
+ * Get secret key - checks dynamic secrets first, falls back to static keys
+ */
+const getSecretKey = (gameIdHex: string | null, index: number) => {
+  // Check dynamic secrets first
+  if (gameIdHex) {
+    const key = `${gameIdHex}-${index}`;
+    const dynamic = dynamicSecrets.get(key);
+    if (dynamic) {
+      console.log(`[Witnesses] Using dynamic secret for ${key}`);
+      return dynamic.secret;
+    }
+  }
+
+  // Fall back to static keys
   switch (index) {
     case 1:
       return keys.player1;
@@ -19,7 +71,21 @@ const getSecretKey = (index: number) => {
   throw new Error("Invalid player index");
 };
 
-const getShuffleSeed = (index: number) => {
+/**
+ * Get shuffle seed - checks dynamic secrets first, falls back to static seeds
+ */
+const getShuffleSeed = (gameIdHex: string | null, index: number) => {
+  // Check dynamic secrets first
+  if (gameIdHex) {
+    const key = `${gameIdHex}-${index}`;
+    const dynamic = dynamicSecrets.get(key);
+    if (dynamic) {
+      console.log(`[Witnesses] Using dynamic shuffle seed for ${key}`);
+      return dynamic.shuffleSeed;
+    }
+  }
+
+  // Fall back to static seeds
   switch (index) {
     case 1:
       return keys.shuffleSeed1;
@@ -135,17 +201,21 @@ export const witnesses = {
   },
   shuffle_seed: (
     { privateState }: WitnessContext<Ledger, PrivateState>,
-    _gameId: Uint8Array,
+    gameId: Uint8Array,
     playerIndex: bigint,
   ): [PrivateState, Uint8Array] => {
-    return [privateState, getShuffleSeed(Number(playerIndex))];
+    // Convert gameId to hex for dynamic lookup
+    const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
+    return [privateState, getShuffleSeed(gameIdHex, Number(playerIndex))];
   },
   player_secret_key: (
     { privateState }: WitnessContext<Ledger, PrivateState>,
-    _gameId: Uint8Array,
+    gameId: Uint8Array,
     playerIndex: bigint,
   ): [PrivateState, bigint] => {
-    return [privateState, getSecretKey(Number(playerIndex))];
+    // Convert gameId to hex for dynamic lookup
+    const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
+    return [privateState, getSecretKey(gameIdHex, Number(playerIndex))];
   },
 };
 
@@ -160,7 +230,7 @@ export function createPlayerWitnesses(playerId: 1 | 2) {
     ...witnesses,
     shuffle_seed: (
       { privateState }: WitnessContext<Ledger, PrivateState>,
-      _gameId: Uint8Array,
+      gameId: Uint8Array,
       playerIndex: bigint,
     ): [PrivateState, Uint8Array] => {
       const index = Number(playerIndex);
@@ -178,11 +248,13 @@ export function createPlayerWitnesses(playerId: 1 | 2) {
         console.trace();
         throw new Error(`Invalid player index ${index} for player ${playerId}`);
       }
-      return [privateState, getShuffleSeed(index)];
+      // Convert gameId to hex for dynamic lookup
+      const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
+      return [privateState, getShuffleSeed(gameIdHex, index)];
     },
     player_secret_key: (
       { privateState }: WitnessContext<Ledger, PrivateState>,
-      _gameId: Uint8Array,
+      gameId: Uint8Array,
       playerIndex: bigint,
     ): [PrivateState, bigint] => {
       const index = Number(playerIndex);
@@ -200,7 +272,9 @@ export function createPlayerWitnesses(playerId: 1 | 2) {
         console.trace();
         throw new Error(`Invalid player index ${index} for player ${playerId}`);
       }
-      return [privateState, getSecretKey(index)];
+      // Convert gameId to hex for dynamic lookup
+      const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
+      return [privateState, getSecretKey(gameIdHex, index)];
     },
   };
 }

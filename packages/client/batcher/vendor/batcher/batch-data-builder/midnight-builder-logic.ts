@@ -1,0 +1,118 @@
+import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.3.128";
+import type { DefaultBatcherInput } from "../core/types.ts";
+
+const BATCH_PREFIX = "&B";
+
+export interface MidnightBatchPayload {
+  prefix: string;
+  payloads: Array<{
+    circuit: string;
+    args: unknown[];
+    addressType: number;
+    address: string;
+    signature: string;
+    timestamp: string;
+    playerSecret?: string;
+    shuffleSeed?: string;
+  }>;
+}
+
+function decodeHexIfNeeded(value: string): string {
+  if (typeof value !== "string") {
+    throw new Error("Midnight batch builder expects string input payloads");
+  }
+
+  if (/^0x[0-9a-fA-F]+$/.test(value)) {
+    const normalized = value.slice(2);
+    return new TextDecoder().decode(hexStringToUint8Array(normalized));
+  }
+
+  if (/^[0-9a-fA-F]+$/.test(value)) {
+    return new TextDecoder().decode(hexStringToUint8Array(value));
+  }
+
+  return value;
+}
+
+export class MidnightBatchBuilderLogic {
+  buildBatchData<T extends DefaultBatcherInput>(
+    inputs: T[],
+    options?: {
+      /** Maximum size of the batch in bytes */
+      maxSize?: number;
+      /** Maximum number of inputs per batch (default: unlimited) */
+      maxInputs?: number;
+    },
+  ): { selectedInputs: T[]; data: MidnightBatchPayload | null } | null {
+    if (inputs.length === 0) return null;
+
+    const maxSize = options?.maxSize ?? 10000;
+    const maxInputs = options?.maxInputs ?? Infinity;
+    const selectedInputs: T[] = [];
+    const payloads: Array<{
+      circuit: string;
+      args: unknown[];
+      addressType: number;
+      address: string;
+      signature: string;
+      timestamp: string;
+    }> = [];
+
+    const encoder = new TextEncoder();
+    const emptyBatch = JSON.stringify({ prefix: BATCH_PREFIX, payloads: [] });
+    let currentSize = encoder.encode(emptyBatch).length;
+
+    for (const input of inputs) {
+      if (selectedInputs.length >= maxInputs) {
+        break;
+      }
+
+      // Inputs are now pre-validated, so we can trust the structure
+      const parsed = JSON.parse(decodeHexIfNeeded(input.input));
+
+      const payloadEntry: {
+        circuit: string;
+        args: unknown[];
+        addressType: number;
+        address: string;
+        signature: string;
+        timestamp: string;
+        playerSecret?: string;
+        shuffleSeed?: string;
+      } = {
+        circuit: parsed.circuit,
+        args: parsed.args,
+        addressType: input.addressType,
+        address: input.address,
+        signature: input.signature ?? "",
+        timestamp: input.timestamp,
+      };
+
+      // Preserve client-side secrets if present (for mental poker / ZK proofs)
+      if (parsed.playerSecret) payloadEntry.playerSecret = parsed.playerSecret;
+      if (parsed.shuffleSeed) payloadEntry.shuffleSeed = parsed.shuffleSeed;
+
+      const entrySize = encoder.encode(JSON.stringify(payloadEntry)).length;
+
+      if (currentSize + entrySize > maxSize) {
+        break;
+      }
+
+      selectedInputs.push(input);
+      payloads.push(payloadEntry);
+      currentSize += entrySize;
+    }
+
+    if (payloads.length === 0) {
+      return { selectedInputs: [], data: null };
+    }
+
+    return {
+      selectedInputs,
+      data: {
+        prefix: BATCH_PREFIX,
+        payloads,
+      },
+    };
+  }
+}

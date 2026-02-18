@@ -10,26 +10,29 @@
  * This enables a seamless user experience where users don't need
  * to install or configure any wallet extensions.
  *
- * Based on midnight-game-2's batcher implementation using ledger v4.
+ * Updated for SDK v3 with ledger-v6 types.
  */
 
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import {
-  type BalancedTransaction,
+  type BalancedProvingRecipe,
   type ProofProvider,
+  type ProvenTransaction,
   type ProveTxConfig,
-  type UnbalancedTransaction,
-  createUnbalancedTx,
+  TRANSACTION_TO_PROVE,
 } from "@midnight-ntwrk/midnight-js-types";
 import {
-  type CoinInfo,
+  type ShieldedCoinInfo,
   Transaction,
   type TransactionId,
   type UnprovenTransaction,
-} from "@midnight-ntwrk/ledger";
-import { getRuntimeNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+  type FinalizedTransaction,
+  type CoinPublicKey,
+  type EncPublicKey,
+} from "@midnight-ntwrk/ledger-v6";
+import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import type { ProverMessage, ProverResponse } from "./worker-types";
 import type { GoFishProviders } from "../services/MidnightOnChainService";
 
@@ -38,13 +41,14 @@ type GoFishCircuitKeys = string;
 
 type WebWorkerPromiseCallbacks = {
   resolve: (
-    value: UnbalancedTransaction | PromiseLike<UnbalancedTransaction>
+    value: ProvenTransaction | PromiseLike<ProvenTransaction>
   ) => void;
   reject: (reason?: unknown) => void;
 };
 
 /**
  * Web Worker based proof provider that generates ZK proofs locally
+ * Updated for SDK v3 - returns ProvenTransaction
  */
 class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
   nextId: number;
@@ -75,12 +79,9 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
           break;
         case "success":
           if (callbacks && data) {
-            // Deserialize using ledger v4 with network ID
-            const unbalancedTx = Transaction.deserialize(
-              data,
-              getRuntimeNetworkId()
-            );
-            callbacks.resolve(createUnbalancedTx(unbalancedTx));
+            // Deserialize using ledger-v6 (no network ID needed - set globally)
+            const provenTx = Transaction.deserialize(data);
+            callbacks.resolve(provenTx as ProvenTransaction);
             this.requests.delete(requestId!);
           }
           break;
@@ -144,13 +145,13 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
   async proveTx(
     tx: UnprovenTransaction,
     proveTxConfig?: ProveTxConfig<GoFishCircuitKeys>
-  ): Promise<UnbalancedTransaction> {
+  ): Promise<ProvenTransaction> {
     if (this.worker !== undefined) {
       return new Promise((resolve, reject) => {
         this.requests.set(this.nextId, { resolve, reject });
 
-        // Serialize with network ID for ledger v4
-        const serializedTx = tx.serialize(getRuntimeNetworkId());
+        // Serialize using ledger-v6 (no network ID needed - set globally)
+        const serializedTx = tx.serialize();
 
         this.worker!.postMessage({
           type: "prove",
@@ -283,6 +284,11 @@ export function isBatcherModeEnabled(): boolean {
 export async function initializeBatcherProviders(): Promise<GoFishProviders> {
   console.log("[BatcherProviders] Initializing batcher mode providers...");
 
+  // Set the network ID - required before any SDK operations
+  // Using Undeployed for local dev chain
+  setNetworkId("undeployed");
+  console.log("[BatcherProviders] Network ID set to undeployed");
+
   const batcherAddress = await getBatcherAddress();
   const batcherAddressParts = batcherAddress.split("|");
 
@@ -317,22 +323,29 @@ export async function initializeBatcherProviders(): Promise<GoFishProviders> {
     ),
     walletProvider: {
       // Use the batcher's address since we don't have a wallet
-      coinPublicKey: coinPublicKey,
-      encryptionPublicKey: encryptionPublicKey,
+      getCoinPublicKey(): CoinPublicKey {
+        return coinPublicKey as unknown as CoinPublicKey;
+      },
+      getEncryptionPublicKey(): EncPublicKey {
+        return encryptionPublicKey as unknown as EncPublicKey;
+      },
       balanceTx(
-        tx: UnbalancedTransaction,
-        _newCoins: CoinInfo[]
-      ): Promise<BalancedTransaction> {
-        // In batcher mode, return the transaction as-is
-        // The batcher will handle balancing
-        // @ts-expect-error - batcher handles the actual balancing
-        return tx;
+        tx: UnprovenTransaction,
+        _newCoins?: ShieldedCoinInfo[],
+        _ttl?: Date
+      ): Promise<BalancedProvingRecipe> {
+        // In batcher mode, return a TransactionToProve recipe
+        // The batcher will handle balancing after proving
+        return Promise.resolve({
+          type: TRANSACTION_TO_PROVE,
+          transaction: tx,
+        } as BalancedProvingRecipe);
       },
     },
     midnightProvider: {
-      submitTx(tx: BalancedTransaction): Promise<TransactionId> {
-        // Serialize with network ID for ledger v4
-        const raw = tx.serialize(getRuntimeNetworkId());
+      submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
+        // Serialize using ledger-v6 (no network ID needed - set globally)
+        const raw = tx.serialize();
         return postTxToBatcher(raw);
       },
     },

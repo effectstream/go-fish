@@ -14,16 +14,21 @@
  */
 
 import { getConnectedAPI, isLaceConnected } from "../laceWalletBridge";
-import { isBatcherModeEnabled, initializeBatcherProviders } from "../proving/batcher-providers";
+import { isBatcherModeEnabled } from "../proving/batcher-providers";
+import * as BatcherMidnightService from "./BatcherMidnightService";
 
-// Import Midnight SDK packages
+// Import Midnight SDK packages (v3 with ledger-v6)
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
 import {
   Transaction,
-  type CoinInfo,
+  type ShieldedCoinInfo,
   type TransactionId,
-} from "@midnight-ntwrk/ledger";
-import { getRuntimeNetworkId, setNetworkId, NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+  type FinalizedTransaction,
+  type UnprovenTransaction,
+  type CoinPublicKey,
+  type EncPublicKey,
+} from "@midnight-ntwrk/ledger-v6";
+import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import {
   type DeployedContract,
   type FoundContract,
@@ -36,11 +41,11 @@ import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-conf
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { assertIsContractAddress, fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
 import type {
-  BalancedTransaction,
-  UnbalancedTransaction,
+  BalancedProvingRecipe,
   ImpureCircuitId,
   MidnightProviders,
   Contract,
+  TRANSACTION_TO_PROVE,
 } from "@midnight-ntwrk/midnight-js-types";
 import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
 
@@ -66,14 +71,70 @@ type GoFishWitnesses = {
 type PrivateState = Record<string, never>;
 
 // Configuration - matches local Midnight infrastructure
-const BASE_URL_MIDNIGHT_INDEXER = "http://127.0.0.1:8088";
-const BASE_WS_MIDNIGHT_INDEXER = "ws://127.0.0.1:8088";
+// Use environment variables if available, otherwise default to GraphQL proxy on port 8089
+// The proxy translates SDK v2.0.0 queries to indexer v3 format
+const BASE_URL_MIDNIGHT_INDEXER = import.meta.env.VITE_INDEXER_HTTP_URL?.replace(/\/api\/.*$/, '') || "http://127.0.0.1:8089";
+const BASE_WS_MIDNIGHT_INDEXER = import.meta.env.VITE_INDEXER_WS_URL?.replace(/\/api\/.*$/, '') || "ws://127.0.0.1:8089";
 const BASE_URL_PROOF_SERVER = "http://127.0.0.1:6300";
-// Using /api/v1/graphql for midnight-js SDK v2.0.0 (matching midnight-game-2)
-const BASE_URL_MIDNIGHT_INDEXER_API = `${BASE_URL_MIDNIGHT_INDEXER}/api/v1/graphql`;
-const BASE_URL_MIDNIGHT_INDEXER_WS = `${BASE_WS_MIDNIGHT_INDEXER}/api/v1/graphql/ws`;
+// Using /api/v1/graphql - the proxy handles translation to v3 if needed
+const BASE_URL_MIDNIGHT_INDEXER_API = import.meta.env.VITE_INDEXER_HTTP_URL || `${BASE_URL_MIDNIGHT_INDEXER}/api/v1/graphql`;
+const BASE_URL_MIDNIGHT_INDEXER_WS = import.meta.env.VITE_INDEXER_WS_URL || `${BASE_WS_MIDNIGHT_INDEXER}/api/v1/graphql/ws`;
 
-const MIDNIGHT_NETWORK_ID = NetworkId.Undeployed;
+const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
+
+// Backend API URL for notifying state changes
+const BACKEND_API_URL = "http://localhost:9999";
+
+/**
+ * Notify the backend about a successful setup action
+ * This allows the backend to track state for coordination between players
+ */
+async function notifyBackendSetupComplete(
+  lobbyId: string,
+  playerId: 1 | 2,
+  action: "mask_applied" | "dealt_complete"
+): Promise<void> {
+  try {
+    const response = await fetch(`${BACKEND_API_URL}/api/midnight/notify_setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lobby_id: lobbyId, player_id: playerId, action }),
+    });
+    if (!response.ok) {
+      console.warn(`[MidnightOnChain] Failed to notify backend: ${response.status}`);
+    } else {
+      console.log(`[MidnightOnChain] Backend notified: ${action} for player ${playerId}`);
+    }
+  } catch (error) {
+    console.warn(`[MidnightOnChain] Could not notify backend:`, error);
+  }
+}
+
+/**
+ * Notify the backend about a game action
+ * This updates the local state tracking for game coordination
+ */
+async function notifyBackendGameAction(
+  lobbyId: string,
+  playerId: 1 | 2,
+  action: "ask_for_card" | "respond_to_ask" | "go_fish" | "after_go_fish",
+  data?: { rank?: number; hasCards?: boolean; cardCount?: number; drewRequestedCard?: boolean }
+): Promise<void> {
+  try {
+    const response = await fetch(`${BACKEND_API_URL}/api/midnight/notify_game_action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lobby_id: lobbyId, player_id: playerId, action, ...data }),
+    });
+    if (!response.ok) {
+      console.warn(`[MidnightOnChain] Failed to notify backend game action: ${response.status}`);
+    } else {
+      console.log(`[MidnightOnChain] Backend notified: ${action} for player ${playerId}`);
+    }
+  } catch (error) {
+    console.warn(`[MidnightOnChain] Could not notify backend game action:`, error);
+  }
+}
 
 // Service state
 let contractAddressRaw: string | null = null;  // 32-byte address for indexer queries
@@ -196,31 +257,42 @@ async function loadContractModule(): Promise<boolean> {
 
 /**
  * Create wallet and midnight provider from connected wallet API
- * Uses ledger v4 with getRuntimeNetworkId() for serialization
+ * Uses ledger-v6 with SDK v3 types
  */
 function createWalletAndMidnightProvider(
   connectedAPI: ConnectedAPI,
   coinPublicKey: string,
   encryptionPublicKey: string,
-): { coinPublicKey: string; encryptionPublicKey: string; balanceTx: any; submitTx: any } {
+): {
+  getCoinPublicKey: () => CoinPublicKey;
+  getEncryptionPublicKey: () => EncPublicKey;
+  balanceTx: (tx: UnprovenTransaction, newCoins?: ShieldedCoinInfo[], ttl?: Date) => Promise<BalancedProvingRecipe>;
+  submitTx: (tx: FinalizedTransaction) => Promise<TransactionId>;
+} {
   return {
-    coinPublicKey,
-    encryptionPublicKey,
+    getCoinPublicKey(): CoinPublicKey {
+      return coinPublicKey as unknown as CoinPublicKey;
+    },
+    getEncryptionPublicKey(): EncPublicKey {
+      return encryptionPublicKey as unknown as EncPublicKey;
+    },
     async balanceTx(
-      tx: UnbalancedTransaction,
-      _newCoins?: CoinInfo[],
-    ): Promise<BalancedTransaction> {
+      tx: UnprovenTransaction,
+      _newCoins?: ShieldedCoinInfo[],
+      _ttl?: Date,
+    ): Promise<BalancedProvingRecipe> {
       try {
         console.log("[MidnightOnChain] Balancing transaction via wallet");
-        // Serialize with network ID for ledger v4
-        const serializedTx = toHex(tx.serialize(getRuntimeNetworkId()));
+        // Serialize using ledger-v6 (network ID is set globally)
+        const serializedTx = toHex(tx.serialize());
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
-        // Deserialize with network ID for ledger v4
-        const transaction = Transaction.deserialize(
-          fromHex(received.tx),
-          getRuntimeNetworkId(),
-        );
-        return transaction as unknown as BalancedTransaction;
+        // Deserialize using ledger-v6 (network ID is set globally)
+        const transaction = Transaction.deserialize(fromHex(received.tx));
+        // Return as NothingToProve since wallet already balanced it
+        return {
+          type: "NothingToProve" as const,
+          transaction: transaction as FinalizedTransaction,
+        };
       } catch (e: any) {
         // Extract detailed error info from FiberFailure
         let errorDetails = "Unknown error";
@@ -243,9 +315,9 @@ function createWalletAndMidnightProvider(
         throw new Error(`Failed to balance transaction: ${errorDetails}`);
       }
     },
-    async submitTx(tx: BalancedTransaction): Promise<TransactionId> {
+    async submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
       // Submit transaction directly - the wallet API handles the serialization
-      // Cast to any since BalancedTransaction from ledger and Transaction from zswap
+      // Cast to any since FinalizedTransaction from ledger-v6 and Transaction from wallet API
       // are structurally compatible but have different nominal types
       await connectedAPI.submitTransaction(tx as any);
       const txIdentifiers = tx.identifiers();
@@ -391,11 +463,34 @@ async function joinContract(
     throw new Error("Indexer connectivity check failed - ensure the indexer is running at " + BASE_URL_MIDNIGHT_INDEXER);
   }
 
-  // Check if the contract exists in the indexer (use raw address for indexer query)
+  // In batcher/dev mode, always deploy a fresh contract
+  // This avoids issues with findDeployedContract hanging when it can't find
+  // the original deploy transaction (indexer returns ContractUpdate instead of ContractDeploy)
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Batcher mode active - deploying fresh contract...");
+    console.log("[MidnightOnChain] (Dev mode: chain resets each time, so we deploy fresh)");
+    try {
+      const deployedGoFishContract = await deployContract(provs, {
+        contract: goFishContractInstance,
+        privateStateId: "privateState",
+        initialPrivateState: {},
+      });
+
+      const newAddress = deployedGoFishContract.deployTxData.public.contractAddress;
+      console.log(`[MidnightOnChain] Contract deployed successfully at address: ${newAddress}`);
+      console.log("[MidnightOnChain] Contract deployment complete!");
+
+      return deployedGoFishContract as DeployedGoFishContract;
+    } catch (deployError) {
+      console.error("[MidnightOnChain] Contract deployment failed:", deployError);
+      throw deployError;
+    }
+  }
+
+  // For wallet mode, check if contract exists and try to join it
   let contractFoundInIndexer = false;
   try {
     console.log("[MidnightOnChain] Querying indexer for contract existence...");
-    // Try the contractAction query which is more commonly available
     const contractQuery = await fetch(BASE_URL_MIDNIGHT_INDEXER_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -415,15 +510,11 @@ async function joinContract(
       console.log("[MidnightOnChain] GraphQL query not supported by this indexer version - continuing anyway");
     } else if (!contractData.data?.contractAction) {
       console.warn(`[MidnightOnChain] Contract not found via contractAction query at address ${rawAddress}`);
-      console.warn("[MidnightOnChain] This may be due to indexer schema differences - will try findDeployedContract anyway");
-      // Don't fail here - the contractAction query may use a different schema than findDeployedContract
-      // Let findDeployedContract try to find the contract using its own queries
     } else {
       console.log("[MidnightOnChain] Contract found in indexer!");
       contractFoundInIndexer = true;
     }
   } catch (queryError: any) {
-    // Re-throw errors that we explicitly threw (batcher mode not deployed)
     if (queryError?.message?.includes("Contract not deployed")) {
       throw queryError;
     }
@@ -475,21 +566,24 @@ export async function initializeOnChainService(): Promise<boolean> {
   batcherModeActive = isBatcherModeEnabled();
 
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Batcher mode enabled - no Lace wallet required");
-  } else if (!isLaceConnected()) {
+    console.log("[MidnightOnChain] Batcher mode enabled - using BatcherMidnightService");
+    console.log("[MidnightOnChain] No Lace wallet required - transactions go through Paima batcher");
+    isInitialized = true;
+    return true;
+  }
+
+  // Wallet mode requires Lace connection
+  if (!isLaceConnected()) {
     console.warn("[MidnightOnChain] Lace wallet not connected");
     return false;
   }
 
   try {
-    console.log("[MidnightOnChain] Initializing on-chain service...");
+    console.log("[MidnightOnChain] Initializing on-chain service (wallet mode)...");
 
-    // In wallet mode, we need the connected API
-    if (!batcherModeActive) {
-      const connectedAPI = getConnectedAPI();
-      if (!connectedAPI) {
-        throw new Error("Lace wallet API not available");
-      }
+    const connectedAPI = getConnectedAPI();
+    if (!connectedAPI) {
+      throw new Error("Lace wallet API not available");
     }
 
     // Load contract module
@@ -511,22 +605,13 @@ export async function initializeOnChainService(): Promise<boolean> {
     contractAddressRaw = addressResult.raw;
     contractAddressNormalized = addressResult.normalized;
 
-    // Initialize providers based on mode
-    if (batcherModeActive) {
-      console.log("[MidnightOnChain] Initializing batcher mode providers...");
-      providers = await initializeBatcherProviders();
-      console.log("[MidnightOnChain] Batcher mode providers initialized");
-    } else {
-      const connectedAPI = getConnectedAPI()!;
-      // Get shielded addresses from wallet
-      const shieldedAddresses = await connectedAPI.getShieldedAddresses();
-      // Initialize wallet-based providers
-      providers = await initializeProviders(connectedAPI, shieldedAddresses);
-      console.log("[MidnightOnChain] Wallet mode providers initialized");
-    }
+    // Get shielded addresses from wallet
+    const shieldedAddresses = await connectedAPI.getShieldedAddresses();
+    // Initialize wallet-based providers
+    providers = await initializeProviders(connectedAPI, shieldedAddresses);
+    console.log("[MidnightOnChain] Wallet mode providers initialized");
 
-    // Join the contract (or deploy if not found in batcher mode)
-    // Pass both raw (for indexer) and normalized (for SDK) addresses
+    // Join the contract
     deployedContract = await joinContract(providers, contractAddressRaw, contractAddressNormalized);
     // Update contract address in case we deployed a new one
     if (deployedContract && (deployedContract as any).deployTxData?.public?.contractAddress) {
@@ -595,11 +680,12 @@ export async function initializeOnChainService(): Promise<boolean> {
 
 /**
  * Check if on-chain service is ready for direct chain calls
- * In batcher mode, Lace wallet is not required
+ * In batcher mode, just needs to be initialized (no wallet required)
+ * In wallet mode, needs deployed contract and Lace connection
  */
 export function isOnChainReady(): boolean {
   if (batcherModeActive) {
-    return isInitialized && deployedContract !== null;
+    return isInitialized;
   }
   return isInitialized && deployedContract !== null && isLaceConnected();
 }
@@ -648,13 +734,30 @@ let staticDeckInitialized = false;
  * This is idempotent - calling it multiple times is safe
  */
 export async function initializeStaticDeck(): Promise<{ success: boolean; errorMessage?: string }> {
-  if (!isOnChainReady()) {
-    return { success: false, errorMessage: "On-chain mode not active" };
-  }
-
   if (staticDeckInitialized) {
     console.log("[MidnightOnChain] Static deck already initialized in this session");
     return { success: true };
+  }
+
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for init_deck...");
+    const result = await BatcherMidnightService.initDeck();
+    if (result.success) {
+      staticDeckInitialized = true;
+      return { success: true };
+    }
+    // Check if already initialized (treat as success)
+    if (result.error?.includes("already") || result.error?.includes("Static deck")) {
+      console.log("[MidnightOnChain] Static deck was already initialized");
+      staticDeckInitialized = true;
+      return { success: true };
+    }
+    return { success: false, errorMessage: result.error };
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active" };
   }
 
   try {
@@ -684,6 +787,25 @@ export async function onChainApplyMask(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    // Ensure static deck is initialized before any game operation
+    if (!staticDeckInitialized) {
+      console.log("[MidnightOnChain] Ensuring static deck is initialized before applyMask...");
+      const initResult = await initializeStaticDeck();
+      if (!initResult.success) {
+        return { success: false, errorMessage: `Failed to initialize static deck: ${initResult.errorMessage}` };
+      }
+    }
+    console.log("[MidnightOnChain] Using batcher service for applyMask...");
+    const result = await BatcherMidnightService.applyMask(lobbyId, playerId);
+    if (result.success) {
+      // Notify backend that mask was applied so it can track state
+      await notifyBackendSetupComplete(lobbyId, playerId, "mask_applied");
+    }
+    return { success: result.success, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }
@@ -715,6 +837,17 @@ export async function onChainDealCards(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for dealCards...");
+    const result = await BatcherMidnightService.dealCards(lobbyId, playerId);
+    if (result.success) {
+      // Notify backend that dealing is complete so it can track state
+      await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
+    }
+    return { success: result.success, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }
@@ -738,6 +871,17 @@ export async function onChainAskForCard(
   playerId: 1 | 2,
   rank: number
 ): Promise<{ success: boolean; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for askForCard...");
+    const result = await BatcherMidnightService.askForCard(lobbyId, playerId, rank);
+    if (result.success) {
+      // Notify backend to update game state
+      await notifyBackendGameAction(lobbyId, playerId, "ask_for_card", { rank });
+    }
+    return { success: result.success, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }
@@ -760,6 +904,22 @@ export async function onChainRespondToAsk(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; hasCards: boolean; cardCount: number; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for respondToAsk...");
+    const result = await BatcherMidnightService.respondToAsk(lobbyId, playerId);
+    if (result.success) {
+      // Notify backend to update game state
+      // Note: hasCards/cardCount would ideally come from the result, but batcher mode doesn't return them
+      await notifyBackendGameAction(lobbyId, playerId, "respond_to_ask", {
+        hasCards: result.hasCards,
+        cardCount: result.cardCount
+      });
+    }
+    // Note: hasCards/cardCount come from on-chain state, not tx result in batcher mode
+    return { success: result.success, hasCards: false, cardCount: 0, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, hasCards: false, cardCount: 0, errorMessage: "On-chain mode not active - use backend API" };
   }
@@ -784,6 +944,17 @@ export async function onChainGoFish(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for goFish...");
+    const result = await BatcherMidnightService.goFish(lobbyId, playerId);
+    if (result.success) {
+      // Notify backend to update game state
+      await notifyBackendGameAction(lobbyId, playerId, "go_fish");
+    }
+    return { success: result.success, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }
@@ -807,6 +978,17 @@ export async function onChainAfterGoFish(
   playerId: 1 | 2,
   drewRequestedCard: boolean
 ): Promise<{ success: boolean; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for afterGoFish...");
+    const result = await BatcherMidnightService.afterGoFish(lobbyId, playerId, drewRequestedCard);
+    if (result.success) {
+      // Notify backend to update game state
+      await notifyBackendGameAction(lobbyId, playerId, "after_go_fish", { drewRequestedCard });
+    }
+    return { success: result.success, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }
@@ -829,6 +1011,13 @@ export async function onChainSkipDrawDeckEmpty(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
+  // In batcher mode, use the batcher service
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for switchTurn...");
+    const result = await BatcherMidnightService.switchTurn(lobbyId, playerId);
+    return { success: result.success, errorMessage: result.error };
+  }
+
   if (!isOnChainReady()) {
     return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }

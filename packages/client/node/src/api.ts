@@ -12,6 +12,11 @@ import {
   queryHasDealt,
 } from "./midnight-query.ts";
 import {
+  markMaskApplied,
+  markDealtComplete,
+  updateGameState,
+} from "./midnight-onchain.ts";
+import {
   getPlayerHand as getMidnightPlayerHand,
   askForCard as midnightAskForCard,
   goFish as midnightGoFish,
@@ -287,38 +292,44 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     const db = getDB();
     const offset = page * count;
 
-    // Get account ID from wallet if provided (to check membership)
-    let accountId: number | null = null;
-    if (wallet) {
-      const accountResult = await db.query(`
-        SELECT account_id FROM effectstream.addresses WHERE address = $1
-      `, [wallet]);
-      if (accountResult.rows.length > 0) {
-        accountId = accountResult.rows[0].account_id;
+    try {
+      // Get account ID from wallet if provided (to check membership)
+      let accountId: number | null = null;
+      if (wallet) {
+        const accountResult = await db.query(`
+          SELECT account_id FROM effectstream.addresses WHERE address = $1
+        `, [wallet]);
+        if (accountResult.rows.length > 0) {
+          accountId = accountResult.rows[0].account_id;
+        }
       }
+
+      // Query lobbies with optional membership check
+      const result = await db.query(`
+        SELECT
+          l.lobby_id,
+          l.lobby_name,
+          l.max_players,
+          l.status,
+          l.created_at,
+          l.host_account_id,
+          (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count,
+          (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name,
+          ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'} as is_player_in_lobby
+        FROM lobbies l
+        WHERE l.status = 'open'
+        ORDER BY l.created_at DESC
+        LIMIT $1 OFFSET $2
+      `, [count, offset]);
+
+      return {
+        lobbies: result.rows,
+      };
+    } catch (error) {
+      // Table may not exist yet on fresh start (created by first state transition)
+      console.warn('open_lobbies query failed (table may not exist yet):', (error as Error).message);
+      return { lobbies: [] };
     }
-
-    // Query lobbies with optional membership check
-    const result = await db.query(`
-      SELECT
-        l.lobby_id,
-        l.lobby_name,
-        l.max_players,
-        l.status,
-        l.created_at,
-        l.host_account_id,
-        (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count,
-        (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name,
-        ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'} as is_player_in_lobby
-      FROM lobbies l
-      WHERE l.status = 'open'
-      ORDER BY l.created_at DESC
-      LIMIT $1 OFFSET $2
-    `, [count, offset]);
-
-    return {
-      lobbies: result.rows,
-    };
   });
 
   /**
@@ -394,15 +405,19 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     const lobby = lobbyResult.rows[0];
 
     // Get lobby players
+    // Use a subquery to pick one address per account, avoiding duplicate rows
+    // when an account has multiple entries in effectstream.addresses (which
+    // happens when Paima auto-tracks the sender address AND our state machine
+    // also creates an address record).
     const playersResult = await db.query(`
       SELECT
         lp.account_id,
         lp.player_name,
         lp.is_ready,
         lp.joined_at,
-        addr.address as wallet_address
+        (SELECT addr.address FROM effectstream.addresses addr
+         WHERE addr.account_id = lp.account_id LIMIT 1) as wallet_address
       FROM lobby_players lp
-      INNER JOIN effectstream.addresses addr ON lp.account_id = addr.account_id
       WHERE lp.lobby_id = $1
       ORDER BY lp.joined_at ASC
     `, [lobby_id]);
@@ -461,13 +476,14 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
     const accountId = accountResult.rows[0].account_id;
 
     // Get all players in the lobby
+    // Use subquery to avoid duplicates from multiple address entries per account
     const playersResult = await db.query(`
       SELECT
         lp.account_id,
         lp.player_name,
-        addr.address as wallet_address
+        (SELECT addr.address FROM effectstream.addresses addr
+         WHERE addr.account_id = lp.account_id LIMIT 1) as wallet_address
       FROM lobby_players lp
-      INNER JOIN effectstream.addresses addr ON lp.account_id = addr.account_id
       WHERE lp.lobby_id = $1
       ORDER BY lp.joined_at ASC
     `, [lobby_id]);
@@ -476,6 +492,7 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
 
     // Determine player IDs (host = player1, first joiner = player2)
     const currentPlayerId = players.findIndex((p: any) => p.account_id === accountId) + 1;
+    console.log(`[API] game_state: wallet=${wallet}, accountId=${accountId}, playerId=${currentPlayerId}, players=${JSON.stringify(players.map((p: any) => ({ id: p.account_id, addr: p.wallet_address })))}`);
 
     if (currentPlayerId === 0) {
       return reply.code(403).send({ error: 'Player not in this game' });
@@ -722,6 +739,128 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       opponentHasMaskApplied,
       opponentHasDealt,
     };
+  });
+
+  // Notify setup complete (called by frontend after batcher transaction succeeds)
+  server.post("/api/midnight/notify_setup", async (request, reply) => {
+    const { lobby_id, player_id, action } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      action: "mask_applied" | "dealt_complete";
+    };
+
+    if (!lobby_id || !player_id || !action) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    if (action !== "mask_applied" && action !== "dealt_complete") {
+      return reply.code(400).send({ error: 'Invalid action' });
+    }
+
+    // Update local state tracking
+    if (action === "mask_applied") {
+      markMaskApplied(lobby_id, playerId);
+    } else if (action === "dealt_complete") {
+      markDealtComplete(lobby_id, playerId);
+    }
+
+    console.log(`[API] Setup notification received: ${action} for lobby ${lobby_id} player ${playerId}`);
+    return { success: true };
+  });
+
+  // Notify game action complete (called by frontend after batcher transaction succeeds)
+  server.post("/api/midnight/notify_game_action", async (request, reply) => {
+    const { lobby_id, player_id, action, rank, hasCards, cardCount, drewRequestedCard } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      action: "ask_for_card" | "respond_to_ask" | "go_fish" | "after_go_fish";
+      rank?: number;
+      hasCards?: boolean;
+      cardCount?: number;
+      drewRequestedCard?: boolean;
+    };
+
+    if (!lobby_id || !player_id || !action) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = player_id as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const opponentId = playerId === 1 ? 2 : 1;
+
+    // Update game state based on action
+    switch (action) {
+      case "ask_for_card":
+        // After asking, it's the opponent's turn to respond
+        // Phase changes to "wait_response" (frontend expects this name)
+        updateGameState(lobby_id, {
+          phase: "wait_response",
+          lastAskedRank: rank ?? null,
+          lastAskingPlayer: playerId,
+        });
+        console.log(`[API] Game action: ${playerId} asked for rank ${rank} in lobby ${lobby_id}`);
+        break;
+
+      case "respond_to_ask":
+        // After responding, check if cards were given
+        // If no cards (Go Fish), phase changes to "wait_draw"
+        // If cards given, turn goes back to asking player, phase = "turn_start"
+        if (hasCards && cardCount && cardCount > 0) {
+          // Cards transferred, asking player gets another turn
+          updateGameState(lobby_id, {
+            phase: "turn_start",
+            // currentTurn stays the same (asking player)
+          });
+          console.log(`[API] Game action: ${playerId} gave ${cardCount} cards in lobby ${lobby_id}`);
+        } else {
+          // No cards - Go Fish (asking player must draw)
+          updateGameState(lobby_id, {
+            phase: "wait_draw",  // Frontend expects "wait_draw" for Go Fish
+          });
+          console.log(`[API] Game action: ${playerId} said Go Fish in lobby ${lobby_id}`);
+        }
+        break;
+
+      case "go_fish":
+        // After drawing from deck, check if it matches
+        updateGameState(lobby_id, {
+          phase: "wait_draw_check",  // Frontend expects "wait_draw_check"
+        });
+        console.log(`[API] Game action: ${playerId} drew from deck in lobby ${lobby_id}`);
+        break;
+
+      case "after_go_fish":
+        // After completing go fish, check if drew requested card
+        if (drewRequestedCard) {
+          // Drew requested card, get another turn
+          updateGameState(lobby_id, {
+            phase: "turn_start",
+            // currentTurn stays the same
+          });
+          console.log(`[API] Game action: ${playerId} drew requested card, gets another turn`);
+        } else {
+          // Didn't draw requested card, turn switches
+          updateGameState(lobby_id, {
+            phase: "turn_start",
+            currentTurn: opponentId,
+          });
+          console.log(`[API] Game action: Turn switches to player ${opponentId} in lobby ${lobby_id}`);
+        }
+        break;
+
+      default:
+        return reply.code(400).send({ error: 'Invalid action' });
+    }
+
+    return { success: true };
   });
 
   console.log("✓ Game API routes registered");
