@@ -27,6 +27,13 @@
     "querystring": "node:querystring",
     "zlib": "node:zlib",
     "module": "node:module",
+    "child_process": "node:child_process",
+    "tty": "node:tty",
+    "dns": "node:dns",
+    "v8": "node:v8",
+    "worker_threads": "node:worker_threads",
+    "string_decoder": "node:string_decoder",
+    "perf_hooks": "node:perf_hooks",
     "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1",
     "@midnight-ntwrk/onchain-runtime-v1": "npm:@midnight-ntwrk/onchain-runtime-v1@1.0.0-alpha.5"
   },
