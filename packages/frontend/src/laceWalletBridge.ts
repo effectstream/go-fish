@@ -180,7 +180,7 @@ export async function requestFaucetFunds(): Promise<{
   }
 
   try {
-    const url = `http://localhost:9999/api/faucet/nights?address=${encodeURIComponent(laceWalletAddress)}`;
+    const url = `http://localhost:9996/api/faucet/nights?address=${encodeURIComponent(laceWalletAddress)}`;
     const resp = await fetch(url);
     const data = await resp.json().catch(() => null);
 

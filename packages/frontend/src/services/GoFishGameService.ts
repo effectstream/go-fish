@@ -129,7 +129,7 @@ export class GoFishGameService {
       // Include wallet address to check if player is already in each lobby
       const wallet = getWalletAddress();
       const walletParam = wallet ? `&wallet=${encodeURIComponent(wallet)}` : '';
-      const response = await fetch(`http://localhost:9999/open_lobbies?page=0&count=50${walletParam}`);
+      const response = await fetch(`http://localhost:9996/open_lobbies?page=0&count=50${walletParam}`);
       if (!response.ok) {
         console.error('Failed to fetch open lobbies');
         return [];

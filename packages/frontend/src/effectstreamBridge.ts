@@ -23,7 +23,7 @@ const WALLET_MODE_EVM_ETHERS = 1;
 const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 
 // Paima Engine API endpoint
-const PAIMA_API_URL = "http://localhost:9999";
+const PAIMA_API_URL = "http://localhost:9996";
 
 // Global wallet instance (local wallet - auto-generated)
 let wallet: Wallet | null = null;

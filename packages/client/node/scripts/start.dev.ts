@@ -26,6 +26,8 @@ const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
 
 // Check if EVM/Hardhat is already running externally
 // Set SKIP_EVM_LAUNCH=true to skip launching Hardhat node and deployment
+// This is useful when multiple programs share a single Hardhat instance
+// Example: SKIP_EVM_LAUNCH=true USE_TYPESCRIPT_CONTRACT=true deno task dev
 const skipEvmLaunch = Deno.env.get("SKIP_EVM_LAUNCH") === "true";
 
 // Check if pglite database should be skipped (for shared infrastructure environments)
@@ -155,8 +157,8 @@ const customProcesses = [
     args: ["task", "-f", "@go-fish/batcher", "start"],
     waitToExit: false,
     type: "system-dependency",
-    link: "http://localhost:3334",
-    stopProcessAtPort: [3334],
+    link: "http://localhost:3336",
+    stopProcessAtPort: [3336],
     dependsOn: [],
   },
   /** BATCHER-BLOCK */

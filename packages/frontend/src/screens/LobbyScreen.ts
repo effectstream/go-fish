@@ -56,7 +56,7 @@ export class LobbyScreen {
 
   private async render() {
     // Fetch lobby state from API
-    const response = await fetch(`http://localhost:9999/lobby_state?lobby_id=${this.lobbyId}`);
+    const response = await fetch(`http://localhost:9996/lobby_state?lobby_id=${this.lobbyId}`);
     if (!response.ok) {
       console.error('Failed to fetch lobby state');
       this.dispatchEvent('navigate', { screen: 'lobby-list' });

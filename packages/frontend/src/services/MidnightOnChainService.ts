@@ -101,7 +101,7 @@ type ShieldedAddresses = Awaited<
 async function loadContractAddress(): Promise<string | null> {
   // First try to get from backend config
   try {
-    const response = await fetch("http://localhost:9999/api/midnight/contract_address");
+    const response = await fetch("http://localhost:9996/api/midnight/contract_address");
     if (response.ok) {
       const data = await response.json();
       if (data.contractAddress) {

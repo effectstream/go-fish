@@ -32,8 +32,8 @@ const customProcesses = [
     args: ["task", "-f", "@go-fish/batcher", "start"],
     waitToExit: false,
     type: "system-dependency",
-    link: "http://localhost:3334",
-    stopProcessAtPort: [3334],
+    link: "http://localhost:3336",
+    stopProcessAtPort: [3336],
     dependsOn: [ComponentNames.MIDNIGHT_CONTRACT],
   },
   /** BATCHER-BLOCK */

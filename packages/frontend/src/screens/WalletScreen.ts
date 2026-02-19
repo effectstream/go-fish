@@ -67,7 +67,7 @@ export class WalletScreen {
 
   private async fetchConfig(): Promise<void> {
     try {
-      const response = await fetch('http://localhost:9999/api/config');
+      const response = await fetch('http://localhost:9996/api/config');
       if (response.ok) {
         const serverConfig = await response.json();
         // Override EVM requirement - we always use local wallet now
