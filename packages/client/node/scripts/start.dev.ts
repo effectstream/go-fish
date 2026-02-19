@@ -13,10 +13,6 @@ const indexerConfigPath = path.join(midnightContractsDir, "indexer-standalone/co
 // Check if we should skip Midnight infrastructure (when using TypeScript contract)
 const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
 
-<<<<<<< Updated upstream
-// Midnight infrastructure processes (only when not using TypeScript contract)
-const midnightProcesses = useTypescriptContract ? [] : [
-=======
 // Check if batcher mode is enabled (run frontend in batcher mode, no Lace wallet needed)
 const useBatcherMode = Deno.env.get("USE_BATCHER_MODE") === "true";
 
@@ -48,7 +44,6 @@ const cleanupIndexerScript = path.resolve(__dirname, "cleanup-indexer-db.ts");
 
 // Midnight infrastructure processes (skipped when using TypeScript contract or SKIP_MIDNIGHT_INFRA=true)
 const midnightProcesses = (useTypescriptContract || skipMidnightInfra) ? [] : [
->>>>>>> Stashed changes
   /** MIDNIGHT-NODE-BLOCK */
   {
     name: "midnight-node",
