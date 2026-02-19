@@ -22,8 +22,10 @@ const WALLET_MODE_EVM_ETHERS = 1;
 // Contract addresses from deployment
 const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 
+import { API_BASE_URL } from "./apiConfig";
+
 // Paima Engine API endpoint
-const PAIMA_API_URL = "http://localhost:9996";
+const PAIMA_API_URL = API_BASE_URL;
 
 // Global wallet instance (local wallet - auto-generated)
 let wallet: Wallet | null = null;

@@ -22,8 +22,10 @@
 import MidnightOnChainService, { isOnChainReady, initializeOnChainService } from "./MidnightOnChainService";
 import { isLaceConnected } from "../laceWalletBridge";
 
+import { API_BASE_URL } from "../apiConfig";
+
 // Backend API base URL
-const BACKEND_URL = "http://localhost:9996";
+const BACKEND_URL = API_BASE_URL;
 
 // App configuration (loaded from backend)
 interface AppConfig {
