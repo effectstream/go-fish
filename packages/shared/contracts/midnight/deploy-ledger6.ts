@@ -54,7 +54,7 @@ declare const Deno: typeof globalThis.Deno;
 
 // Modular wallet SDK imports
 import type { WalletFacade } from "@midnight-ntwrk/wallet-sdk-facade";
-import { shieldedToken } from "@midnight-ntwrk/ledger-v6";
+import { shieldedToken } from "@midnight-ntwrk/ledger-v7";
 import type {
   CoinPublicKey,
   DustSecretKey,
@@ -64,7 +64,7 @@ import type {
   TransactionId,
   UnprovenTransaction,
   ZswapSecretKeys,
-} from "@midnight-ntwrk/ledger-v6";
+} from "@midnight-ntwrk/ledger-v7";
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 
 // ============================================================================

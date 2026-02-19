@@ -42,7 +42,7 @@ const config = Value.Parse(OrchestratorConfig, {
       name: "midnight-node",
       args: [
         "run", "-A", "--unstable-detect-cjs",
-        "npm:@paimaexample/npm-midnight-node@0.3.129",
+        "npm:@paimaexample/npm-midnight-node@0.7.0",
         "--dev", "--rpc-port", "9944",
         "--state-pruning", "archive",
         "--blocks-pruning", "archive",
@@ -74,7 +74,7 @@ const config = Value.Parse(OrchestratorConfig, {
       name: "midnight-indexer",
       args: [
         "run", "-A", "--unstable-detect-cjs",
-        "npm:@paimaexample/npm-midnight-indexer@0.3.129",
+        "npm:@paimaexample/npm-midnight-indexer@0.7.0",
         "--standalone",
         "--binary",
       ],
@@ -95,7 +95,7 @@ const config = Value.Parse(OrchestratorConfig, {
       name: "midnight-proof-server",
       args: [
         "run", "-A", "--unstable-detect-cjs",
-        "npm:@paimaexample/npm-midnight-proof-server@0.3.129"
+        "npm:@paimaexample/npm-midnight-proof-server@0.7.0"
       ],
       env: {
         LEDGER_NETWORK_ID: "Undeployed",

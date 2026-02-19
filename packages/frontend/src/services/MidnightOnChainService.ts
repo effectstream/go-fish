@@ -17,7 +17,7 @@ import { getConnectedAPI, isLaceConnected } from "../laceWalletBridge";
 import { isBatcherModeEnabled } from "../proving/batcher-providers";
 import * as BatcherMidnightService from "./BatcherMidnightService";
 
-// Import Midnight SDK packages (v3 with ledger-v6)
+// Import Midnight SDK packages (v3 with ledger-v7)
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
 import {
   Transaction,
@@ -27,7 +27,7 @@ import {
   type UnprovenTransaction,
   type CoinPublicKey,
   type EncPublicKey,
-} from "@midnight-ntwrk/ledger-v6";
+} from "@midnight-ntwrk/ledger-v7";
 import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import {
   type DeployedContract,
@@ -257,7 +257,7 @@ async function loadContractModule(): Promise<boolean> {
 
 /**
  * Create wallet and midnight provider from connected wallet API
- * Uses ledger-v6 with SDK v3 types
+ * Uses ledger-v7 with SDK v3 types
  */
 function createWalletAndMidnightProvider(
   connectedAPI: ConnectedAPI,
@@ -283,10 +283,10 @@ function createWalletAndMidnightProvider(
     ): Promise<BalancedProvingRecipe> {
       try {
         console.log("[MidnightOnChain] Balancing transaction via wallet");
-        // Serialize using ledger-v6 (network ID is set globally)
+        // Serialize using ledger-v7 (network ID is set globally)
         const serializedTx = toHex(tx.serialize());
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
-        // Deserialize using ledger-v6 (network ID is set globally)
+        // Deserialize using ledger-v7 (network ID is set globally)
         const transaction = Transaction.deserialize(fromHex(received.tx));
         // Return as NothingToProve since wallet already balanced it
         return {
@@ -317,7 +317,7 @@ function createWalletAndMidnightProvider(
     },
     async submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
       // Submit transaction directly - the wallet API handles the serialization
-      // Cast to any since FinalizedTransaction from ledger-v6 and Transaction from wallet API
+      // Cast to any since FinalizedTransaction from ledger-v7 and Transaction from wallet API
       // are structurally compatible but have different nominal types
       await connectedAPI.submitTransaction(tx as any);
       const txIdentifiers = tx.identifiers();

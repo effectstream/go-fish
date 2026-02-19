@@ -23,7 +23,7 @@ async function main() {
   // Use absolute paths based on the go-fish project root
   const possiblePaths = [
     // Local node_modules (used by deno with nodeModulesDir) - absolute path
-    path.join(goFishRoot, "node_modules/.deno/@paimaexample+npm-midnight-indexer@0.3.129/node_modules/@paimaexample/npm-midnight-indexer/indexer-standalone/data"),
+    path.join(goFishRoot, "node_modules/.deno/@paimaexample+npm-midnight-indexer@0.7.0/node_modules/@paimaexample/npm-midnight-indexer/indexer-standalone/data"),
     // Alternative local paths - absolute
     path.join(goFishRoot, "node_modules/@paimaexample/npm-midnight-indexer/indexer-standalone/data"),
     // Deno cached npm package location

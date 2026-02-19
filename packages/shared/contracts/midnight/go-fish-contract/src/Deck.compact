@@ -3,13 +3,14 @@ import CompactStandardLibrary;
 import CompactStandardLibrary prefix std_;
 // import './HashPersistent' prefix h_;
 import './HashTransient' prefix h_;
+
 // ============================================
 // STATIC CARD MAPPINGS (shared across all games)
 // ============================================
-// Map CurvePoint to Card Value (0-14)
-export ledger deckCurveToCard: Map<CurvePoint, Field>;
-// Map Card Value to CurvePoint
-export ledger reverseDeckCurveToCard: Map<Uint<32>, CurvePoint>;
+// Map NativePoint to Card Value (0-14)
+export ledger deckCurveToCard: Map<NativePoint, Field>;
+// Map Card Value to NativePoint
+export ledger reverseDeckCurveToCard: Map<Uint<32>, NativePoint>;
 // Track if static deck has been initialized
 export ledger staticDeckInitialized: Boolean;
 
@@ -20,14 +21,14 @@ export ledger staticDeckInitialized: Boolean;
 export ledger gamePlayersKeysHashes: Map<Bytes<32>, Uint<64>>;
 // Player secret inverse per game: maps (gameId, secretHash) -> inverseHash
 export ledger gamePlayersKeysInverses: Map<Bytes<32>, Bytes<32>>;
-// Shuffled deck per game: maps (gameId, cardIndex) -> CurvePoint
-export ledger gameDeck: Map<Bytes<32>, CurvePoint>;
+// Shuffled deck per game: maps (gameId, cardIndex) -> NativePoint
+export ledger gameDeck: Map<Bytes<32>, NativePoint>;
 // Size of the deck per game
 export ledger gameDeckSize: Map<Bytes<32>, Uint<64>>;
 // Index of the top card per game
 export ledger gameTopCardIndex: Map<Bytes<32>, Uint<32>>;
 // Map from semi-encrypted (player's hand) to fully-encrypted (deck) points per game
-export ledger gameSemiMaskedToFullyMasked: Map<Bytes<32>, CurvePoint>;
+export ledger gameSemiMaskedToFullyMasked: Map<Bytes<32>, NativePoint>;
 
 // Witnesses
 witness getFieldInverse(x: Field): Field;
@@ -35,7 +36,7 @@ witness player_secret_key(gameId: Bytes<32>, player: Field): Field;
 witness split_field_bits(f: Field): [Field, Uint<64>];
 witness shuffle_seed(gameId: Bytes<32>, player: Field): Bytes<32>;
 // CHANGED: Vector size from 18 to 21 (7 Ranks * 3 Suits)
-witness get_sorted_deck_witness(input: Vector<21, CurvePoint>): Vector<21, CurvePoint>;
+witness get_sorted_deck_witness(input: Vector<21, NativePoint>): Vector<21, NativePoint>;
 
 // Helper to create composite key for deck cards
 circuit makeDeckCardKey(gameId: Bytes<32>, cardIndex: Field): Bytes<32> {
@@ -49,7 +50,7 @@ circuit makePlayerKeyHash(gameId: Bytes<32>, secretHash: Bytes<32>): Bytes<32> {
 }
 
 // Helper to create composite key for semi-masked to fully-masked mapping
-circuit makeSemiMaskedKey(gameId: Bytes<32>, semiMaskedPoint: CurvePoint): Bytes<32> {
+circuit makeSemiMaskedKey(gameId: Bytes<32>, semiMaskedPoint: NativePoint): Bytes<32> {
     const pointHash = h_hashCurvePoint(semiMaskedPoint);
     return h_hashVector([disclose(gameId), disclose(pointHash)]);
 }
@@ -62,7 +63,7 @@ export circuit init_static_deck(): [] {
     
     // CHANGED: Loop 0..21 (7 ranks * 3 suits)
     for (const i of 0..21) { 
-        const cardPoint: CurvePoint = getPointFromValue(i);
+        const cardPoint: NativePoint = getPointFromValue(i);
         deckCurveToCard.insert(cardPoint, (i) as Field);
         reverseDeckCurveToCard.insert((i) as Uint<32>, cardPoint);
     }
@@ -84,7 +85,7 @@ export circuit init_deck(gameId: Bytes<32>): [] {
     // Copy base deck to game deck (unshuffled initially)
     // CHANGED: Loop 0..21
     for (const i of 0..21) { 
-        const cardPoint = reverseDeckCurveToCard.lookup((i) as Uint<32>) as CurvePoint;
+        const cardPoint = reverseDeckCurveToCard.lookup((i) as Uint<32>) as NativePoint;
         const deckKey = makeDeckCardKey(gid, (i) as Field);
         gameDeck.insert(disclose(deckKey), cardPoint);
     }
@@ -131,8 +132,8 @@ export circuit apply_mask_to_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] 
     shuffle_deck(gid, playerIndex);
 }
 
-// Given a known CurvePoint, get the card value
-export circuit getCardFromPoint(point: CurvePoint): Field {
+// Given a known NativePoint, get the card value
+export circuit getCardFromPoint(point: NativePoint): Field {
     const index = deckCurveToCard.lookup(disclose(point)) as Field;
     return index;
 }
@@ -150,7 +151,7 @@ export circuit getDeckSize(gameId: Bytes<32>): Uint<64> {
 }
 
 // This function will remove the mask applied by playerId.
-export circuit partial_decryption(gameId: Bytes<32>, point: CurvePoint, playerId: Uint<64>): CurvePoint {
+export circuit partial_decryption(gameId: Bytes<32>, point: NativePoint, playerId: Uint<64>): NativePoint {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
     const secret = player_secret_key(gid, disclosed_playerId);
@@ -169,13 +170,13 @@ export circuit partial_decryption(gameId: Bytes<32>, point: CurvePoint, playerId
     return decrypted_point;
 }
 
-export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): CurvePoint {
+export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): NativePoint {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(_playerId);
     
     const topIndex = gameTopCardIndex.lookup(gid) as Uint<32>;
     const deckKey = makeDeckCardKey(gid, disclose(topIndex) as Field);
-    const point = gameDeck.lookup(disclose(deckKey)) as CurvePoint;
+    const point = gameDeck.lookup(disclose(deckKey)) as NativePoint;
     
     // Increment top card index
     gameTopCardIndex.insert(gid, topIndex + 1 as Uint<32>);
@@ -198,14 +199,14 @@ export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): CurvePoint {
 }
 
 // Get a card from the deck at a specific index without removing it
-export circuit getDeckCard(gameId: Bytes<32>, cardIndex: Field): CurvePoint {
+export circuit getDeckCard(gameId: Bytes<32>, cardIndex: Field): NativePoint {
     const gid = disclose(gameId);
     const deckKey = makeDeckCardKey(gid, disclose(cardIndex));
-    return gameDeck.lookup(disclose(deckKey)) as CurvePoint;
+    return gameDeck.lookup(disclose(deckKey)) as NativePoint;
 }
 
 // Store semi-masked to fully-masked mapping for a game
-export circuit storeSemiMaskedMapping(gameId: Bytes<32>, semiMasked: CurvePoint, fullyMasked: CurvePoint): [] {
+export circuit storeSemiMaskedMapping(gameId: Bytes<32>, semiMasked: NativePoint, fullyMasked: NativePoint): [] {
     const gid = disclose(gameId);
     const mappingKey = makeSemiMaskedKey(gid, disclose(semiMasked));
     gameSemiMaskedToFullyMasked.insert(disclose(mappingKey), disclose(fullyMasked));
@@ -213,19 +214,19 @@ export circuit storeSemiMaskedMapping(gameId: Bytes<32>, semiMasked: CurvePoint,
 }
 
 // Lookup fully-masked point from semi-masked for a game
-export circuit lookupFullyMasked(gameId: Bytes<32>, semiMasked: CurvePoint): CurvePoint {
+export circuit lookupFullyMasked(gameId: Bytes<32>, semiMasked: NativePoint): NativePoint {
     const gid = disclose(gameId);
     const mappingKey = makeSemiMaskedKey(gid, disclose(semiMasked));
-    return gameSemiMaskedToFullyMasked.lookup(disclose(mappingKey)) as CurvePoint;
+    return gameSemiMaskedToFullyMasked.lookup(disclose(mappingKey)) as NativePoint;
 }
 
-circuit getPointFromValue(value: Field): CurvePoint {
+circuit getPointFromValue(value: Field): NativePoint {
     const card_seed = h_hashField(value);
-    const raw_point: CurvePoint = std_hashToCurve<Bytes<32>>(card_seed);
+    const raw_point: NativePoint = std_hashToCurve<Bytes<32>>(card_seed);
     return std_ecMul(raw_point, 8 as Field);
 }
 
-circuit applyMaskToPoint(gameId: Bytes<32>, _point: CurvePoint, _playerIndex: Uint<64>): CurvePoint {
+circuit applyMaskToPoint(gameId: Bytes<32>, _point: NativePoint, _playerIndex: Uint<64>): NativePoint {
     const point = disclose(_point);
     const playerIndex = disclose(_playerIndex);
     const gid = disclose(gameId);
@@ -272,9 +273,9 @@ export circuit shuffle_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
     }
 }
 
-circuit make_weighted_masked_card(gameId: Bytes<32>, deckKey: Bytes<32>, playerIndex: Uint<64>): CurvePoint {
+circuit make_weighted_masked_card(gameId: Bytes<32>, deckKey: Bytes<32>, playerIndex: Uint<64>): NativePoint {
     const gid = disclose(gameId);
-    const original_point = gameDeck.lookup(disclose(deckKey)) as CurvePoint;
+    const original_point = gameDeck.lookup(disclose(deckKey)) as NativePoint;
     const masked_point = applyMaskToPoint(gid, original_point, playerIndex);
     return masked_point;
 }

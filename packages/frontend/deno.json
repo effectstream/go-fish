@@ -26,9 +26,9 @@
     "url": "node:url",
     "querystring": "node:querystring",
     "zlib": "node:zlib",
-    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.11.0-rc.1",
-    "@midnight-ntwrk/onchain-runtime-v1": "npm:@midnight-ntwrk/onchain-runtime-v1@1.0.0-alpha.5",
-    "@midnight-ntwrk/ledger-v6": "npm:@midnight-ntwrk/ledger-v6@6.1.0-alpha.6"
+    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
+    "@midnight-ntwrk/onchain-runtime-v2": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0",
+    "@midnight-ntwrk/ledger-v7": "npm:@midnight-ntwrk/ledger-v7@7.0.0"
   },
   "nodeModulesDir": "auto"
 }

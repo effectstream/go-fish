@@ -5,8 +5,8 @@ import CompactStandardLibrary prefix std_;
 export circuit hashField(fieldValue: Field): Bytes<32> {
     return std_persistentHash<Field>(fieldValue);
 }
-export circuit hashCurvePoint(curvePoint: CurvePoint): Bytes<32> {
-    return std_persistentHash<CurvePoint>(curvePoint);
+export circuit hashCurvePoint(curvePoint: NativePoint): Bytes<32> {
+    return std_persistentHash<NativePoint>(curvePoint);
 }
 export circuit hashVector(vector: [Bytes<32>, Bytes<32>]): Bytes<32> {
     return std_persistentHash<[Bytes<32>, Bytes<32>]>(vector);
@@ -15,8 +15,8 @@ export circuit hashVector(vector: [Bytes<32>, Bytes<32>]): Bytes<32> {
 export circuit hashVector2(vector: Vector<21, Bytes<32>>): Bytes<32> {
     return std_persistentHash<Vector<21, Bytes<32>>>(vector);
 }
-export circuit hashVector3(vector: [CurvePoint, Uint<248>]): Bytes<32> {
-    return std_persistentHash<[CurvePoint, Uint<248>]>(vector);
+export circuit hashVector3(vector: [NativePoint, Uint<248>]): Bytes<32> {
+    return std_persistentHash<[NativePoint, Uint<248>]>(vector);
 }
 export circuit hashVector4(vector: [Field, Field]): Bytes<32> {
     return std_persistentHash<[Field, Field]>(vector);

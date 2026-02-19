@@ -21,7 +21,7 @@
     "midnight:faucet": "deno task --filter @go-fish/midnight-contracts midnight-faucet:start"
   },
   "imports": {
-    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.3.129",
+    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.7.0",
     "@go-fish/midnight-contracts": "./packages/shared/contracts/midnight/deno.json",
     "@go-fish/midnight-contracts/midnight-env": "./packages/shared/contracts/midnight/midnight-env.ts"
   },

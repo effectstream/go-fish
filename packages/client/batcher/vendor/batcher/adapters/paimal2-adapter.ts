@@ -18,7 +18,7 @@ import type { DefaultBatcherInput } from "../core/types.ts";
 import { createPublicClient, createWalletClient, http } from "npm:viem@^2.21.3";
 import * as chains from "npm:/viem@^2.21.3/chains";
 import { privateKeyToAccount } from "npm:viem@^2.21.3/accounts";
-import type { EvmAddress, EvmPrivateKey } from "jsr:@paimaexample/utils@^0.3.128";
+import type { EvmAddress, EvmPrivateKey } from "jsr:@paimaexample/utils@^0.7.0";
 
 // Type conversion utilities
 function viemReceiptToGenericReceipt(

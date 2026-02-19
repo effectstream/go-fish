@@ -187,8 +187,8 @@ export default defineConfig({
       // midnight-js v2.0.0 expects `constructorContext` but v0.11.0 exports `createConstructorContext`
       '@midnight-ntwrk/compact-runtime': path.resolve(__dirname, 'src/midnight-shim.ts'),
       // Force consistent version of onchain-runtime
-      '@midnight-ntwrk/onchain-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime'),
-      '@midnight-ntwrk/onchain-runtime-v1': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v1'),
+      '@midnight-ntwrk/onchain-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v2'),
+      '@midnight-ntwrk/onchain-runtime-v2': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v2'),
     },
   },
   // Handle WASM files from Midnight runtime

@@ -13,7 +13,7 @@ Run the complete development environment with orchestrator:
 deno install --allow-scripts
 
 # Build EVM contracts
-deno task build:evm,
+deno task build:evm
 
 # Start all services (backend + frontend + blockchain)
 deno task dev

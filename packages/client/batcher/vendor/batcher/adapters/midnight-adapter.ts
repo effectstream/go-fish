@@ -13,12 +13,12 @@ import type { ContractInfo } from "./midnight-arg-parser.ts";
 import { parseCircuitArgs } from "./midnight-arg-parser.ts";
 import type { DefaultBatcherInput } from "../core/types.ts";
 import { MidnightBatchBuilderLogic, type MidnightBatchPayload } from "../batch-data-builder/midnight-builder-logic.ts";
-import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.3.128";
+import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.7.0";
 import type {
   BalancedProvingRecipe,
   MidnightProvider,
   WalletProvider,
-} from "npm:@midnight-ntwrk/midnight-js-types@3.0.0-alpha.11";
+} from "npm:@midnight-ntwrk/midnight-js-types@3.0.0";
 import type {
   CoinPublicKey,
   DustSecretKey,
@@ -28,17 +28,17 @@ import type {
   TransactionId,
   UnprovenTransaction,
   ZswapSecretKeys,
-} from "npm:@midnight-ntwrk/ledger-v6@6.1.0-alpha.6";
+} from "npm:@midnight-ntwrk/ledger-v7@7.0.0";
 import {
   type DeployedContract,
   findDeployedContract,
   type FoundContract,
-} from "npm:@midnight-ntwrk/midnight-js-contracts@3.0.0-alpha.11";
-import { indexerPublicDataProvider } from "npm:@midnight-ntwrk/midnight-js-indexer-public-data-provider@3.0.0-alpha.11";
-import { httpClientProofProvider } from "npm:@midnight-ntwrk/midnight-js-http-client-proof-provider@3.0.0-alpha.11";
-import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@3.0.0-alpha.11";
-import { levelPrivateStateProvider } from "npm:@midnight-ntwrk/midnight-js-level-private-state-provider@3.0.0-alpha.11";
-import { setNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@3.0.0-alpha.11";
+} from "npm:@midnight-ntwrk/midnight-js-contracts@3.0.0";
+import { indexerPublicDataProvider } from "npm:@midnight-ntwrk/midnight-js-indexer-public-data-provider@3.0.0";
+import { httpClientProofProvider } from "npm:@midnight-ntwrk/midnight-js-http-client-proof-provider@3.0.0";
+import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@3.0.0";
+import { levelPrivateStateProvider } from "npm:@midnight-ntwrk/midnight-js-level-private-state-provider@3.0.0";
+import { setNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@3.0.0";
 import {
   buildWalletFacade,
   getInitialShieldedState,
@@ -46,8 +46,8 @@ import {
   waitForDustFunds,
   type NetworkUrls as MidnightNetworkUrls,
   type WalletResult,
-} from "jsr:@paimaexample/midnight-contracts@^0.3.128/wallet-info";
-import type { NetworkId as WalletNetworkId } from "npm:@midnight-ntwrk/wallet-sdk-abstractions@1.0.0-beta.9";
+} from "jsr:@paimaexample/midnight-contracts@^0.7.0/wallet-info";
+import type { NetworkId as WalletNetworkId } from "npm:@midnight-ntwrk/wallet-sdk-abstractions@1.0.0";
 
 export interface MidnightAdapterConfig {
   indexer: string;
@@ -613,7 +613,7 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
    */
   async waitForTransactionReceipt(
     hash: BlockchainHash,
-    timeout: number = 60000,
+    timeout: number = 300000,
   ): Promise<BlockchainTransactionReceipt> {
     if (!this.publicDataProvider) {
       throw new Error("Public data provider not initialized");

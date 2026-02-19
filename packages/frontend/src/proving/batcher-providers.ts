@@ -10,7 +10,7 @@
  * This enables a seamless user experience where users don't need
  * to install or configure any wallet extensions.
  *
- * Updated for SDK v3 with ledger-v6 types.
+ * Updated for SDK v3 with ledger-v7 types.
  */
 
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
@@ -31,7 +31,7 @@ import {
   type FinalizedTransaction,
   type CoinPublicKey,
   type EncPublicKey,
-} from "@midnight-ntwrk/ledger-v6";
+} from "@midnight-ntwrk/ledger-v7";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import type { ProverMessage, ProverResponse } from "./worker-types";
 import type { GoFishProviders } from "../services/MidnightOnChainService";
@@ -79,7 +79,7 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
           break;
         case "success":
           if (callbacks && data) {
-            // Deserialize using ledger-v6 (no network ID needed - set globally)
+            // Deserialize using ledger-v7 (no network ID needed - set globally)
             const provenTx = Transaction.deserialize(data);
             callbacks.resolve(provenTx as ProvenTransaction);
             this.requests.delete(requestId!);
@@ -150,7 +150,7 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
       return new Promise((resolve, reject) => {
         this.requests.set(this.nextId, { resolve, reject });
 
-        // Serialize using ledger-v6 (no network ID needed - set globally)
+        // Serialize using ledger-v7 (no network ID needed - set globally)
         const serializedTx = tx.serialize();
 
         this.worker!.postMessage({
@@ -344,7 +344,7 @@ export async function initializeBatcherProviders(): Promise<GoFishProviders> {
     },
     midnightProvider: {
       submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
-        // Serialize using ledger-v6 (no network ID needed - set globally)
+        // Serialize using ledger-v7 (no network ID needed - set globally)
         const raw = tx.serialize();
         return postTxToBatcher(raw);
       },
