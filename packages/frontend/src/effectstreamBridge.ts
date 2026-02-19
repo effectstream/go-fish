@@ -19,8 +19,8 @@ import { ethers } from "ethers";
 // WalletMode enum value for EvmEthers (avoiding isolatedModules issue)
 const WALLET_MODE_EVM_ETHERS = 1;
 
-// Contract addresses from deployment
-const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+// Contract addresses from deployment (override with VITE_PAIMA_L2_CONTRACT_ADDRESS env var)
+const PAIMA_L2_CONTRACT_ADDRESS = (import.meta as any).env?.VITE_PAIMA_L2_CONTRACT_ADDRESS || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 
 import { API_BASE_URL } from "./apiConfig";
 

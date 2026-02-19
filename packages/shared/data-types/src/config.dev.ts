@@ -66,7 +66,7 @@ export const config = new ConfigBuilder()
         name: "GoFish_PaimaL2",
         type: PrimitiveTypeEVMPaimaL2,
         startBlockHeight: 0,
-        contractAddress: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+        contractAddress: Deno.env.get("PAIMA_L2_CONTRACT_ADDRESS") || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
         paimaL2Grammar: grammar,
       })
     )
