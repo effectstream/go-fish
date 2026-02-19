@@ -13,8 +13,42 @@ const indexerConfigPath = path.join(midnightContractsDir, "indexer-standalone/co
 // Check if we should skip Midnight infrastructure (when using TypeScript contract)
 const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
 
+<<<<<<< Updated upstream
 // Midnight infrastructure processes (only when not using TypeScript contract)
 const midnightProcesses = useTypescriptContract ? [] : [
+=======
+// Check if batcher mode is enabled (run frontend in batcher mode, no Lace wallet needed)
+const useBatcherMode = Deno.env.get("USE_BATCHER_MODE") === "true";
+
+// Check if we should deploy the Midnight contract at startup (takes ~6 minutes)
+// Set DEPLOY_MIDNIGHT_CONTRACT=true to deploy, otherwise assumes contract is already deployed
+const deployMidnightContract = Deno.env.get("DEPLOY_MIDNIGHT_CONTRACT") === "true";
+
+// Check if Midnight infrastructure is already running (via midnight:setup)
+// Set SKIP_MIDNIGHT_INFRA=true to skip starting node/indexer/proof-server
+const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
+
+// Check if EVM/Hardhat is already running externally
+// Set SKIP_EVM_LAUNCH=true to skip launching Hardhat node and deployment
+const skipEvmLaunch = Deno.env.get("SKIP_EVM_LAUNCH") === "true";
+
+// Check if pglite database should be skipped (for shared infrastructure environments)
+// Set SKIP_PGLITE=true to skip launching pglite database
+const skipPglite = Deno.env.get("SKIP_PGLITE") === "true";
+
+// Debug logging
+console.log(`[Orchestrator] USE_TYPESCRIPT_CONTRACT=${useTypescriptContract}, USE_BATCHER_MODE=${useBatcherMode}, DEPLOY_MIDNIGHT_CONTRACT=${deployMidnightContract}, SKIP_MIDNIGHT_INFRA=${skipMidnightInfra}, SKIP_EVM_LAUNCH=${skipEvmLaunch}, SKIP_PGLITE=${skipPglite}`);
+
+// Path to GraphQL proxy (translates SDK v2.0.0 queries to indexer v3 schema)
+// Note: With SDK v3, this may no longer be needed
+const graphqlProxyScript = path.resolve(__dirname, "graphql-proxy.ts");
+
+// Path to cleanup script for indexer database
+const cleanupIndexerScript = path.resolve(__dirname, "cleanup-indexer-db.ts");
+
+// Midnight infrastructure processes (skipped when using TypeScript contract or SKIP_MIDNIGHT_INFRA=true)
+const midnightProcesses = (useTypescriptContract || skipMidnightInfra) ? [] : [
+>>>>>>> Stashed changes
   /** MIDNIGHT-NODE-BLOCK */
   {
     name: "midnight-node",
@@ -139,15 +173,16 @@ const config = Value.Parse(OrchestratorConfig, {
   processes: {
     [ComponentNames.TMUX]: true,
     [ComponentNames.TUI]: true,
-    // Launch Dev DB & Collector
-    [ComponentNames.EFFECTSTREAM_PGLITE]: true,
+    // Launch Dev DB & Collector (skip pglite if SKIP_PGLITE=true)
+    [ComponentNames.EFFECTSTREAM_PGLITE]: !skipPglite,
     [ComponentNames.COLLECTOR]: true,
   },
 
   // Launch my processes
   processesToLaunch: [
     // Launch EVM contracts (Hardhat node + deploy)
-    ...launchEvm("@go-fish/evm-contracts"),
+    // Skip if SKIP_EVM_LAUNCH=true (when using external Hardhat instance)
+    ...(skipEvmLaunch ? [] : launchEvm("@go-fish/evm-contracts")),
     ...customProcesses,
   ],
 });
