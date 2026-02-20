@@ -7,8 +7,8 @@
   "tasks": {
     "check": "echo 'Skipping type check - @types/node resolution issue'",
 
-    "node:start:dev": "deno run -A --inspect --unstable-raw-imports src/main.dev.ts",
-    "node:start:testnet": "deno run -A --inspect --unstable-raw-imports src/main.testnet.ts",
+    "node:start:dev": "deno run -A --inspect=127.0.0.1:9230 --unstable-raw-imports src/main.dev.ts",
+    "node:start:testnet": "deno run -A --inspect=127.0.0.1:9230 --unstable-raw-imports src/main.testnet.ts",
 
     "dev": "EFFECTSTREAM_ENV=dev NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.dev.ts",
     "testnet": "EFFECTSTREAM_ENV=testnet NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.testnet.ts",

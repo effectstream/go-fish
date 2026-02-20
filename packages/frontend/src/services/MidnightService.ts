@@ -23,8 +23,10 @@ import MidnightOnChainService, { isOnChainReady, initializeOnChainService, isBat
 import { isLaceConnected } from "../laceWalletBridge";
 import { isBatcherModeEnabled } from "../proving/batcher-providers";
 
+import { API_BASE_URL } from "../apiConfig";
+
 // Backend API base URL
-const BACKEND_URL = "http://localhost:9999";
+const BACKEND_URL = API_BASE_URL;
 
 // App configuration (loaded from backend)
 interface AppConfig {

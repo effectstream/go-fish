@@ -33,9 +33,19 @@ let dbPool: Pool | null = null;
 // Get database connection - initialize on first call
 function getDB(): Pool {
   if (!dbPool) {
-    // Get database URL from environment
-    const dbUrl = Deno.env.get("DATABASE_URL") || "postgresql://localhost:5432/go-fish";
-    dbPool = new pg.Pool({ connectionString: dbUrl });
+    const dbUrl = Deno.env.get("DATABASE_URL");
+    if (dbUrl) {
+      dbPool = new pg.Pool({ connectionString: dbUrl });
+    } else {
+      // Fall back to individual env vars (DB_HOST, DB_NAME, DB_USER, DB_PW)
+      dbPool = new pg.Pool({
+        host: Deno.env.get("DB_HOST") || "localhost",
+        port: Number(Deno.env.get("DB_PORT") || "5432"),
+        database: Deno.env.get("DB_NAME") || "go-fish",
+        user: Deno.env.get("DB_USER"),
+        password: Deno.env.get("DB_PW"),
+      });
+    }
   }
   return dbPool;
 }

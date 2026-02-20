@@ -8,7 +8,7 @@ import { apiRouter } from './api.ts';
 import config from '@go-fish/data-types/config.testnet.ts';
 import { initializeQueryContract } from './midnight-query.ts';
 
-const PORT = 9999;
+const PORT = 9996;
 
 async function main() {
   console.log('Starting Go Fish Game - Paima Engine (Testnet Mode)');

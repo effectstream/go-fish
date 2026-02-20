@@ -19,11 +19,16 @@ import { ethers } from "ethers";
 // WalletMode enum value for EvmEthers (avoiding isolatedModules issue)
 const WALLET_MODE_EVM_ETHERS = 1;
 
-// Contract addresses from deployment
-const PAIMA_L2_CONTRACT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+// Contract addresses from deployment (override with VITE_PAIMA_L2_CONTRACT_ADDRESS env var)
+const PAIMA_L2_CONTRACT_ADDRESS = (import.meta as any).env?.VITE_PAIMA_L2_CONTRACT_ADDRESS || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+
+// EVM RPC URL (override with VITE_EVM_RPC_URL env var for remote deployments)
+const EVM_RPC_URL = (import.meta as any).env?.VITE_EVM_RPC_URL || "http://localhost:8545";
+
+import { API_BASE_URL } from "./apiConfig";
 
 // Paima Engine API endpoint
-const PAIMA_API_URL = "http://localhost:9999";
+const PAIMA_API_URL = API_BASE_URL;
 
 // Global wallet instance (local wallet - auto-generated)
 let wallet: Wallet | null = null;
@@ -33,7 +38,7 @@ const paimaEngineConfig = new PaimaEngineConfig(
   "go-fish",
   "mainEvmRPC",
   PAIMA_L2_CONTRACT_ADDRESS,
-  hardhat as any, // Type compatibility with viem versions
+  { ...hardhat, rpcUrls: { default: { http: [EVM_RPC_URL] } } } as any,
   undefined,      // use default abi
   undefined,      // no batcher url
   false,          // useBatching = false
@@ -129,7 +134,7 @@ async function initializeLocalWallet(): Promise<Wallet | null> {
     const privateKey = getPrivateKey();
 
     // Create ethers wallet with a provider (ethers v5 syntax)
-    const provider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
+    const provider = new ethers.providers.JsonRpcProvider(EVM_RPC_URL);
     const ethersWallet = new ethers.Wallet(privateKey, provider);
 
     console.log('[EffectstreamBridge] Local wallet address:', ethersWallet.address);

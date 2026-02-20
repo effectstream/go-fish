@@ -59,7 +59,8 @@ export class LobbyScreen {
 
   private async render() {
     // Fetch lobby state from API
-    const response = await fetch(`http://localhost:9999/lobby_state?lobby_id=${this.lobbyId}`);
+    const { API_BASE_URL } = await import('../apiConfig');
+    const response = await fetch(`${API_BASE_URL}/lobby_state?lobby_id=${this.lobbyId}`);
     if (!response.ok) {
       this.fetchFailCount++;
       // After lobby creation, EffectStream may not have processed the transaction yet.

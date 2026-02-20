@@ -24,8 +24,18 @@ const deployMidnightContract = Deno.env.get("DEPLOY_MIDNIGHT_CONTRACT") === "tru
 // Set SKIP_MIDNIGHT_INFRA=true to skip starting node/indexer/proof-server
 const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
 
+// Check if EVM/Hardhat is already running externally
+// Set SKIP_EVM_LAUNCH=true to skip launching Hardhat node and deployment
+// This is useful when multiple programs share a single Hardhat instance
+// Example: SKIP_EVM_LAUNCH=true USE_TYPESCRIPT_CONTRACT=true deno task dev
+const skipEvmLaunch = Deno.env.get("SKIP_EVM_LAUNCH") === "true";
+
+// Check if pglite database should be skipped (for shared infrastructure environments)
+// Set SKIP_PGLITE=true to skip launching pglite database
+const skipPglite = Deno.env.get("SKIP_PGLITE") === "true";
+
 // Debug logging
-console.log(`[Orchestrator] USE_TYPESCRIPT_CONTRACT=${useTypescriptContract}, USE_BATCHER_MODE=${useBatcherMode}, DEPLOY_MIDNIGHT_CONTRACT=${deployMidnightContract}, SKIP_MIDNIGHT_INFRA=${skipMidnightInfra}`);
+console.log(`[Orchestrator] USE_TYPESCRIPT_CONTRACT=${useTypescriptContract}, USE_BATCHER_MODE=${useBatcherMode}, DEPLOY_MIDNIGHT_CONTRACT=${deployMidnightContract}, SKIP_MIDNIGHT_INFRA=${skipMidnightInfra}, SKIP_EVM_LAUNCH=${skipEvmLaunch}, SKIP_PGLITE=${skipPglite}`);
 
 // Path to GraphQL proxy (translates SDK v2.0.0 queries to indexer v3 schema)
 // Note: With SDK v3, this may no longer be needed
@@ -221,8 +231,8 @@ const customProcesses = [
     args: ["task", "-f", "@go-fish/batcher", "start"],
     waitToExit: false,
     type: "system-dependency",
-    link: "http://localhost:3334",
-    stopProcessAtPort: [3334],
+    link: "http://localhost:3336",
+    stopProcessAtPort: [3336],
     // Dependencies:
     // - If deploying contract: wait for deployment
     // - If midnight infra managed here: wait for proof server
@@ -240,15 +250,16 @@ const config = Value.Parse(OrchestratorConfig, {
   processes: {
     [ComponentNames.TMUX]: true,
     [ComponentNames.TUI]: true,
-    // Launch Dev DB & Collector
-    [ComponentNames.EFFECTSTREAM_PGLITE]: true,
+    // Launch Dev DB & Collector (skip pglite if SKIP_PGLITE=true)
+    [ComponentNames.EFFECTSTREAM_PGLITE]: !skipPglite,
     [ComponentNames.COLLECTOR]: true,
   },
 
   // Launch my processes
   processesToLaunch: [
     // Launch EVM contracts (Hardhat node + deploy)
-    ...launchEvm("@go-fish/evm-contracts"),
+    // Skip if SKIP_EVM_LAUNCH=true (when using external Hardhat instance)
+    ...(skipEvmLaunch ? [] : launchEvm("@go-fish/evm-contracts")),
     ...customProcesses,
   ],
 });

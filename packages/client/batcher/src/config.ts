@@ -5,7 +5,7 @@ import {
 } from "@paimaexample/batcher";
 
 const batchIntervalMs = 1000;
-const port = Number(Deno.env.get("BATCHER_PORT") ?? "3334");
+const port = Number(Deno.env.get("BATCHER_PORT") ?? "3336");
 
 export const config: BatcherConfig<DefaultBatcherInput> = {
   pollingIntervalMs: batchIntervalMs,

@@ -21,7 +21,7 @@ deno task dev
 
 This will launch:
 - **Frontend**: http://localhost:3000
-- **API**: http://localhost:9999
+- **API**: http://localhost:9996
 - **Explorer**: http://localhost:10590
 - **Blockchain**: http://localhost:8545
 
@@ -122,6 +122,25 @@ npx hardhat deploy       # Deploy to local network
 # Root Level
 deno task frontend:dev   # Start frontend from root
 deno task frontend:build # Build frontend from root
+```
+
+## Environment Variables
+
+### Development Configuration
+
+- `USE_TYPESCRIPT_CONTRACT=true` - Use local TypeScript-compiled Midnight contract (for testing without Midnight infrastructure)
+- `SKIP_EVM_LAUNCH=true` - Skip launching Hardhat node and EVM deployment (use when Hardhat is already running externally)
+- `SKIP_MIDNIGHT_INFRA=true` - Skip launching Midnight infrastructure (node, indexer, proof-server)
+- `SKIP_PGLITE=true` - Skip launching PGLite database (for shared infrastructure environments)
+- `USE_BATCHER_MODE=true` - Run frontend in batcher mode (no Lace wallet needed)
+- `DEPLOY_MIDNIGHT_CONTRACT=true` - Deploy Midnight contract at startup (takes ~6 minutes)
+- `EFFECTSTREAM_STDOUT=true` - Log all output to stdout instead of tmux
+
+### Example: Using with External Hardhat
+
+```bash
+# Start with existing Hardhat instance
+SKIP_EVM_LAUNCH=true USE_TYPESCRIPT_CONTRACT=true EFFECTSTREAM_STDOUT=true deno task dev
 ```
 
 ## Database Schema
