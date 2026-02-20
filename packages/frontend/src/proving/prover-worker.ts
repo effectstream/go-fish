@@ -25,9 +25,9 @@ self.postMessage({
 
 let baseUrl: string | undefined = undefined;
 
-async function runProver<K extends string>(
+async function runProver(
   serializedTx: Uint8Array,
-  proveTxConfig: ProveTxConfig<K>,
+  proveTxConfig: ProveTxConfig,
   requestId: number
 ) {
   try {
@@ -51,8 +51,8 @@ async function runProver<K extends string>(
   }
 }
 
-self.onmessage = async <K extends string>(
-  event: MessageEvent<ProverMessage<K>>
+self.onmessage = async (
+  event: MessageEvent<ProverMessage>
 ) => {
   const { type } = event.data;
 

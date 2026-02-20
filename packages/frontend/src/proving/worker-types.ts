@@ -7,7 +7,7 @@
 
 import type { ProveTxConfig } from "@midnight-ntwrk/midnight-js-types";
 
-export type ProverMessage<K extends string> =
+export type ProverMessage =
   | {
       type: "params";
       baseUrl: string;
@@ -15,7 +15,7 @@ export type ProverMessage<K extends string> =
   | {
       type: "prove";
       serializedTx: Uint8Array;
-      proveTxConfig: ProveTxConfig<K>;
+      proveTxConfig: ProveTxConfig;
       requestId: number;
     };
 

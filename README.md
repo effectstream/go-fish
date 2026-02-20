@@ -187,10 +187,8 @@ See [packages/shared/data-types/src/grammar.ts](packages/shared/data-types/src/g
 
 ## Resources
 
-- [Paima Engine Documentation](https://docs.paimastudios.com/)
 - [Midnight Blockchain](https://midnight.network/)
 - [Hardhat Documentation](https://hardhat.org/)
-- [PAIMA_NOTES.md](PAIMA_NOTES.md) (technical notes and workarounds)
 
 ## License
 

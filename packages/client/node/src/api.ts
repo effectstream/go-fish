@@ -5,7 +5,6 @@
 import type { FastifyInstance } from "fastify";
 import type { StartConfigApiRouter } from "@paimaexample/runtime";
 import type { Pool } from "pg";
-import pg from "pg";
 import {
   getGameState as getMidnightGameState,
   queryHasMaskApplied,
@@ -27,28 +26,8 @@ import {
   skipDrawDeckEmpty as midnightSkipDrawDeckEmpty,
 } from "./midnight-actions.ts";
 
-// Global database connection pool
+// Database connection pool - set by apiRouter from the runtime-provided connection
 let dbPool: Pool | null = null;
-
-// Get database connection - initialize on first call
-function getDB(): Pool {
-  if (!dbPool) {
-    const dbUrl = Deno.env.get("DATABASE_URL");
-    if (dbUrl) {
-      dbPool = new pg.Pool({ connectionString: dbUrl });
-    } else {
-      // Fall back to individual env vars (DB_HOST, DB_NAME, DB_USER, DB_PW)
-      dbPool = new pg.Pool({
-        host: Deno.env.get("DB_HOST") || "localhost",
-        port: Number(Deno.env.get("DB_PORT") || "5432"),
-        database: Deno.env.get("DB_NAME") || "go-fish",
-        user: Deno.env.get("DB_USER"),
-        password: Deno.env.get("DB_PW"),
-      });
-    }
-  }
-  return dbPool;
-}
 
 // Rank names for display - simplified deck (7 ranks)
 const RANK_NAMES = ['Ace', '2', '3', '4', '5', '6', '7'];
@@ -238,7 +217,9 @@ function getUseTypescriptContract(): boolean {
 
 const USE_TYPESCRIPT_CONTRACT = getUseTypescriptContract();
 
-export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
+export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, dbConn: Pool) => {
+  // Use the runtime-provided database connection (works with PGLite in dev mode)
+  dbPool = dbConn;
   // Add CORS headers for all routes
   server.addHook('onRequest', async (request, reply) => {
     reply.header('Access-Control-Allow-Origin', '*');
@@ -299,7 +280,7 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   server.get("/open_lobbies", async (request, reply) => {
     const { page = 0, count = 10, wallet } = request.query as { page?: number; count?: number; wallet?: string };
 
-    const db = getDB();
+    const db = dbPool!;
     const offset = page * count;
 
     try {
@@ -352,38 +333,43 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       count?: number;
     };
 
-    const db = getDB();
+    const db = dbPool!;
     const offset = page * count;
 
-    // Get account ID from wallet address via effectstream.addresses
-    const accountResult = await db.query(`
-      SELECT account_id FROM effectstream.addresses WHERE address = $1
-    `, [wallet]);
+    try {
+      // Get account ID from wallet address via effectstream.addresses
+      const accountResult = await db.query(`
+        SELECT account_id FROM effectstream.addresses WHERE address = $1
+      `, [wallet]);
 
-    if (accountResult.rows.length === 0) {
+      if (accountResult.rows.length === 0) {
+        return { lobbies: [] };
+      }
+
+      const accountId = accountResult.rows[0].account_id;
+
+      const result = await db.query(`
+        SELECT
+          l.lobby_id,
+          l.lobby_name,
+          l.max_players,
+          l.status,
+          l.created_at,
+          (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count
+        FROM lobbies l
+        INNER JOIN lobby_players lp ON l.lobby_id = lp.lobby_id
+        WHERE lp.account_id = $1
+        ORDER BY l.created_at DESC
+        LIMIT $2 OFFSET $3
+      `, [accountId, count, offset]);
+
+      return {
+        lobbies: result.rows,
+      };
+    } catch (error) {
+      console.warn('user_lobbies query failed (table may not exist yet):', (error as Error).message);
       return { lobbies: [] };
     }
-
-    const accountId = accountResult.rows[0].account_id;
-
-    const result = await db.query(`
-      SELECT
-        l.lobby_id,
-        l.lobby_name,
-        l.max_players,
-        l.status,
-        l.created_at,
-        (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count
-      FROM lobbies l
-      INNER JOIN lobby_players lp ON l.lobby_id = lp.lobby_id
-      WHERE lp.account_id = $1
-      ORDER BY l.created_at DESC
-      LIMIT $2 OFFSET $3
-    `, [accountId, count, offset]);
-
-    return {
-      lobbies: result.rows,
-    };
   });
 
   /**
@@ -392,50 +378,55 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
   server.get("/lobby_state", async (request, reply) => {
     const { lobby_id } = request.query as { lobby_id: string };
 
-    const db = getDB();
+    const db = dbPool!;
 
-    // Get lobby info
-    const lobbyResult = await db.query(`
-      SELECT
-        l.lobby_id,
-        l.lobby_name,
-        l.host_account_id,
-        l.max_players,
-        l.status,
-        l.created_at,
-        l.started_at
-      FROM lobbies l
-      WHERE l.lobby_id = $1
-    `, [lobby_id]);
+    try {
+      // Get lobby info
+      const lobbyResult = await db.query(`
+        SELECT
+          l.lobby_id,
+          l.lobby_name,
+          l.host_account_id,
+          l.max_players,
+          l.status,
+          l.created_at,
+          l.started_at
+        FROM lobbies l
+        WHERE l.lobby_id = $1
+      `, [lobby_id]);
 
-    if (lobbyResult.rows.length === 0) {
-      return reply.code(404).send({ error: 'Lobby not found' });
+      if (lobbyResult.rows.length === 0) {
+        return reply.code(404).send({ error: 'Lobby not found' });
+      }
+
+      const lobby = lobbyResult.rows[0];
+
+      // Get lobby players
+      // Use a subquery to pick one address per account, avoiding duplicate rows
+      // when an account has multiple entries in effectstream.addresses (which
+      // happens when Paima auto-tracks the sender address AND our state machine
+      // also creates an address record).
+      const playersResult = await db.query(`
+        SELECT
+          lp.account_id,
+          lp.player_name,
+          lp.is_ready,
+          lp.joined_at,
+          (SELECT addr.address FROM effectstream.addresses addr
+           WHERE addr.account_id = lp.account_id LIMIT 1) as wallet_address
+        FROM lobby_players lp
+        WHERE lp.lobby_id = $1
+        ORDER BY lp.joined_at ASC
+      `, [lobby_id]);
+
+      return {
+        ...lobby,
+        players: playersResult.rows,
+      };
+    } catch (error) {
+      console.warn('lobby_state query failed (table may not exist yet):', (error as Error).message);
+      return reply.code(500).send({ error: 'Database error' });
     }
-
-    const lobby = lobbyResult.rows[0];
-
-    // Get lobby players
-    // Use a subquery to pick one address per account, avoiding duplicate rows
-    // when an account has multiple entries in effectstream.addresses (which
-    // happens when Paima auto-tracks the sender address AND our state machine
-    // also creates an address record).
-    const playersResult = await db.query(`
-      SELECT
-        lp.account_id,
-        lp.player_name,
-        lp.is_ready,
-        lp.joined_at,
-        (SELECT addr.address FROM effectstream.addresses addr
-         WHERE addr.account_id = lp.account_id LIMIT 1) as wallet_address
-      FROM lobby_players lp
-      WHERE lp.lobby_id = $1
-      ORDER BY lp.joined_at ASC
-    `, [lobby_id]);
-
-    return {
-      ...lobby,
-      players: playersResult.rows,
-    };
   });
 
   /**
@@ -449,7 +440,7 @@ export const apiRouter: StartConfigApiRouter = (server: FastifyInstance) => {
       return reply.code(400).send({ error: 'Missing lobby_id or wallet parameter' });
     }
 
-    const db = getDB();
+    const db = dbPool!;
 
     // Get lobby info to verify it's in_progress
     const lobbyResult = await db.query(`

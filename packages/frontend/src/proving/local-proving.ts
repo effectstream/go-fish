@@ -18,10 +18,10 @@ import {
 // Network ID constant (matching MidnightOnChainService)
 const MIDNIGHT_NETWORK_ID: JsNetworkId = "undeployed";
 
-export async function proveTxLocally<K extends string>(
+export async function proveTxLocally(
   baseUrl: string,
   tx: Uint8Array,
-  proveTxConfig?: ProveTxConfig<K>
+  proveTxConfig?: ProveTxConfig
 ): Promise<Uint8Array> {
   const pp = MidnightWasmParamsProvider.new(baseUrl);
 

@@ -21,10 +21,8 @@ import * as BatcherMidnightService from "./BatcherMidnightService";
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
 import {
   Transaction,
-  type ShieldedCoinInfo,
   type TransactionId,
   type FinalizedTransaction,
-  type UnprovenTransaction,
   type CoinPublicKey,
   type EncPublicKey,
 } from "@midnight-ntwrk/ledger-v7";
@@ -41,12 +39,10 @@ import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-conf
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { assertIsContractAddress, fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
 import type {
-  BalancedProvingRecipe,
-  ImpureCircuitId,
   MidnightProviders,
-  Contract,
-  TRANSACTION_TO_PROVE,
+  UnboundTransaction,
 } from "@midnight-ntwrk/midnight-js-types";
+import type { Contract, ImpureCircuitId } from "@midnight-ntwrk/compact-js";
 import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
 
 // Custom type for the connected wallet API (combines DAppConnectorWalletAPI with shielded address access)
@@ -83,7 +79,7 @@ const BASE_URL_MIDNIGHT_INDEXER_WS = import.meta.env.VITE_INDEXER_WS_URL || `${B
 const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
 
 // Backend API URL for notifying state changes
-const BACKEND_API_URL = "http://localhost:9999";
+const BACKEND_API_URL = "http://localhost:9996";
 
 /**
  * Notify the backend about a successful setup action
@@ -267,7 +263,7 @@ function createWalletAndMidnightProvider(
 ): {
   getCoinPublicKey: () => CoinPublicKey;
   getEncryptionPublicKey: () => EncPublicKey;
-  balanceTx: (tx: UnprovenTransaction, newCoins?: ShieldedCoinInfo[], ttl?: Date) => Promise<BalancedProvingRecipe>;
+  balanceTx: (tx: UnboundTransaction, ttl?: Date) => Promise<FinalizedTransaction>;
   submitTx: (tx: FinalizedTransaction) => Promise<TransactionId>;
 } {
   return {
@@ -278,22 +274,17 @@ function createWalletAndMidnightProvider(
       return encryptionPublicKey as unknown as EncPublicKey;
     },
     async balanceTx(
-      tx: UnprovenTransaction,
-      _newCoins?: ShieldedCoinInfo[],
+      tx: UnboundTransaction,
       _ttl?: Date,
-    ): Promise<BalancedProvingRecipe> {
+    ): Promise<FinalizedTransaction> {
       try {
         console.log("[MidnightOnChain] Balancing transaction via wallet");
         // Serialize using ledger-v7 (network ID is set globally)
-        const serializedTx = toHex(tx.serialize());
+        const serializedTx = toHex((tx as any).serialize());
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
         // Deserialize using ledger-v7 (network ID is set globally)
         const transaction = Transaction.deserialize(fromHex(received.tx));
-        // Return as NothingToProve since wallet already balanced it
-        return {
-          type: "NothingToProve" as const,
-          transaction: transaction as FinalizedTransaction,
-        };
+        return transaction as FinalizedTransaction;
       } catch (e: any) {
         // Extract detailed error info from FiberFailure
         let errorDetails = "Unknown error";
@@ -424,7 +415,7 @@ async function deployNewContract(
   try {
     const deployed = await Promise.race([
       deployContract(provs as any, {
-        contract: goFishContractInstance,
+        compiledContract: goFishContractInstance,
         privateStateId: "privateState",
         initialPrivateState: {},
       }),
@@ -472,7 +463,7 @@ async function joinContract(
     console.log("[MidnightOnChain] (Dev mode: chain resets each time, so we deploy fresh)");
     try {
       const deployedGoFishContract = await deployContract(provs, {
-        contract: goFishContractInstance,
+        compiledContract: goFishContractInstance,
         privateStateId: "privateState",
         initialPrivateState: {},
       });
@@ -536,7 +527,7 @@ async function joinContract(
     const goFishContract = await Promise.race([
       findDeployedContract(provs, {
         contractAddress: normalizedAddress,
-        contract: goFishContractInstance,
+        compiledContract: goFishContractInstance,
         privateStateId: "privateState",
         initialPrivateState: {},
       }),

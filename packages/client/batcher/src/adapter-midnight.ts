@@ -292,7 +292,7 @@ class GoFishMidnightAdapter extends MidnightAdapter {
     const playerId = Number(args[1]);
     const lobbyId = this.hexToLobbyId(gameIdHex);
 
-    const backendUrl = Deno.env.get("BACKEND_URL") || "http://localhost:9999";
+    const backendUrl = Deno.env.get("BACKEND_URL") || "http://localhost:9996";
     try {
       const response = await fetch(`${backendUrl}/api/midnight/notify_setup`, {
         method: "POST",

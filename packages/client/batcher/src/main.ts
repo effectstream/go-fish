@@ -9,7 +9,6 @@ import { main, suspend } from "effection";
 import { createNewBatcher, MidnightAdapter } from "@paimaexample/batcher";
 import { config, storage, BATCHER_DATA_DIR } from "./config.ts";
 import { effectstreaml2Adapter } from "./adapter-effectstreaml2.ts";
-import * as midnightAdapters from "./adapter-midnight.ts";
 
 // Clear stale batcher data on startup to prevent processing old transactions
 // This is important because old transactions may reference games that no longer exist
@@ -38,13 +37,21 @@ batcher
 // Add Midnight adapters with time-based batching with very short window
 // This ensures transactions are processed quickly and sequentially
 // The MidnightAdapter handles the actual circuit invocation
-for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
-  if (adapter instanceof MidnightAdapter) {
-    batcher.addBlockchainAdapter(contract, adapter, {
-      criteriaType: "time",
-      timeWindowMs: 50, // Very short window to process transactions quickly
-    });
+// Skip when using TypeScript contract (no Midnight infrastructure needed)
+// Use dynamic import to avoid eagerly connecting to Midnight infrastructure
+const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+if (!useTypescriptContract) {
+  const midnightAdapters = await import("./adapter-midnight.ts");
+  for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
+    if (adapter instanceof MidnightAdapter) {
+      batcher.addBlockchainAdapter(contract, adapter, {
+        criteriaType: "time",
+        timeWindowMs: 50, // Very short window to process transactions quickly
+      });
+    }
   }
+} else {
+  console.log("📝 Skipping Midnight adapters (USE_TYPESCRIPT_CONTRACT=true)");
 }
 
 // Startup banner via state transition

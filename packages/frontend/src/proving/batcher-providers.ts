@@ -17,14 +17,11 @@ import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-pri
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import {
-  type BalancedProvingRecipe,
   type ProofProvider,
-  type ProvenTransaction,
+  type UnboundTransaction,
   type ProveTxConfig,
-  TRANSACTION_TO_PROVE,
 } from "@midnight-ntwrk/midnight-js-types";
 import {
-  type ShieldedCoinInfo,
   Transaction,
   type TransactionId,
   type UnprovenTransaction,
@@ -36,21 +33,18 @@ import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import type { ProverMessage, ProverResponse } from "./worker-types";
 import type { GoFishProviders } from "../services/MidnightOnChainService";
 
-// Circuit keys type for go-fish contract
-type GoFishCircuitKeys = string;
-
 type WebWorkerPromiseCallbacks = {
   resolve: (
-    value: ProvenTransaction | PromiseLike<ProvenTransaction>
+    value: UnboundTransaction | PromiseLike<UnboundTransaction>
   ) => void;
   reject: (reason?: unknown) => void;
 };
 
 /**
  * Web Worker based proof provider that generates ZK proofs locally
- * Updated for SDK v3 - returns ProvenTransaction
+ * Updated for SDK v3 - returns UnboundTransaction
  */
-class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
+class WebWorkerLocalProofServer implements ProofProvider {
   nextId: number;
   requests: Map<number, WebWorkerPromiseCallbacks>;
   worker: Worker | undefined;
@@ -81,7 +75,7 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
           if (callbacks && data) {
             // Deserialize using ledger-v7 (no network ID needed - set globally)
             const provenTx = Transaction.deserialize(data);
-            callbacks.resolve(provenTx as ProvenTransaction);
+            callbacks.resolve(provenTx as UnboundTransaction);
             this.requests.delete(requestId!);
           }
           break;
@@ -135,7 +129,7 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
     this.worker!.postMessage({
       type: "params",
       baseUrl,
-    } as ProverMessage<K>);
+    } as ProverMessage);
 
     await paramsReady;
 
@@ -144,8 +138,8 @@ class WebWorkerLocalProofServer implements ProofProvider<GoFishCircuitKeys> {
 
   async proveTx(
     tx: UnprovenTransaction,
-    proveTxConfig?: ProveTxConfig<GoFishCircuitKeys>
-  ): Promise<ProvenTransaction> {
+    proveTxConfig?: ProveTxConfig
+  ): Promise<UnboundTransaction> {
     if (this.worker !== undefined) {
       return new Promise((resolve, reject) => {
         this.requests.set(this.nextId, { resolve, reject });
@@ -330,16 +324,12 @@ export async function initializeBatcherProviders(): Promise<GoFishProviders> {
         return encryptionPublicKey as unknown as EncPublicKey;
       },
       balanceTx(
-        tx: UnprovenTransaction,
-        _newCoins?: ShieldedCoinInfo[],
+        tx: UnboundTransaction,
         _ttl?: Date
-      ): Promise<BalancedProvingRecipe> {
-        // In batcher mode, return a TransactionToProve recipe
-        // The batcher will handle balancing after proving
-        return Promise.resolve({
-          type: TRANSACTION_TO_PROVE,
-          transaction: tx,
-        } as BalancedProvingRecipe);
+      ): Promise<FinalizedTransaction> {
+        // In batcher mode, the batcher handles balancing
+        // Pass through the unbound transaction as-is
+        return Promise.resolve(tx as unknown as FinalizedTransaction);
       },
     },
     midnightProvider: {

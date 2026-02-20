@@ -128,6 +128,29 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
+    // Proxy API requests to the backend to avoid CORS issues
+    proxy: {
+      '/api': {
+        target: 'http://localhost:9996',
+        changeOrigin: true,
+      },
+      '/open_lobbies': {
+        target: 'http://localhost:9996',
+        changeOrigin: true,
+      },
+      '/lobby_state': {
+        target: 'http://localhost:9996',
+        changeOrigin: true,
+      },
+      '/user_lobbies': {
+        target: 'http://localhost:9996',
+        changeOrigin: true,
+      },
+      '/game_state': {
+        target: 'http://localhost:9996',
+        changeOrigin: true,
+      },
+    },
   },
   preview: {
     // Required headers for SharedArrayBuffer in preview mode
