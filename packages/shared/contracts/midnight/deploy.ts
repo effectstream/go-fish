@@ -13,7 +13,7 @@
  *   4. Contract compiled (deno task contract:compile)
  */
 
-import { type DeployConfig, deployMidnightContract } from "./deploy-ledger6.ts";
+import { type DeployConfig, deployMidnightContract } from "./deploy-ledger7.ts";
 import { midnightNetworkConfig } from "./midnight-env.ts";
 import {
   Contract,

@@ -5,15 +5,17 @@ import {
 } from "@midnight-ntwrk/midnight-js-network-id";
 import { Buffer } from "node:buffer";
 import type {
-  BalancedProvingRecipe,
   MidnightProvider,
   WalletProvider,
 } from "@midnight-ntwrk/midnight-js-types";
 import {
-  createUnprovenDeployTxFromVerifierKeys,
   submitInsertVerifierKeyTx,
-  submitTx,
 } from "@midnight-ntwrk/midnight-js-contracts";
+import { CompiledContract, ContractExecutable } from "@midnight-ntwrk/compact-js";
+import {
+  makeContractExecutableRuntime,
+  exitResultOrError,
+} from "@midnight-ntwrk/midnight-js-types";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
@@ -22,23 +24,12 @@ import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-pri
 import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
 import { parseCoinPublicKeyToHex } from "@midnight-ntwrk/midnight-js-utils";
 import {
-  ContractState,
   sampleSigningKey,
 } from "@midnight-ntwrk/compact-runtime";
 import {
   SucceedEntirely,
 } from "@midnight-ntwrk/midnight-js-types";
 
-/**
- * Get impure circuit IDs from a contract instance.
- * This replaces the removed getImpureCircuitIds from midnight-js-types@3.0.0
- */
-function getImpureCircuitIds(contract: any): string[] {
-  if (contract.impureCircuits && typeof contract.impureCircuits === "object") {
-    return Object.keys(contract.impureCircuits);
-  }
-  return [];
-}
 import {
   buildWalletFacade,
   getInitialShieldedState,
@@ -54,15 +45,19 @@ declare const Deno: typeof globalThis.Deno;
 
 // Modular wallet SDK imports
 import type { WalletFacade } from "@midnight-ntwrk/wallet-sdk-facade";
-import { shieldedToken } from "@midnight-ntwrk/ledger-v7";
+import {
+  shieldedToken,
+  ContractDeploy,
+  ContractState as LedgerContractState,
+  Intent,
+  Transaction,
+} from "@midnight-ntwrk/ledger-v7";
 import type {
   CoinPublicKey,
   DustSecretKey,
   EncPublicKey,
   FinalizedTransaction,
-  ShieldedCoinInfo,
   TransactionId,
-  UnprovenTransaction,
   ZswapSecretKeys,
 } from "@midnight-ntwrk/ledger-v7";
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
@@ -191,51 +186,6 @@ function safeStringifyProgress(value: unknown): string {
   }
 }
 
-function createPrunedContractState(
-  currentContractState: ContractState,
-  allowedCircuitIds: Array<string | Uint8Array>,
-): ContractState {
-  if (allowedCircuitIds.length === 0) return currentContractState;
-
-  const prunedState = new ContractState();
-  prunedState.data = currentContractState.data;
-  prunedState.maintenanceAuthority = currentContractState.maintenanceAuthority;
-  prunedState.balance = new Map(currentContractState.balance);
-
-  for (const circuitId of allowedCircuitIds) {
-    const operation = currentContractState.operation(circuitId);
-    if (!operation) {
-      throw new Error(
-        `Missing operation for circuit '${
-          String(circuitId)
-        }' in constructor state`,
-      );
-    }
-    prunedState.setOperation(circuitId, operation);
-  }
-
-  return prunedState;
-}
-
-const resolveDeployVerifierKeyIds = (): string[] => {
-  const envValue = Deno.env.get("MIDNIGHT_DEPLOY_VERIFIER_KEY_IDS");
-  if (!envValue) return [];
-  return envValue.split(",").map((entry) => entry.trim()).filter(Boolean);
-};
-
-const resolveDeployVerifierKeyLimit = (): number | null => {
-  const envValue = Deno.env.get("MIDNIGHT_DEPLOY_VERIFIER_KEYS_LIMIT");
-  if (!envValue) return null;
-  const parsed = Number(envValue);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return Math.floor(parsed);
-  }
-  log.warn(
-    `Invalid MIDNIGHT_DEPLOY_VERIFIER_KEYS_LIMIT="${envValue}", ignoring.`,
-  );
-  return null;
-};
-
 const resolveSkipInsertRemainingVks = (): boolean =>
   Deno.env.get("MIDNIGHT_DEPLOY_SKIP_INSERT_REMAINING_VKS")?.toLowerCase() ===
     "true";
@@ -266,22 +216,6 @@ const collectErrorMessages = (error: unknown, maxDepth = 6): string[] => {
     messages.push(String(error));
   }
   return messages;
-};
-
-const isBlockLimitError = (error: unknown): boolean =>
-  collectErrorMessages(error).some((message) =>
-    message.includes("exceeded block limit in transaction fee computation")
-  );
-
-type SignableTransaction = UnprovenTransaction;
-
-const hasIntents = (transaction: SignableTransaction): boolean => {
-  try {
-    const intents = transaction.intents;
-    return intents !== undefined && intents.size > 0;
-  } catch {
-    return false;
-  }
 };
 
 // ============================================================================
@@ -374,53 +308,6 @@ async function ensureDustBalance(walletResult: WalletResult): Promise<void> {
   }
 }
 
-const getDustWallet = (
-  wallet: WalletFacade,
-): { calculateFee?: (tx: unknown) => Promise<bigint> } | null => {
-  return (wallet as any).dust ?? null;
-};
-
-async function ensureDustForFee(
-  walletResult: WalletResult,
-  requiredFee: bigint,
-): Promise<void> {
-  if (requiredFee <= 0n) return;
-
-  let dustBalance = 0n;
-  try {
-    dustBalance = await waitForDustFunds(walletResult.wallet, {
-      timeoutMs: resolveWalletSyncTimeoutMs(),
-      waitNonZero: false,
-    });
-  } catch (_error) {
-    dustBalance = 0n;
-  }
-
-  if (dustBalance >= requiredFee) return;
-
-  log.warn(
-    `Dust balance ${dustBalance} is below required fee ${requiredFee}; attempting dust registration.`,
-  );
-
-  const registered = await registerNightForDust(walletResult);
-  if (registered) {
-    try {
-      dustBalance = await waitForDustFunds(walletResult.wallet, {
-        timeoutMs: resolveWalletSyncTimeoutMs(),
-        waitNonZero: true,
-      });
-    } catch (_error) {
-      dustBalance = 0n;
-    }
-  }
-
-  if (dustBalance < requiredFee) {
-    throw new Error(
-      `Insufficient dust to cover fee. Required=${requiredFee}, available=${dustBalance}. ` +
-        "Fund the wallet with more NIGHT and register for dust, then retry.",
-    );
-  }
-}
 
 // ============================================================================
 // Provider Configuration
@@ -432,29 +319,6 @@ async function ensureDustForFee(
  * Implements the WalletProvider and MidnightProvider interfaces
  * as defined in @midnight-ntwrk/midnight-js-types v3.x
  */
-async function signUnshieldedTransaction<T extends SignableTransaction>(
-  wallet: WalletFacade,
-  unshieldedKeystore: WalletResult["unshieldedKeystore"],
-  transaction: T,
-  contextLabel: string,
-): Promise<T> {
-  if (!hasIntents(transaction)) return transaction;
-  try {
-    const signed = await wallet.signTransaction(
-      transaction,
-      (payload) => unshieldedKeystore.signData(payload),
-    );
-    return signed as T;
-  } catch (error) {
-    log.error(
-      `Failed to sign unshielded offers (${contextLabel}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    throw error;
-  }
-}
-
 function createWalletAndMidnightProvider(
   wallet: WalletFacade,
   zswapSecretKeys: ZswapSecretKeys,
@@ -463,6 +327,10 @@ function createWalletAndMidnightProvider(
   walletDustSecretKey: DustSecretKey,
   unshieldedKeystore: WalletResult["unshieldedKeystore"],
 ): WalletProvider & MidnightProvider {
+  const secretKeys = {
+    shieldedSecretKeys: walletZswapSecretKeys,
+    dustSecretKey: walletDustSecretKey,
+  };
   return {
     getCoinPublicKey(): CoinPublicKey {
       return zswapSecretKeys.coinPublicKey;
@@ -470,63 +338,33 @@ function createWalletAndMidnightProvider(
     getEncryptionPublicKey(): EncPublicKey {
       return zswapSecretKeys.encryptionPublicKey;
     },
-    balanceTx(
-      tx: UnprovenTransaction,
-      _newCoins?: ShieldedCoinInfo[],
-      ttl?: Date,
-    ): Promise<BalancedProvingRecipe> {
+    // v3 WalletProvider: balanceTx takes UnboundTransaction (proven), returns FinalizedTransaction
+    // deno-lint-ignore no-explicit-any
+    async balanceTx(tx: any, ttl?: Date): Promise<FinalizedTransaction> {
       const txTtl = ttl ?? createTtl();
-      return wallet.balanceTransaction(
-        walletZswapSecretKeys,
-        walletDustSecretKey,
-        tx as SignableTransaction,
-        txTtl,
-      ).then((recipe) => {
-        const signRecipe = async (
-          provingRecipe: BalancedProvingRecipe,
-        ): Promise<BalancedProvingRecipe> => {
-          switch (provingRecipe.type) {
-            case "TransactionToProve":
-              return {
-                ...provingRecipe,
-                transaction: await signUnshieldedTransaction(
-                  wallet,
-                  unshieldedKeystore,
-                  provingRecipe.transaction as SignableTransaction,
-                  "balanceTx",
-                ),
-              };
-            case "BalanceTransactionToProve":
-              return {
-                ...provingRecipe,
-                transactionToProve: await signUnshieldedTransaction(
-                  wallet,
-                  unshieldedKeystore,
-                  provingRecipe.transactionToProve as SignableTransaction,
-                  "balanceTx",
-                ),
-                transactionToBalance: await signUnshieldedTransaction(
-                  wallet,
-                  unshieldedKeystore,
-                  provingRecipe.transactionToBalance as SignableTransaction,
-                  "balanceTx",
-                ),
-              };
-            case "NothingToProve":
-              return {
-                ...provingRecipe,
-                transaction: await signUnshieldedTransaction(
-                  wallet,
-                  unshieldedKeystore,
-                  provingRecipe.transaction as SignableTransaction,
-                  "balanceTx",
-                ),
-              };
-          }
-        };
-
-        return signRecipe(recipe as BalancedProvingRecipe);
+      // Balance the proven (unbound) transaction
+      const recipe = await wallet.balanceUnboundTransaction(tx, secretKeys, {
+        ttl: txTtl,
       });
+
+      // Sign only the balancing transaction (if any), NOT the base transaction.
+      // The base transaction from proveTx has Proof markers in its intent,
+      // and the wallet SDK's addSignature tries to clone the intent with
+      // pre-proof markers, which causes a deserialization error.
+      // Maintenance/deploy txs don't need unshielded offer signatures on the base tx.
+      if (recipe.balancingTransaction) {
+        const signedBalancingTx = await wallet.signUnprovenTransaction(
+          recipe.balancingTransaction,
+          (payload) => unshieldedKeystore.signData(payload),
+        );
+        return wallet.finalizeRecipe({
+          ...recipe,
+          balancingTransaction: signedBalancingTx,
+        });
+      }
+
+      // No balancing transaction — finalize directly
+      return wallet.finalizeRecipe(recipe);
     },
     submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
       return wallet.submitTransaction(tx).catch((error) => {
@@ -584,158 +422,190 @@ function configureProviders(
   };
 }
 
+/**
+ * Create a CompiledContract object from a contract class and witnesses.
+ * In compact-js v2.4+, the SDK expects a CompiledContract (with internal Symbol metadata)
+ * rather than a raw contract class instance.
+ */
+function createCompiledContract(
+  contractClass: DeployConfig["contractClass"],
+  witnesses: DeployConfig["witnesses"],
+  contractName: string,
+  compiledAssetsPath: string,
+  // deno-lint-ignore no-explicit-any
+): any {
+  // deno-lint-ignore no-explicit-any
+  let compiled: any = CompiledContract.make(contractName, contractClass);
+  compiled = (CompiledContract as any).withWitnesses(compiled, witnesses);
+  compiled = (CompiledContract as any).withCompiledFileAssets(compiled, compiledAssetsPath);
+  return compiled;
+}
+
 async function deployWithLimitedVerifierKeys(
   providers: ReturnType<typeof configureProviders>,
-  walletResult: WalletResult,
-  contract: InstanceType<DeployConfig["contractClass"]>,
+  // deno-lint-ignore no-explicit-any
+  compiledContract: any,
   config: DeployConfig,
   deployArgs: unknown[] | undefined,
-  selection: { ids?: string[]; limit?: number },
+  walletResult: WalletResult,
 ): Promise<string> {
-  const allCircuitIds = getImpureCircuitIds(contract as any);
-  const allVerifierKeys = await providers.zkConfigProvider.getVerifierKeys(
-    allCircuitIds as any,
-  );
-
-  const verifierKeyMap = new Map(
-    allVerifierKeys.map(([id, key]) => [String(id), key]),
-  );
-
-  const selectedIds = selection.ids?.length ? selection.ids : null;
-  const missingIds = selectedIds
-    ? selectedIds.filter((id) => !verifierKeyMap.has(id))
-    : [];
-  if (missingIds.length > 0) {
-    throw new Error(
-      `Verifier keys not found for circuit IDs: ${missingIds.join(", ")}`,
-    );
-  }
-
-  const selectedVerifierKeys = selectedIds
-    ? (allVerifierKeys.filter(([id]) => selectedIds.includes(String(id))) as [
-      string | Uint8Array,
-      Uint8Array,
-    ][])
-    : selection.limit
-    ? ([...allVerifierKeys]
-      .sort((a, b) => a[1].length - b[1].length)
-      .slice(0, selection.limit) as [string | Uint8Array, Uint8Array][])
-    : (allVerifierKeys as [string | Uint8Array, Uint8Array][]);
-
-  const selectedIdSet = new Set(
-    selectedVerifierKeys.map(([id]) => String(id)),
-  );
-  const remainingVerifierKeys = allVerifierKeys.filter(
-    ([id]) => !selectedIdSet.has(String(id)),
-  ) as [string | Uint8Array, Uint8Array][];
-
-  log.info(
-    `Deploying with ${selectedVerifierKeys.length}/${allVerifierKeys.length} verifier keys (selected: ${
-      selectedVerifierKeys.map(([id]) => String(id)).join(", ") || "none"
-    })`,
-  );
-
-  const originalInitialState = contract.initialState?.bind(contract);
-  if (typeof originalInitialState === "function") {
-    contract.initialState = (
-      constructorContext: unknown,
-      ...args: unknown[]
-    ) => {
-      const result = originalInitialState(constructorContext, ...args);
-      const selectedCircuitIds = selectedVerifierKeys.map(([id]) => id);
-      return {
-        ...result,
-        currentContractState: createPrunedContractState(
-          result.currentContractState,
-          selectedCircuitIds,
-        ),
-      };
-    };
-  }
+  // Strategy: The Go Fish contract has 30 circuits with large verifier keys.
+  // A deploy tx with all VKs exceeds the block size limit.
+  // We deploy with NO verifier keys (stripped contract state), then insert
+  // each VK individually via submitInsertVerifierKeyTx after deployment.
+  //
+  // Steps:
+  // 1. Run ContractExecutable.initialize() with the real zkConfigProvider
+  //    (so VKs are validated and the contract state is correctly initialized)
+  // 2. Convert the resulting contract state to ledger format
+  // 3. Create a STRIPPED copy with only data + maintenanceAuthority (no operations)
+  // 4. Build the deploy transaction from the stripped state
+  // 5. After deployment, insert all VKs individually
 
   const signingKey = sampleSigningKey();
-  const deployOptions: {
-    contract: InstanceType<DeployConfig["contractClass"]>;
-    signingKey: unknown;
-    privateStateId?: string;
-    args?: unknown[];
-    initialPrivateState?: unknown;
-  } = {
-    contract,
-    signingKey,
-  };
-
-  if (deployArgs && deployArgs.length > 0) {
-    deployOptions.args = deployArgs;
-  }
-  if (config.privateStateId) {
-    deployOptions.privateStateId = config.privateStateId;
-  }
-  if (config.initialPrivateState) {
-    deployOptions.initialPrivateState = config.initialPrivateState;
-  }
 
   const coinPublicKey = parseCoinPublicKeyToHex(
     providers.walletProvider.getCoinPublicKey() as string,
     getNetworkId(),
   );
 
-  const unprovenDeployTxData = createUnprovenDeployTxFromVerifierKeys(
-    selectedVerifierKeys as any,
-    coinPublicKey,
-    deployOptions as any,
-    providers.walletProvider.getEncryptionPublicKey(),
+  // Step 1: Initialize the contract with the real provider to get valid state
+  const contractExec = ContractExecutable.make(compiledContract);
+  const contractRuntime = makeContractExecutableRuntime(
+    providers.zkConfigProvider,
+    {
+      coinPublicKey,
+      signingKey,
+    },
   );
 
-  const dustWallet = getDustWallet(walletResult.wallet);
-  if (!dustWallet?.calculateFee) {
-    log.warn("Dust wallet not available for fee estimation; skipping check.");
-  } else {
-    try {
-      const requiredFee = await dustWallet.calculateFee(
-        unprovenDeployTxData.private.unprovenTx,
-      );
-      log.info(`Estimated dust fee for deploy: ${requiredFee}`);
-      await ensureDustForFee(walletResult, requiredFee);
-    } catch (error) {
-      log.warn(
-        `Failed to estimate dust fee: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+  const initialPrivateState = config.initialPrivateState ?? undefined;
+  const args = deployArgs ?? [];
+
+  log.info("Running contract initialization with full zkConfigProvider...");
+  const exitResult = await contractRuntime.runPromiseExit(
+    contractExec.initialize(initialPrivateState, ...args),
+  );
+
+  // deno-lint-ignore no-explicit-any
+  let initResult: any;
+  try {
+    initResult = exitResultOrError(exitResult);
+  } catch (error) {
+    // deno-lint-ignore no-explicit-any
+    const err = error as any;
+    if (err?.["_tag"] === "ContractRuntimeError" && err?.cause?.name === "CompactError") {
+      throw new Error(err.cause.message);
     }
+    throw error;
   }
 
-  const finalizedTxData = await submitTx(providers as any, {
-    unprovenTx: unprovenDeployTxData.private.unprovenTx,
-    newCoins: unprovenDeployTxData.private.newCoins,
-  });
+  const {
+    public: { contractState: fullContractState },
+    private: { privateState, signingKey: derivedSigningKey },
+  } = initResult;
+
+  // Step 2: Convert compact-runtime ContractState to ledger ContractState
+  const fullLedgerState = LedgerContractState.deserialize(
+    fullContractState.serialize(),
+  );
+
+  // Log all operations (circuits) found in the initialized state
+  const allOperationIds = fullLedgerState.operations() as string[];
+  log.info(
+    `Contract initialized with ${allOperationIds.length} operations: ${allOperationIds.join(", ")}`,
+  );
+
+  // Step 3: Create a stripped ContractState with NO operations (no VKs)
+  const strippedState = new LedgerContractState();
+  strippedState.data = fullLedgerState.data;
+  strippedState.maintenanceAuthority = fullLedgerState.maintenanceAuthority;
+  // Deliberately skip copying operations — this is the key to reducing tx size
+
+  log.info("Created stripped contract state (no operations/verifier keys)");
+
+  // Step 4: Build the deploy transaction
+  const contractDeploy = new ContractDeploy(strippedState);
+  const contractAddress = contractDeploy.address;
+
+  // Build the unproven transaction with Intent containing the deploy
+  const intent = Intent.new(createTtl()).addDeploy(contractDeploy);
+  const unprovenTx = Transaction.fromParts(
+    getNetworkId(),
+    undefined, // no guaranteed zswap offer needed for a stripped deploy
+    undefined, // no fallible offer
+    intent,
+  );
+
+  log.info(`Deploy tx built for contract address: ${contractAddress}`);
+
+  // Step 5: Balance, sign, finalize, and submit the deploy transaction.
+  // We bypass submitTx (which calls proveTx first) because our stripped deploy
+  // has no circuit calls — there are no proofs to generate. The proof provider
+  // would convert PreProof markers to Proof markers, causing the wallet to fail
+  // when trying to deserialize the intent.
+  const { wallet, walletZswapSecretKeys, walletDustSecretKey, unshieldedKeystore } = walletResult;
+  const balanceSecretKeys = {
+    shieldedSecretKeys: walletZswapSecretKeys,
+    dustSecretKey: walletDustSecretKey,
+  };
+
+  log.info("Balancing deploy transaction (unproven)...");
+  const recipe = await wallet.balanceUnprovenTransaction(
+    unprovenTx,
+    balanceSecretKeys,
+    { ttl: createTtl() },
+  );
+
+  const signedRecipe = await wallet.signRecipe(
+    recipe,
+    (payload) => unshieldedKeystore.signData(payload),
+  );
+
+  const finalizedTx = await wallet.finalizeRecipe(signedRecipe);
+
+  log.info("Submitting deploy transaction...");
+  const txId = await wallet.submitTransaction(finalizedTx);
+  log.info(`Deploy transaction submitted, txId: ${txId}`);
+
+  // Wait for the transaction to be finalized on-chain
+  const finalizedTxData = await providers.publicDataProvider.watchForTxData(txId);
   if (finalizedTxData.status !== SucceedEntirely) {
     throw new Error(
       `Deployment failed with status ${finalizedTxData.status}`,
     );
   }
 
+  log.info("Deploy transaction finalized on-chain.");
+
+  // Save private state and signing key
   if (config.privateStateId) {
     await providers.privateStateProvider.set(
       config.privateStateId,
-      unprovenDeployTxData.private.initialPrivateState,
+      privateState,
     );
   }
   await providers.privateStateProvider.setSigningKey(
-    unprovenDeployTxData.public.contractAddress,
-    signingKey,
+    contractAddress,
+    derivedSigningKey,
   );
 
-  if (remainingVerifierKeys.length > 0 && !resolveSkipInsertRemainingVks()) {
-    log.info(
-      `Inserting remaining verifier keys (${remainingVerifierKeys.length})...`,
+  // Step 6: Insert all verifier keys individually
+  if (!resolveSkipInsertRemainingVks()) {
+    // Collect all verifier keys from the real zkConfigProvider
+    const allVerifierKeys = await providers.zkConfigProvider.getVerifierKeys(
+      allOperationIds as any,
     );
-    for (const [circuitId, verifierKey] of remainingVerifierKeys) {
+
+    log.info(
+      `Inserting ${allVerifierKeys.length} verifier keys individually...`,
+    );
+    for (const [circuitId, verifierKey] of allVerifierKeys) {
       log.info(`Inserting verifier key for circuit: ${circuitId}`);
       const submitResult = await submitInsertVerifierKeyTx(
         providers as any,
-        unprovenDeployTxData.public.contractAddress,
+        compiledContract,
+        contractAddress,
         circuitId as any,
         verifierKey as any,
       );
@@ -744,10 +614,16 @@ async function deployWithLimitedVerifierKeys(
           `Insert verifier key failed for ${circuitId} with status ${submitResult.status}`,
         );
       }
+      log.info(`Verifier key inserted for circuit: ${circuitId}`);
     }
+    log.info("All verifier keys inserted successfully.");
+  } else {
+    log.warn(
+      "Skipping verifier key insertion (MIDNIGHT_DEPLOY_SKIP_INSERT_REMAINING_VKS=true)",
+    );
   }
 
-  return unprovenDeployTxData.public.contractAddress;
+  return contractAddress;
 }
 
 // ============================================================================
@@ -979,57 +855,22 @@ export async function deployMidnightContract(
     log.info("Providers configured.");
 
     log.info("Deploying contract...");
-    const contract = new config.contractClass(config.witnesses);
 
-    const deployOptions: {
-      contract: unknown;
-      privateStateId: string;
-      initialPrivateState: unknown;
-      args?: unknown[];
-    } = {
-      contract,
-      privateStateId: config.privateStateId,
-      initialPrivateState: config.initialPrivateState,
-    };
+    // Create a CompiledContract object (v3 API requires this instead of raw contract class)
+    const compiledContract = createCompiledContract(
+      config.contractClass,
+      config.witnesses,
+      config.contractName,
+      zkConfigPath,
+    );
 
-    if (deployArgs && deployArgs.length > 0) {
-      deployOptions.args = deployArgs;
-    }
-
-    const verifierKeyIds = resolveDeployVerifierKeyIds();
-    const verifierKeyLimit = resolveDeployVerifierKeyLimit();
-    const selection = {
-      ids: verifierKeyIds.length > 0 ? verifierKeyIds : undefined,
-      limit: verifierKeyLimit ?? undefined,
-    };
-
-    let contractAddress: string;
-    try {
-      contractAddress = await deployWithLimitedVerifierKeys(
-        providers,
-        walletResult,
-        contract,
-        config,
-        deployArgs,
-        selection,
-      );
-    } catch (error) {
-      if (isBlockLimitError(error)) {
-        log.warn(
-          "Deploy failed with block limit error; retrying with limited verifier keys (limit=1).",
-        );
-        contractAddress = await deployWithLimitedVerifierKeys(
-          providers,
-          walletResult,
-          contract,
-          config,
-          deployArgs,
-          { limit: 1 },
-        );
-      } else {
-        throw error;
-      }
-    }
+    const contractAddress = await deployWithLimitedVerifierKeys(
+      providers,
+      compiledContract,
+      config,
+      deployArgs,
+      walletResult,
+    );
 
     log.info("Contract deployed.");
     log.info(`Contract address: ${contractAddress}`);

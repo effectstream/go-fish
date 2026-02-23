@@ -27,6 +27,7 @@
         "@paimaexample/npm-midnight-proof-server": "npm:@paimaexample/npm-midnight-proof-server@0.7.0",
         "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v7@7.0.0",
         "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
+        "@midnight-ntwrk/compact-js": "npm:@midnight-ntwrk/compact-js@2.4.0",
         "@midnight-ntwrk/wallet-sdk-address-format": "npm:@midnight-ntwrk/wallet-sdk-address-format@3.0.0",
         "@midnight-ntwrk/midnight-js-network-id": "npm:@midnight-ntwrk/midnight-js-network-id@3.0.0",
         "@midnight-ntwrk/midnight-js-types": "npm:@midnight-ntwrk/midnight-js-types@3.0.0",
