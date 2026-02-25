@@ -55,7 +55,7 @@ Visit **http://localhost:3000**
 
 ```
 /packages/
-├── frontend/              # Web UI (HTML5, Canvas/SVG, TypeScript, Vite)
+├── frontend/              # Web UI (Three.js 3D game scene, HTML overlays, TypeScript, Vite)
 ├── client/
 │   ├── node/             # Paima engine node (state machine, APIs)
 │   ├── batcher/          # Transaction batching service
@@ -72,7 +72,7 @@ Visit **http://localhost:3000**
 
 This project follows a hybrid blockchain architecture:
 
-- **Frontend**: User interface with HTML5 Canvas/SVG rendering
+- **Frontend**: Three.js 3D game scene with Balatro-style post-processing, HTML overlays for lobby/menu screens
 - **EVM Contracts**: Handle lobbies, player stats, matchmaking (Hardhat)
 - **Midnight Contracts**: Handle private game state and logic
 - **Paima Node**: Processes blockchain transactions and maintains game state
@@ -136,6 +136,20 @@ deno task frontend:build # Build frontend from root
 - `DEPLOY_MIDNIGHT_CONTRACT=true` - Deploy Midnight contract at startup (takes ~6 minutes)
 - `EFFECTSTREAM_STDOUT=true` - Log all output to stdout instead of tmux
 
+### Frontend Configuration (`VITE_` prefix)
+
+These are set in a `.env` file in `packages/frontend/` or passed inline when running the dev server. Vite exposes them to the frontend via `import.meta.env`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_USE_LEGACY_GAME_UI` | `"false"` | Set to `"true"` to use the old DOM-based game screen instead of the Three.js 3D scene. Lobby, wallet, and setup screens are unaffected. |
+| `VITE_BATCHER_MODE_ENABLED` | `"false"` | Set to `"true"` to enable batcher mode (transactions go through Paima batcher, no Lace wallet needed). |
+| `VITE_BATCHER_URL` | `http://localhost:3334` | URL of the Midnight batcher service. |
+| `VITE_INDEXER_HTTP_URL` | `http://127.0.0.1:8089/api/v1/graphql` | Midnight indexer HTTP/GraphQL endpoint. |
+| `VITE_INDEXER_WS_URL` | `ws://127.0.0.1:8089/api/v1/graphql/ws` | Midnight indexer WebSocket endpoint. |
+| `VITE_PAIMA_L2_CONTRACT_ADDRESS` | `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512` | Paima L2 contract address on the EVM chain. |
+| `VITE_EVM_RPC_URL` | `http://localhost:8545` | EVM JSON-RPC endpoint (Hardhat by default). |
+
 ### Example: Using with External Hardhat
 
 ```bash
@@ -180,7 +194,7 @@ See [packages/shared/data-types/src/grammar.ts](packages/shared/data-types/src/g
 ## Technology Stack
 
 - **Backend**: Deno, TypeScript, Paima Engine
-- **Frontend**: Vite, TypeScript, HTML5 Canvas/SVG
+- **Frontend**: Vite, TypeScript, Three.js, postprocessing, gsap
 - **Blockchain (EVM)**: Hardhat, Solidity (lobbies & stats)
 - **Blockchain (Midnight)**: Midnight contracts (game logic - stub)
 - **State Management**: Paima State Machine (PaimaSTM)

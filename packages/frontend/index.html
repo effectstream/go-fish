@@ -5,8 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Go Fish Game - Paima Engine</title>
     <link rel="stylesheet" href="/public/game-styles.css" />
+    <style>
+      /* Three.js canvas renders behind the DOM UI */
+      #three-canvas-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+        pointer-events: none;
+      }
+      #three-canvas-container canvas {
+        display: block;
+      }
+      /* DOM overlay sits on top of canvas */
+      #app-container {
+        position: relative;
+        z-index: 1;
+      }
+    </style>
   </head>
   <body>
+    <div id="three-canvas-container"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

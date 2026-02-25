@@ -3,6 +3,7 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
+import glsl from 'vite-plugin-glsl';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +14,7 @@ export default defineConfig({
   plugins: [
     wasm(),
     topLevelAwait(),
+    glsl(),
     nodePolyfills({
       // Include all node polyfills needed by Midnight SDK
       include: [
@@ -148,6 +150,11 @@ export default defineConfig({
       },
       '/game_state': {
         target: 'http://localhost:9996',
+        changeOrigin: true,
+      },
+      // Proxy batcher requests to avoid CORS issues
+      '/send-input': {
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
     },

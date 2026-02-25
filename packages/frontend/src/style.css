@@ -779,6 +779,14 @@ button {
   font-size: 1rem;
 }
 
+.form-hint {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.45);
+  font-style: italic;
+}
+
 .modal-actions {
   display: flex;
   gap: 1rem;

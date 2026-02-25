@@ -1,6 +1,8 @@
 import { GameManager } from './GameManager';
 import { UIManager } from './UIManager';
 import { MidnightService } from './services/MidnightService';
+import { ThreeApp } from './three/ThreeApp';
+import { SceneManager } from './three/SceneManager';
 
 // IMPORTANT: Set Midnight network ID at top level before any other SDK imports
 // This must happen before any Midnight SDK modules are used
@@ -15,9 +17,14 @@ console.log('[Main] Midnight network ID set to undeployed');
 class App {
   private gameManager: GameManager;
   private _uiManager: UIManager;
+  private threeApp: ThreeApp | null = null;
+  private sceneManager: SceneManager | null = null;
 
   constructor() {
     console.log('Initializing Go Fish Game...');
+
+    // Initialize Three.js background
+    this.initThreeBackground();
 
     // Initialize managers
     this.gameManager = new GameManager();
@@ -25,6 +32,26 @@ class App {
 
     // Start the application
     this.init();
+  }
+
+  private initThreeBackground(): void {
+    const container = document.getElementById('three-canvas-container');
+    if (!container) {
+      console.warn('Three.js container not found, skipping 3D background');
+      return;
+    }
+    try {
+      this.threeApp = new ThreeApp(container);
+      this.threeApp.start();
+
+      // Scene manager listens for navigation events and switches scenes
+      this.sceneManager = new SceneManager(this.threeApp);
+      this.sceneManager.attach();
+
+      console.log('[Main] Three.js background initialized');
+    } catch (error) {
+      console.warn('[Main] Failed to initialize Three.js background:', error);
+    }
   }
 
   private async init() {

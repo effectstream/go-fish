@@ -45,7 +45,9 @@ interface BatcherInput {
 }
 
 // Configuration
-const BATCHER_URL = import.meta.env.VITE_BATCHER_URL || "http://localhost:3334";
+// Use relative URL by default so requests go through Vite's dev server proxy (avoids CORS).
+// Set VITE_BATCHER_URL to an absolute URL for production or when not using the dev proxy.
+const BATCHER_URL = import.meta.env.VITE_BATCHER_URL || "";
 const MIDNIGHT_TARGET = "go-fish"; // Target name matching batcher's adapter registration
 // Using "wait-receipt" to ensure transactions are confirmed before proceeding.
 // The frontend has a 2-minute timeout and will retry if needed.

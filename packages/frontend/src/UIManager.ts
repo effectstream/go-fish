@@ -11,6 +11,9 @@ import { GameScreen } from './screens/GameScreen';
 import { ResultsScreen } from './screens/ResultsScreen';
 import { GoFishGameService } from './services/GoFishGameService';
 
+/** When true, the old DOM GameScreen is used instead of the Three.js scene. */
+const USE_LEGACY_GAME_UI = import.meta.env.VITE_USE_LEGACY_GAME_UI === 'true';
+
 export class UIManager {
   private currentScreen: string = 'wallet';
   private _gameManager: GameManager;
@@ -106,9 +109,12 @@ export class UIManager {
         break;
       case 'game':
         if (param) {
-          // Create GameScreen with lobbyId
-          this.gameScreen = new GameScreen(this.container, param);
-          this.gameScreen.show();
+          if (USE_LEGACY_GAME_UI) {
+            // Legacy DOM game screen
+            this.gameScreen = new GameScreen(this.container, param);
+            this.gameScreen.show();
+          }
+          // When legacy is off, Three.js SceneManager handles game rendering
         }
         break;
       case 'results':

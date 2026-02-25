@@ -112,11 +112,12 @@ export class LobbyListScreen {
               <label>Max Players:</label>
               <select id="max-players">
                 <option value="2" selected>2 Players</option>
-                <option value="3">3 Players</option>
-                <option value="4">4 Players</option>
-                <option value="5">5 Players</option>
-                <option value="6">6 Players</option>
+                <option value="3" disabled>3 Players</option>
+                <option value="4" disabled>4 Players</option>
+                <option value="5" disabled>5 Players</option>
+                <option value="6" disabled>6 Players</option>
               </select>
+              <span class="form-hint">3+ players coming in a future version</span>
             </div>
             <div class="modal-actions">
               <button id="confirm-create-btn" class="btn btn-primary">Create</button>
