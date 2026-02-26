@@ -169,21 +169,27 @@ class GoFishMidnightAdapter extends MidnightAdapter {
 
           return result;
         } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
           const isUnreachable = error instanceof Error &&
-            (error.message.includes("unreachable") || error.message.includes("RuntimeError"));
+            (errMsg.includes("unreachable") || errMsg.includes("RuntimeError"));
+          // Proof server 500 means the circuit's on-chain assertions failed during /check,
+          // which happens when the indexer hasn't yet confirmed the preceding transaction
+          // (e.g. both applyMask transactions must be on-chain before dealCards /check passes).
+          const isProofServer500 = errMsg.includes("code=\"500\"") || errMsg.includes("code=500");
+          const isRetryable = isUnreachable || isProofServer500;
 
-          if (isUnreachable && attempt < MAX_RETRIES) {
+          if (isRetryable && attempt < MAX_RETRIES) {
             const elapsed = Math.round((Date.now() - startTime) / 1000);
-            // Log indexer block height for diagnostics
+            const reason = isProofServer500 ? "proof server 500 (on-chain state not yet confirmed)" : "WASM unreachable";
             try {
               const blockNum = await this.getBlockNumber();
               console.warn(
-                `[GoFishMidnightAdapter] ${circuit} failed with WASM unreachable (attempt ${attempt}/${MAX_RETRIES}, ${elapsed}s elapsed, indexer at block ${blockNum}), ` +
+                `[GoFishMidnightAdapter] ${circuit} failed with ${reason} (attempt ${attempt}/${MAX_RETRIES}, ${elapsed}s elapsed, indexer at block ${blockNum}), ` +
                 `retrying in ${RETRY_DELAY_MS / 1000}s...`
               );
             } catch {
               console.warn(
-                `[GoFishMidnightAdapter] ${circuit} failed with WASM unreachable (attempt ${attempt}/${MAX_RETRIES}, ${elapsed}s elapsed), ` +
+                `[GoFishMidnightAdapter] ${circuit} failed with ${reason} (attempt ${attempt}/${MAX_RETRIES}, ${elapsed}s elapsed), ` +
                 `retrying in ${RETRY_DELAY_MS / 1000}s (indexer may be behind)...`
               );
             }
@@ -333,23 +339,21 @@ class GoFishMidnightAdapter extends MidnightAdapter {
   }
 }
 
-// Network ID for Midnight (0 = Undeployed, 1 = Devnet, 2 = Testnet, 3 = Mainnet)
-const MIDNIGHT_NETWORK_ID = isTestnet ? 2 : 0;
-
 // Create the Go Fish Midnight adapter instance
-// maxBatchSize=300 bytes ensures only 1 circuit call per batch
-// (The batcher interprets maxBatchSize as bytes, not count. A single circuit call is ~200-400 bytes)
-// Note: init_deck with no args is small (~150 bytes), applyMask with gameId is larger (~250 bytes)
+// NOTE: We pass the Contract CLASS (not an instance) so the vendor adapter can build a
+// CompiledContract using its own compact-js module (avoids Symbol mismatch across module instances).
 export const midnightAdapter_go_fish = new GoFishMidnightAdapter(
   contractAddress0,
   GENESIS_MINT_WALLET_SEED,
-  midnightAdapterConfig0,
-  new goFishContract.Contract(goFishContractInfo.witnesses),
+  { ...midnightAdapterConfig0, contractTag: "go-fish-contract" },
+  goFishContract.Contract,   // Pass the CLASS, not an instance
   goFishContractInfo.witnesses,
   contractInfo0,
-  MIDNIGHT_NETWORK_ID,     // networkId
   syncProtocolName,        // syncProtocolName
-  300                      // maxBatchSize in bytes - limits to ~1 circuit call per batch
+  // maxBatchSize in bytes — must be large enough for any single circuit call payload.
+  // The actual "one circuit per batch" limit is enforced by maxInputs: 1 in buildBatchData().
+  // applyMask/dealCards payloads with secrets can be ~500-1000 bytes.
+  10000,
 );
 
 // Export all Midnight adapters for the batcher

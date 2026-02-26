@@ -98,11 +98,11 @@ async function processActionQueue() {
 }
 
 /**
- * Jubjub curve scalar field order (embedded in BLS12-381)
- * This is the correct modulus for Midnight's elliptic curve operations
+ * BLS12-381 scalar field modulus — the actual modulus used by Midnight's ecMul.
+ * Hex: 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
  */
 const JUBJUB_SCALAR_FIELD_ORDER =
-  6554484396890773809930967563523245729705921265872317281365359162392183254199n;
+  52435875175126190479447740508185965837690552500527637822603658699938581184513n;
 
 /**
  * ⚠️ SECURITY WARNING ⚠️

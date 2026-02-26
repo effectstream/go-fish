@@ -96,12 +96,15 @@ const getShuffleSeed = (gameIdHex: string | null, index: number) => {
 };
 
 /**
- * The order of the scalar field for the Jubjub curve (embedded in BLS12-381).
- * Operations in ecMul roll over at this value.
- * Hex: 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7
+ * The scalar field modulus used by Midnight's ecMul (BLS12-381 scalar field).
+ * Compact's Field type and all ecMul operations use this modulus.
+ * Hex: 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+ *
+ * Note: This is NOT the old Jubjub scalar field order (0x0e7db4ea...).
+ * Midnight's NativePoint ecMul scalar wraps mod the BLS12-381 scalar field.
  */
 const JUBJUB_SCALAR_FIELD_ORDER =
-  6554484396890773809930967563523245729705921265872317281365359162392183254199n;
+  52435875175126190479447740508185965837690552500527637822603658699938581184513n;
 
 /**
  * Calculates the modular multiplicative inverse of a modulo n.

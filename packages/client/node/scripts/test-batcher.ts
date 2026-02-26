@@ -8,7 +8,7 @@
  *
  * Prerequisites:
  *   - Midnight infra running (node, indexer, proof server)
- *   - Batcher running on port 3334
+ *   - Batcher running on port 3336
  *
  * This script does NOT use the frontend or backend — it talks directly to
  * the batcher's /send-input endpoint, just like BatcherMidnightService does.
@@ -17,7 +17,7 @@
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const BATCHER_URL = Deno.env.get("BATCHER_URL") || "http://localhost:3334";
+const BATCHER_URL = Deno.env.get("BATCHER_URL") || "http://localhost:3336";
 const INDEXER_URL = Deno.env.get("INDEXER_URL") || "http://localhost:8088/api/v3/graphql";
 const TARGET = "go-fish";
 const ADDRESS_TYPE_EVM = 0;
@@ -38,7 +38,8 @@ function randomSecret(): bigint {
   let val = 0n;
   for (const b of buf) val = (val << 8n) | BigInt(b);
   // Keep it in a reasonable range — the contract just needs a non-zero scalar
-  return val % 6554484396890773809930967563523245729705921265872317281365359162392183254199n;
+  // BLS12-381 scalar field modulus (Midnight's actual ecMul modulus)
+  return val % 52435875175126190479447740508185965837690552500527637822603658699938581184513n;
 }
 
 /** Generate a random 32-byte shuffle seed */

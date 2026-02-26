@@ -154,7 +154,7 @@ export default defineConfig({
       },
       // Proxy batcher requests to avoid CORS issues
       '/send-input': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:3336',
         changeOrigin: true,
       },
     },

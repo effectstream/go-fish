@@ -154,7 +154,7 @@ const graphqlProxyProcesses = useBatcherMode && !useTypescriptContract ? [
 ] : [];
 
 // Note: The old midnight-batcher (ts-batcher on port 8000) has been removed.
-// Midnight transactions are now handled by the Paima batcher (@go-fish/batcher on port 3334)
+// Midnight transactions are now handled by the Paima batcher (@go-fish/batcher on port 3336)
 // which uses MidnightAdapter for Midnight blockchain integration.
 
 // Midnight contract deployment (runs after infrastructure is ready)

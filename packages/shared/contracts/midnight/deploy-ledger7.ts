@@ -342,29 +342,13 @@ function createWalletAndMidnightProvider(
     // deno-lint-ignore no-explicit-any
     async balanceTx(tx: any, ttl?: Date): Promise<FinalizedTransaction> {
       const txTtl = ttl ?? createTtl();
-      // Balance the proven (unbound) transaction
-      const recipe = await wallet.balanceUnboundTransaction(tx, secretKeys, {
+      // Bind the unbound transaction first, then balance as a finalized transaction
+      const bound = tx.bind();
+      const recipe = await wallet.balanceFinalizedTransaction(bound, secretKeys, {
         ttl: txTtl,
       });
-
-      // Sign only the balancing transaction (if any), NOT the base transaction.
-      // The base transaction from proveTx has Proof markers in its intent,
-      // and the wallet SDK's addSignature tries to clone the intent with
-      // pre-proof markers, which causes a deserialization error.
-      // Maintenance/deploy txs don't need unshielded offer signatures on the base tx.
-      if (recipe.balancingTransaction) {
-        const signedBalancingTx = await wallet.signUnprovenTransaction(
-          recipe.balancingTransaction,
-          (payload) => unshieldedKeystore.signData(payload),
-        );
-        return wallet.finalizeRecipe({
-          ...recipe,
-          balancingTransaction: signedBalancingTx,
-        });
-      }
-
-      // No balancing transaction — finalize directly
-      return wallet.finalizeRecipe(recipe);
+      const signed = await wallet.signRecipe(recipe, (payload: Uint8Array) => unshieldedKeystore.signData(payload));
+      return wallet.finalizeRecipe(signed);
     },
     submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
       return wallet.submitTransaction(tx).catch((error) => {
@@ -399,6 +383,7 @@ function configureProviders(
     walletDustSecretKey,
     unshieldedKeystore,
   );
+  const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
   return {
     // For deployment, we use full private state config because we may need to verify
     // the deployed contract state. For batcher/transaction submission use cases,
@@ -415,8 +400,8 @@ function configureProviders(
       networkUrls.indexer,
       networkUrls.indexerWS,
     ),
-    zkConfigProvider: new NodeZkConfigProvider(zkConfigPath),
-    proofProvider: httpClientProofProvider(networkUrls.proofServer),
+    zkConfigProvider,
+    proofProvider: httpClientProofProvider(networkUrls.proofServer, zkConfigProvider),
     walletProvider: walletAndMidnightProvider,
     midnightProvider: walletAndMidnightProvider,
   };
@@ -600,21 +585,51 @@ async function deployWithLimitedVerifierKeys(
     log.info(
       `Inserting ${allVerifierKeys.length} verifier keys individually...`,
     );
+    const VK_INSERT_MAX_RETRIES = 3;
+    const VK_INSERT_RETRY_DELAY_MS = 10_000;
+    const VK_INSERT_PAUSE_MS = 2_000;
+
     for (const [circuitId, verifierKey] of allVerifierKeys) {
       log.info(`Inserting verifier key for circuit: ${circuitId}`);
-      const submitResult = await submitInsertVerifierKeyTx(
-        providers as any,
-        compiledContract,
-        contractAddress,
-        circuitId as any,
-        verifierKey as any,
-      );
-      if (submitResult.status !== SucceedEntirely) {
-        throw new Error(
-          `Insert verifier key failed for ${circuitId} with status ${submitResult.status}`,
-        );
+
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= VK_INSERT_MAX_RETRIES; attempt++) {
+        try {
+          const submitResult = await submitInsertVerifierKeyTx(
+            providers as any,
+            compiledContract,
+            contractAddress,
+            circuitId as any,
+            verifierKey as any,
+          );
+          if (submitResult.status !== SucceedEntirely) {
+            throw new Error(
+              `Insert verifier key failed for ${circuitId} with status ${submitResult.status}`,
+            );
+          }
+          log.info(`Verifier key inserted for circuit: ${circuitId}`);
+          lastError = undefined;
+          break;
+        } catch (err) {
+          lastError = err;
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(
+            `VK insert for ${circuitId} failed (attempt ${attempt}/${VK_INSERT_MAX_RETRIES}): ${msg}`,
+          );
+          if (attempt < VK_INSERT_MAX_RETRIES) {
+            log.info(
+              `Waiting ${VK_INSERT_RETRY_DELAY_MS}ms for wallet to sync before retry...`,
+            );
+            await new Promise((r) => setTimeout(r, VK_INSERT_RETRY_DELAY_MS));
+          }
+        }
       }
-      log.info(`Verifier key inserted for circuit: ${circuitId}`);
+      if (lastError) {
+        throw lastError;
+      }
+
+      // Brief pause between VK inserts to let the dust wallet state refresh
+      await new Promise((r) => setTimeout(r, VK_INSERT_PAUSE_MS));
     }
     log.info("All verifier keys inserted successfully.");
   } else {

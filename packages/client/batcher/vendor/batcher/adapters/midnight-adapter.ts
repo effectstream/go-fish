@@ -13,10 +13,10 @@ import type { ContractInfo } from "./midnight-arg-parser.ts";
 import { parseCircuitArgs } from "./midnight-arg-parser.ts";
 import type { DefaultBatcherInput } from "../core/types.ts";
 import { MidnightBatchBuilderLogic, type MidnightBatchPayload } from "../batch-data-builder/midnight-builder-logic.ts";
-import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.7.0";
+import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.7.2";
 import type {
-  BalancedProvingRecipe,
   MidnightProvider,
+  UnboundTransaction,
   WalletProvider,
 } from "npm:@midnight-ntwrk/midnight-js-types@3.0.0";
 import type {
@@ -24,9 +24,7 @@ import type {
   DustSecretKey,
   EncPublicKey,
   FinalizedTransaction,
-  ShieldedCoinInfo,
   TransactionId,
-  UnprovenTransaction,
   ZswapSecretKeys,
 } from "npm:@midnight-ntwrk/ledger-v7@7.0.0";
 import {
@@ -34,6 +32,7 @@ import {
   findDeployedContract,
   type FoundContract,
 } from "npm:@midnight-ntwrk/midnight-js-contracts@3.0.0";
+import { CompiledContract, ContractExecutable } from "npm:@midnight-ntwrk/compact-js";
 import { indexerPublicDataProvider } from "npm:@midnight-ntwrk/midnight-js-indexer-public-data-provider@3.0.0";
 import { httpClientProofProvider } from "npm:@midnight-ntwrk/midnight-js-http-client-proof-provider@3.0.0";
 import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@3.0.0";
@@ -45,8 +44,8 @@ import {
   syncAndWaitForFunds,
   waitForDustFunds,
   type NetworkUrls as MidnightNetworkUrls,
-  type WalletResult,
-} from "jsr:@paimaexample/midnight-contracts@^0.7.0/wallet-info";
+} from "jsr:@paimaexample/midnight-contracts@^0.7.2/wallet-info";
+import type { WalletResult } from "jsr:@paimaexample/midnight-contracts@^0.7.2/types";
 import type { NetworkId as WalletNetworkId } from "npm:@midnight-ntwrk/wallet-sdk-abstractions@1.0.0";
 
 export interface MidnightAdapterConfig {
@@ -60,6 +59,7 @@ export interface MidnightAdapterConfig {
   contractJoinTimeoutSeconds?: number; // Defaults to 120 seconds
   walletFundingTimeoutSeconds?: number; // Defaults to 180 seconds
   walletNetworkId?: WalletNetworkId.NetworkId; // Optional override for modular wallet network id
+  contractTag?: string; // Tag for CompiledContract (e.g. "go-fish-contract")
 }
 
 const TTL_DURATION_MS = 60 * 60 * 1000;
@@ -93,7 +93,9 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
   private contractJoined = false;
   private contractJoiningPromise: Promise<void> | null = null;
   private contractInstance: any = null;
+  private compiledContract: any = null;
   private witnesses: any = null;
+  private contractTag: string = "";
   private readonly contractJoinTimeoutMs: number;
   private readonly walletFundingTimeoutMs: number;
   private readonly walletNetworkId: WalletNetworkId.NetworkId;
@@ -107,6 +109,7 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
     contractInfo: ContractInfo,
     syncProtocolName: string,
     maxBatchSize: number = 10000,
+    compiledContract?: any,
   ) {
     this.contractAddress = contractAddress;
     this.config = config;
@@ -120,6 +123,41 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
     // Store contract info for lazy joining
     this.contractInstance = contractInstance;
     this.witnesses = witnesses;
+
+    // Build CompiledContract using compact-js from the SAME module that findDeployedContract uses.
+    // This is critical: Symbol-keyed internal properties must come from the same module instance.
+    if (compiledContract) {
+      this.compiledContract = compiledContract;
+    } else {
+      const tag = config.contractTag ?? "contract";
+      this.contractTag = tag;
+      try {
+        // contractInstance may be a class (constructor) or an instance.
+        // CompiledContract.make() expects a constructor.
+        const ctor = typeof contractInstance === "function"
+          ? contractInstance
+          : contractInstance.constructor;
+
+        // deno-lint-ignore no-explicit-any
+        let cc: any = CompiledContract.make(tag, ctor);
+        // deno-lint-ignore no-explicit-any
+        cc = (CompiledContract as any).withWitnesses(cc, witnesses);
+        if (config.zkConfigPath) {
+          // deno-lint-ignore no-explicit-any
+          cc = (CompiledContract as any).withCompiledFileAssets(cc, config.zkConfigPath);
+        }
+
+        // Verify the built CompiledContract works
+        const exec = ContractExecutable.make(cc);
+        const circuitIds = exec.getImpureCircuitIds();
+        console.log(`✅ Built CompiledContract for tag "${tag}" with ${circuitIds.length} impure circuits`);
+
+        this.compiledContract = cc;
+      } catch (err) {
+        console.warn("⚠️ Failed to build CompiledContract in vendor adapter:", err);
+        this.compiledContract = null;
+      }
+    }
 
     // Start async initialization but don't await
     this.initializationPromise = this.initialize(walletSeed);
@@ -223,14 +261,15 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
         // We provide privateStateStoreName but omit midnightDbName to use in-memory storage.
         // This avoids persisting/syncing historical private state which can take minutes and timeout.
         // The batcher only needs to submit transactions, not read historical private state.
+        const zkConfigProvider = new NodeZkConfigProvider(this.config.zkConfigPath);
         const providers = {
           privateStateProvider: levelPrivateStateProvider({
             privateStateStoreName: this.config.privateStateStoreName,
             walletProvider: walletAndMidnightProvider,
           } as any),
           publicDataProvider: this.publicDataProvider,
-          zkConfigProvider: new NodeZkConfigProvider(this.config.zkConfigPath),
-          proofProvider: httpClientProofProvider(this.config.proofServer),
+          zkConfigProvider,
+          proofProvider: httpClientProofProvider(this.config.proofServer, zkConfigProvider),
           walletProvider: walletAndMidnightProvider,
           midnightProvider: walletAndMidnightProvider,
         };
@@ -266,13 +305,18 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
         const contractJoinTimeoutSeconds = Math.round(this.contractJoinTimeoutMs / 1000);
         console.log(`⏱️ Contract join timeout: ${contractJoinTimeoutSeconds}s`);
         console.log("🔍 Starting findDeployedContract...");
-        
+        console.log(`🔍 compiledContract available: ${!!this.compiledContract}, tag: ${this.contractTag}`);
+
         const joinStartTime = Date.now();
         this.deployedContract = await Promise.race([
           (async () => {
+            // SDK v3 uses compiledContract; fall back to legacy contract for v2
+            const contractOption = this.compiledContract
+              ? { compiledContract: this.compiledContract }
+              : { contract: this.contractInstance };
             const result = await findDeployedContract(providers, {
               contractAddress: this.contractAddress,
-              contract: this.contractInstance,
+              ...contractOption,
               privateStateId: privateStateId,
               initialPrivateState: {},
             });
@@ -318,6 +362,7 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
       walletZswapSecretKeys,
       dustSecretKey,
       walletDustSecretKey,
+      unshieldedKeystore,
     } = walletResult;
 
     return {
@@ -327,17 +372,18 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
       getEncryptionPublicKey(): EncPublicKey {
         return zswapSecretKeys.encryptionPublicKey;
       },
-      balanceTx(
-        tx: UnprovenTransaction,
-        _newCoins?: ShieldedCoinInfo[],
+      async balanceTx(
+        tx: UnboundTransaction,
         ttl?: Date,
-      ): Promise<BalancedProvingRecipe> {
-        return wallet.balanceTransaction(
-          walletZswapSecretKeys,
-          walletDustSecretKey,
-          tx,
-          ttl ?? createTtl(),
-        );
+      ): Promise<FinalizedTransaction> {
+        // deno-lint-ignore no-explicit-any
+        const bound = (tx as any).bind();
+        const recipe = await wallet.balanceFinalizedTransaction(bound, {
+          shieldedSecretKeys: walletZswapSecretKeys,
+          dustSecretKey: walletDustSecretKey,
+        }, { ttl: ttl ?? createTtl() });
+        const signed = await wallet.signRecipe(recipe, (payload: Uint8Array) => unshieldedKeystore.signData(payload));
+        return wallet.finalizeRecipe(signed);
       },
       submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
         return wallet.submitTransaction(tx);
