@@ -14,6 +14,26 @@ import { grammar } from "@go-fish/data-types/grammar";
 
 const mainSyncProtocolName = "mainNtp";
 
+// Read paimaL2StartBlock from runtime-config.json (written by orchestrator at startup)
+// This is needed because env vars don't always propagate through the Effectstream orchestrator
+function getPaimaL2StartBlock(): number {
+  // Env var takes precedence if present
+  const fromEnv = Deno.env.get("PAIMA_L2_START_BLOCK");
+  if (fromEnv) return Number(fromEnv);
+  try {
+    const configPath = new URL("../../client/node/runtime-config.json", import.meta.url);
+    const raw = Deno.readTextFileSync(configPath);
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.paimaL2StartBlock === "number") {
+      console.log(`[config.dev] paimaL2StartBlock=${parsed.paimaL2StartBlock} (from runtime-config.json)`);
+      return parsed.paimaL2StartBlock;
+    }
+  } catch {
+    // File not found or invalid - use default
+  }
+  return 0;
+}
+
 export const config = new ConfigBuilder()
   .setNamespace((builder) => builder.setSecurityNamespace("[go-fish]"))
   .buildNetworks((builder) =>
@@ -65,7 +85,7 @@ export const config = new ConfigBuilder()
       (network, deployments, syncProtocol) => ({
         name: "GoFish_PaimaL2",
         type: PrimitiveTypeEVMPaimaL2,
-        startBlockHeight: Number(Deno.env.get("PAIMA_L2_START_BLOCK") || "0"),
+        startBlockHeight: getPaimaL2StartBlock(),
         contractAddress: Deno.env.get("PAIMA_L2_CONTRACT_ADDRESS") || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
         paimaL2Grammar: grammar,
       })

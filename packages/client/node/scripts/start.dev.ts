@@ -276,9 +276,10 @@ if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
 const runtimeConfig = {
   useTypescriptContract: Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true",
   useBatcherMode: Deno.env.get("USE_BATCHER_MODE") === "true",
+  paimaL2StartBlock: Number(Deno.env.get("PAIMA_L2_START_BLOCK") || "0"),
 };
 const configPath = new URL("../runtime-config.json", import.meta.url);
 await Deno.writeTextFile(configPath, JSON.stringify(runtimeConfig, null, 2));
-console.log(`[Orchestrator] Runtime config written: useTypescriptContract=${runtimeConfig.useTypescriptContract}, useBatcherMode=${runtimeConfig.useBatcherMode}`);
+console.log(`[Orchestrator] Runtime config written: useTypescriptContract=${runtimeConfig.useTypescriptContract}, useBatcherMode=${runtimeConfig.useBatcherMode}, paimaL2StartBlock=${runtimeConfig.paimaL2StartBlock}`);
 
 await start(config);
