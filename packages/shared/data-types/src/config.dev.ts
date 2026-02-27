@@ -65,7 +65,7 @@ export const config = new ConfigBuilder()
       (network, deployments, syncProtocol) => ({
         name: "GoFish_PaimaL2",
         type: PrimitiveTypeEVMPaimaL2,
-        startBlockHeight: Number(Deno.env.get("PAIMA_L2_START_BLOCK") || "0"),
+        startBlockHeight: 1,
         contractAddress: Deno.env.get("PAIMA_L2_CONTRACT_ADDRESS") || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
         paimaL2Grammar: grammar,
       })
