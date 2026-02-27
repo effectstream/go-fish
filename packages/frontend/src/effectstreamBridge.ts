@@ -292,7 +292,7 @@ export async function joinLobby(
   try {
     // Grammar expects: joinedLobby|playerName|lobbyID
     const params = ["joinedLobby", playerName, lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to join lobby" };
@@ -327,7 +327,7 @@ export async function toggleReady(
   try {
     // Grammar expects: toggledReady|lobbyID
     const params = ["toggledReady", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to toggle ready" };
@@ -358,7 +358,7 @@ export async function startGame(
   try {
     // Grammar expects: startedGame|lobbyID
     const params = ["startedGame", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to start game" };
@@ -389,7 +389,7 @@ export async function leaveLobby(
   try {
     // Grammar expects: leftLobby|lobbyID
     const params = ["leftLobby", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to leave lobby" };
@@ -500,7 +500,7 @@ export async function submitGameAction(
 
   try {
     const txParams = ["gameAction", lobbyId, actionType, ...params];
-    const result = await sendTransaction(currentWallet, txParams, paimaEngineConfig);
+    const result = await sendTransaction(currentWallet, txParams, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to submit action" };

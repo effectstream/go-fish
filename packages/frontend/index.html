@@ -28,6 +28,16 @@
   </head>
   <body>
     <div id="three-canvas-container"></div>
+    <script>
+      (function() {
+        var host = window.location.hostname;
+        var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        if (host !== "localhost" && host !== "127.0.0.1") {
+          window.MQTT_ENGINE_BROKER_URL = protocol + "//" + host + "/mqtt";
+          window.MQTT_BATCHER_BROKER_URL = protocol + "//" + host + "/mqtt-batcher";
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
