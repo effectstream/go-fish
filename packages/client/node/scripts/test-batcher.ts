@@ -38,8 +38,8 @@ function randomSecret(): bigint {
   let val = 0n;
   for (const b of buf) val = (val << 8n) | BigInt(b);
   // Keep it in a reasonable range — the contract just needs a non-zero scalar
-  // BLS12-381 scalar field modulus (Midnight's actual ecMul modulus)
-  return val % 52435875175126190479447740508185965837690552500527637822603658699938581184513n;
+  // Jubjub EmbeddedFr modulus (valid ecMul scalar range)
+  return val % 6554484396890773809930967563523245729705921265872317281365359162392183254199n;
 }
 
 /** Generate a random 32-byte shuffle seed */
