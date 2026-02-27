@@ -1,5 +1,4 @@
 {
   "useTypescriptContract": true,
-  "useBatcherMode": false,
-  "paimaL2StartBlock": 0
+  "useBatcherMode": false
 }
