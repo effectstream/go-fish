@@ -376,14 +376,25 @@ export class MidnightAdapter implements BlockchainAdapter<MidnightBatchPayload |
         tx: UnboundTransaction,
         ttl?: Date,
       ): Promise<FinalizedTransaction> {
-        // deno-lint-ignore no-explicit-any
-        const bound = (tx as any).bind();
-        const recipe = await wallet.balanceFinalizedTransaction(bound, {
+        // Use balanceUnboundTransaction for proven transactions (output of proveTx).
+        // balanceFinalizedTransaction + signRecipe fails because signRecipe internally
+        // clones intents with hardcoded 'pre-proof' markers, but proven transactions
+        // have 'proof' markers — causing "expected header tag 'pre-proof', got 'proof'".
+        // Fix: balance the unbound tx, then sign ONLY the balancing tx (which is still
+        // unproven), leaving the base proven transaction untouched.
+        const recipe = await wallet.balanceUnboundTransaction(tx, {
           shieldedSecretKeys: walletZswapSecretKeys,
           dustSecretKey: walletDustSecretKey,
         }, { ttl: ttl ?? createTtl() });
-        const signed = await wallet.signRecipe(recipe, (payload: Uint8Array) => unshieldedKeystore.signData(payload));
-        return wallet.finalizeRecipe(signed);
+
+        if (recipe.balancingTransaction) {
+          const signed = await wallet.signUnprovenTransaction(
+            recipe.balancingTransaction,
+            (payload: Uint8Array) => unshieldedKeystore.signData(payload),
+          );
+          return wallet.finalizeRecipe({ ...recipe, balancingTransaction: signed });
+        }
+        return wallet.finalizeRecipe(recipe);
       },
       submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
         return wallet.submitTransaction(tx);

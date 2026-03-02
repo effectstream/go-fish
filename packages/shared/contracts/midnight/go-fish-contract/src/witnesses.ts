@@ -61,11 +61,14 @@ const getSecretKey = (gameIdHex: string | null, index: number) => {
     }
   }
 
-  // Fall back to static keys
+  // Fall back to static keys — this means the batcher did NOT receive a dynamic secret
+  // for this player. This is a bug if it happens during applyMask or dealCards.
   switch (index) {
     case 1:
+      console.warn(`[Witnesses] FALLBACK to static key for player 1 (game ${gameIdHex}) — secret=${keys.player1}`);
       return keys.player1;
     case 2:
+      console.warn(`[Witnesses] FALLBACK to static key for player 2 (game ${gameIdHex}) — secret=${keys.player2}`);
       return keys.player2;
   }
   throw new Error("Invalid player index");
@@ -188,16 +191,15 @@ export const witnesses = {
     { privateState }: WitnessContext<Ledger, PrivateState>,
     x: bigint,
   ): [PrivateState, bigint] => {
-    // x is passed in as a bigint
     if (x === 0n) {
-      // 0 has no inverse, specific behavior depends on app requirements,
-      // but usually this implies an invalid state.
       throw new Error("Cannot invert zero");
     }
-
+    if (x >= JUBJUB_SCALAR_FIELD_ORDER) {
+      console.error(`[Witnesses] getFieldInverse: scalar ${x} >= field order ${JUBJUB_SCALAR_FIELD_ORDER} — will produce invalid result`);
+      throw new Error(`Scalar ${x} is >= Jubjub scalar field order`);
+    }
     const inverse = modInverse_old(x, JUBJUB_SCALAR_FIELD_ORDER);
-    // const inverse = modInverse_old(x, BN254_SCALAR_MODULUS);
-    // const inverse = modInverse(x, MIDNIGHT_FIELD_MODULUS);
+    console.log(`[Witnesses] getFieldInverse: x=${x}, inv=${inverse}, check=${(x * inverse) % JUBJUB_SCALAR_FIELD_ORDER === 1n}`);
     return [privateState, inverse];
   },
   shuffle_seed: (
@@ -214,9 +216,18 @@ export const witnesses = {
     gameId: Uint8Array,
     playerIndex: bigint,
   ): [PrivateState, bigint] => {
-    // Convert gameId to hex for dynamic lookup
     const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
-    return [privateState, getSecretKey(gameIdHex, Number(playerIndex))];
+    const secret = getSecretKey(gameIdHex, Number(playerIndex));
+    if (secret === 0n) {
+      console.error(`[Witnesses] player_secret_key: ZERO secret for player ${playerIndex} in game ${gameIdHex} — this will produce the identity point!`);
+      throw new Error(`Zero secret key for player ${playerIndex} — invalid`);
+    }
+    if (secret >= JUBJUB_SCALAR_FIELD_ORDER) {
+      console.error(`[Witnesses] player_secret_key: secret ${secret} >= field order for player ${playerIndex}`);
+      throw new Error(`Secret ${secret} >= Jubjub scalar field order for player ${playerIndex}`);
+    }
+    console.log(`[Witnesses] player_secret_key: player=${playerIndex}, secret_nonzero=true, secret_in_range=true`);
+    return [privateState, secret];
   },
 };
 
