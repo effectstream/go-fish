@@ -21,6 +21,7 @@ import {
   queryGameExists,
   initializeOnChainService,
   isOnChainServiceAvailable,
+  updateSetupStatus,
 } from './midnight-onchain.ts';
 
 // Check if running in batcher mode (queries should use on-chain indexer)
@@ -491,15 +492,59 @@ export async function queryLastAskingPlayer(lobbyId: string): Promise<number | n
 }
 
 /**
+ * In batcher mode, setup status comes from the in-memory/persisted setupStateMap.
+ * If the map has no entry (fresh start, node restart before notify_setup arrived),
+ * fall back to querying the local queryContext simulation — the same source used in
+ * non-batcher mode. Back-populates the map on a hit so subsequent calls are fast.
+ */
+async function querySetupStatusWithFallback(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ hasMaskApplied: boolean; hasDealt: boolean }> {
+  // Primary: in-memory map populated by notify_setup (now persisted to disk)
+  const onChainStatus = await queryOnChainSetupStatus(lobbyId, playerId);
+  if (onChainStatus.hasMaskApplied || onChainStatus.hasDealt) {
+    return onChainStatus;
+  }
+
+  // Fallback: local queryContext circuit simulation (same as non-batcher mode)
+  try {
+    if (!queryContract || !queryContext) return onChainStatus;
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    const maskResult = queryContract.impureCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
+    queryContext = maskResult.context;
+    const hasMaskApplied = Boolean(maskResult.result);
+
+    let hasDealt = false;
+    if (queryContract.impureCircuits.hasDealt) {
+      const dealResult = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
+      queryContext = dealResult.context;
+      hasDealt = Boolean(dealResult.result);
+    }
+
+    if (hasMaskApplied || hasDealt) {
+      // Back-populate map so future calls skip this fallback (also persists to disk)
+      updateSetupStatus(lobbyId, playerId, { hasMaskApplied, hasDealt });
+      console.log(`[MidnightQuery] querySetupStatusWithFallback: back-populated map for ${lobbyId} player ${playerId}: mask=${hasMaskApplied} dealt=${hasDealt}`);
+    }
+    return { hasMaskApplied, hasDealt };
+  } catch {
+    // Local simulation may not have the game yet — return the (empty) map result
+    return onChainStatus;
+  }
+}
+
+/**
  * Query if player has applied their mask
  * In batcher mode, queries the Midnight indexer directly.
  * In local mode, uses the local circuit simulation.
  */
 export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
-  // In batcher mode, query the on-chain state via indexer
+  // In batcher mode, query the on-chain state via indexer (with local-context fallback)
   if (USE_BATCHER_MODE) {
     try {
-      const status = await queryOnChainSetupStatus(lobbyId, playerId);
+      const status = await querySetupStatusWithFallback(lobbyId, playerId);
       return status.hasMaskApplied;
     } catch (error) {
       console.error('[MidnightQuery] On-chain queryHasMaskApplied failed:', error);
@@ -535,10 +580,10 @@ export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Pro
  * In local mode, uses the local circuit simulation.
  */
 export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<boolean> {
-  // In batcher mode, query the on-chain state via indexer
+  // In batcher mode, query the on-chain state via indexer (with local-context fallback)
   if (USE_BATCHER_MODE) {
     try {
-      const status = await queryOnChainSetupStatus(lobbyId, playerId);
+      const status = await querySetupStatusWithFallback(lobbyId, playerId);
       return status.hasDealt;
     } catch (error) {
       console.error('[MidnightQuery] On-chain queryHasDealt failed:', error);

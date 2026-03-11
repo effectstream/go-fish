@@ -6,6 +6,7 @@ import { GameStateAdapter, type GameSceneState, type StateChanges } from '../sta
 import { AnimationQueue } from '../state/AnimationQueue';
 import { GameHUD } from '../ui/GameHUD';
 import { MidnightService } from '../../services/MidnightService';
+import { PlayerKeyManager } from '../../services/PlayerKeyManager';
 import { animateDealHand, animateDrawFromDeck } from '../animations/CardAnimations';
 import { soundManager } from '../SoundManager';
 
@@ -39,6 +40,7 @@ export class GameScene {
   // Animation state
   private initialDealPlayed = false;
   private drawInProgress = false;
+  private askInProgress = false;
 
   constructor(app: ThreeApp) {
     this.app = app;
@@ -60,8 +62,10 @@ export class GameScene {
     this.pendingAskRankIndex = -1;
     this.initialDealPlayed = false;
     this.drawInProgress = false;
+    this.askInProgress = false;
 
     this.hud.show();
+    this.hud.hideWaitingBanner();
 
     // Wire up card click handler
     this.app.inputManager.onCardClick = (card3d) => {
@@ -199,6 +203,11 @@ export class GameScene {
     // Detect opponent asking for a card (phase changed to wait_response and it's not our turn)
     if (changes.phaseChanged && state.phase === 'wait_response' && !isMyTurn) {
       this.showOpponentAskNotification(state, _previous);
+    }
+
+    // Clear the waiting banner once we're no longer in wait_response (opponent responded)
+    if (changes.phaseChanged && _previous?.phase === 'wait_response' && isMyTurn) {
+      this.hud.hideWaitingBanner();
     }
 
     // Detect gaining cards from opponent (hand grew while we were asking)
@@ -422,30 +431,42 @@ export class GameScene {
         this.hud.showNotification('Setting Up', 'Applying cryptographic mask...', 30000);
         console.log('[GameScene] Applying mask...');
 
-        const maskResult = await MidnightService.applyMask(this.lobbyId, this.playerId as 1 | 2);
+        const pid = this.playerId as 1 | 2;
+        const secret = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid);
+        const secretHex = secret.toString(16).padStart(64, '0');
+
+        const maskResult = await MidnightService.applyMask(this.lobbyId, pid, secretHex);
 
         if (!maskResult.success) {
-          if (maskResult.errorMessage?.includes('already applied') ||
-              maskResult.errorMessage?.includes('Player has already applied')) {
+          const maskErr = maskResult.errorMessage ?? '';
+          const maskAlreadyDone = maskErr.includes('already applied') ||
+                                  maskErr.includes('Player has already applied');
+          // EffectStream timeout means the tx landed on-chain but the batcher's
+          // post-confirmation event never fired — treat as success by polling.
+          const maskTimedOut = maskErr.includes('timed out') ||
+                               maskErr.includes('NetworkError') ||
+                               maskErr.includes('fetch') ||
+                               maskErr.includes('EffectStream processing validation failed') ||
+                               maskErr.includes('Timeout');
+
+          if (maskAlreadyDone) {
             console.log('[GameScene] Mask already applied (detected via error) - continuing');
             this.maskApplied = true;
-          } else if (maskResult.errorMessage?.includes('timed out') ||
-                     maskResult.errorMessage?.includes('NetworkError') ||
-                     maskResult.errorMessage?.includes('fetch')) {
-            console.log('[GameScene] Mask request timed out, polling for status...');
+          } else if (maskTimedOut) {
+            console.log('[GameScene] Mask request timed out / EffectStream timeout, polling for on-chain status...');
             const confirmed = await this.pollForSetupStatus('hasMaskApplied', 30000);
             if (confirmed) {
               console.log('[GameScene] Mask was applied despite timeout');
               this.maskApplied = true;
             } else {
-              console.log('[GameScene] Mask not confirmed, will retry in 10s');
+              console.log('[GameScene] Mask not confirmed after polling, will retry in 10s');
               this.hud.showNotification('Setting Up', 'Retrying mask...', 10000);
               this.scheduleSetupRetry(10000);
               return;
             }
           } else {
-            console.log(`[GameScene] Mask failed: ${maskResult.errorMessage}, will retry in 5s`);
-            this.hud.showNotification('Error', maskResult.errorMessage ?? 'Mask failed', 5000);
+            console.log(`[GameScene] Mask failed: ${maskErr}, will retry in 5s`);
+            this.hud.showNotification('Error', maskErr || 'Mask failed', 5000);
             this.scheduleSetupRetry(5000);
             return;
           }
@@ -502,7 +523,13 @@ export class GameScene {
         this.hud.showNotification('Setting Up', 'Dealing cards...', 30000);
         console.log(`[GameScene] Player ${this.playerId} dealing cards...`);
 
-        const dealResult = await MidnightService.dealCards(this.lobbyId, this.playerId as 1 | 2);
+        const dealPid = this.playerId as 1 | 2;
+        const dealSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, dealPid);
+        const dealSecretHex = dealSecret.toString(16).padStart(64, '0');
+        const dealSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, dealPid);
+        const dealSeedHex = Array.from(dealSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+
+        const dealResult = await MidnightService.dealCards(this.lobbyId, dealPid, dealSecretHex, dealSeedHex);
 
         if (!dealResult.success) {
           if (dealResult.errorMessage?.includes('must apply mask')) {
@@ -515,8 +542,10 @@ export class GameScene {
             this.cardsDealt = true;
           } else if (dealResult.errorMessage?.includes('timed out') ||
                      dealResult.errorMessage?.includes('NetworkError') ||
-                     dealResult.errorMessage?.includes('fetch')) {
-            console.log('[GameScene] Deal cards timed out, polling for status...');
+                     dealResult.errorMessage?.includes('fetch') ||
+                     dealResult.errorMessage?.includes('EffectStream processing validation failed') ||
+                     dealResult.errorMessage?.includes('Timeout')) {
+            console.log('[GameScene] Deal cards timed out / EffectStream timeout, polling for on-chain status...');
             const confirmed = await this.pollForSetupStatus('hasDealt', 30000);
             if (confirmed) {
               console.log('[GameScene] Cards were dealt despite timeout');
@@ -550,6 +579,10 @@ export class GameScene {
       console.log('[GameScene] Automatic setup complete!');
       this.setupCompleted = true;
       this.hud.showNotification('Setup Complete', 'Waiting for game to start...', 5000);
+      // Force an immediate state poll now that both players have dealt on-chain.
+      // The regular 5-second interval would otherwise leave the player waiting
+      // up to 5 seconds before the phase transitions and their hand is shown.
+      this.adapter?.forcePoll();
     } catch (error: any) {
       console.error('[GameScene] Automatic setup failed:', error);
       this.hud.showNotification('Error', 'Setup failed. Retrying...', 10000);
@@ -562,6 +595,7 @@ export class GameScene {
   // --- Action Handlers ---
 
   private handleCardClick(card: Card): void {
+    if (this.askInProgress) return;
     const state = this.adapter?.currentState;
     if (!state) return;
 
@@ -591,8 +625,10 @@ export class GameScene {
     this.app.setOpponentHighlighted(false);
     this.hud.hideOpponentSelectPrompt();
 
+    // Show persistent waiting banner immediately — stays until the batcher confirms
     const rankLabel = this.pendingAskRank ?? '';
-    this.hud.showNotification('Asking...', `Asking for ${rankLabel}s`, 5000);
+    this.hud.showWaitingBanner(`Asking for ${rankLabel}s — waiting for opponent's response...`);
+
     this.performAskForCard(this.pendingAskRankIndex);
 
     this.pendingAskRank = null;
@@ -623,17 +659,31 @@ export class GameScene {
   }
 
   private async performAskForCard(rankIndex: number): Promise<void> {
+    if (this.askInProgress) return;
+    this.askInProgress = true;
+    // Disable card hover immediately — the batcher call can take 30+ seconds and
+    // the state polling won't reflect wait_response until after it lands on-chain.
+    this.app.setCardsInteractive(false);
     try {
       const result = await MidnightService.askForCard(this.lobbyId, this.playerId as 1 | 2, rankIndex);
       if (result.success) {
-        this.hud.showNotification('Asked', `Waiting for opponent's response...`, 5000);
+        // Keep the waiting banner visible — it will be cleared once the opponent responds
+        // and the phase transitions away from wait_response (handled in onGameStateChange).
         this.adapter?.forcePoll();
       } else {
+        this.hud.hideWaitingBanner();
         this.hud.showNotification('Error', result.errorMessage ?? 'Ask failed', 5000);
+        // Re-enable cards so the player can try again
+        this.app.setCardsInteractive(true);
       }
     } catch (err) {
       console.error('[GameScene] askForCard error:', err);
+      this.hud.hideWaitingBanner();
       this.hud.showNotification('Error', 'Failed to ask for card', 5000);
+      // Re-enable cards so the player can try again
+      this.app.setCardsInteractive(true);
+    } finally {
+      this.askInProgress = false;
     }
   }
 

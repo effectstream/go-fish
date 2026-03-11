@@ -14,6 +14,8 @@ export interface MidnightBatchPayload {
     timestamp: string;
     playerSecret?: string;
     shuffleSeed?: string;
+    opponentSecret?: string;
+    opponentShuffleSeed?: string;
   }>;
 }
 
@@ -79,6 +81,8 @@ export class MidnightBatchBuilderLogic {
         timestamp: string;
         playerSecret?: string;
         shuffleSeed?: string;
+        opponentSecret?: string;
+        opponentShuffleSeed?: string;
       } = {
         circuit: parsed.circuit,
         args: parsed.args,
@@ -91,6 +95,8 @@ export class MidnightBatchBuilderLogic {
       // Preserve client-side secrets if present (for mental poker / ZK proofs)
       if (parsed.playerSecret) payloadEntry.playerSecret = parsed.playerSecret;
       if (parsed.shuffleSeed) payloadEntry.shuffleSeed = parsed.shuffleSeed;
+      if (parsed.opponentSecret) payloadEntry.opponentSecret = parsed.opponentSecret;
+      if (parsed.opponentShuffleSeed) payloadEntry.opponentShuffleSeed = parsed.opponentShuffleSeed;
 
       const entrySize = encoder.encode(JSON.stringify(payloadEntry)).length;
 

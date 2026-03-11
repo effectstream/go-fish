@@ -14,10 +14,10 @@ import {
 	createConstructorContext,
 	CostModel,
 } from '@midnight-ntwrk/compact-runtime';
-import { Contract, ledger, type Witnesses } from './go-fish-contract/managed/contract/index.js';
+import { Contract, ledger, type Witnesses } from './go-fish-contract/src/managed/contract/index.js';
 
 import {type WitnessContext} from '@midnight-ntwrk/compact-runtime';
-import {type Ledger} from './go-fish-contract/managed/contract/index.js';
+import {type Ledger} from './go-fish-contract/src/managed/contract/index.js';
 
 export type PrivateState = {};
 
@@ -127,18 +127,19 @@ export const witnesses = {
 
 	get_sorted_deck_witness: (
 		{privateState}: WitnessContext<Ledger, PrivateState>,
-		input: {point: {x: bigint; y: bigint}; weight: bigint}[],
-	): [PrivateState, {point: {x: bigint; y: bigint}; weight: bigint}[]] => {
-		for (let i = 0; i < input.length; i++) {
-			for (let j = i + 1; j < input.length; j++) {
-				if (input[i]!.weight > input[j]!.weight) {
-					const temp = input[i];
-					input[i] = input[j]!;
-					input[j] = temp!;
+		input: {x: bigint; y: bigint}[],
+	): [PrivateState, {x: bigint; y: bigint}[]] => {
+		const weighted = input.map(p => ({ ...p, weight: Math.floor(Math.random() * 1000000) }));
+		for (let i = 0; i < weighted.length; i++) {
+			for (let j = i + 1; j < weighted.length; j++) {
+				if (weighted[i]!.weight > weighted[j]!.weight) {
+					const temp = weighted[i];
+					weighted[i] = weighted[j]!;
+					weighted[j] = temp!;
 				}
 			}
 		}
-		return [privateState, input];
+		return [privateState, weighted.map(p => ({ x: p.x, y: p.y }))];
 	},
 	split_field_bits: (
 		{privateState}: WitnessContext<Ledger, PrivateState>,

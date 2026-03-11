@@ -27,6 +27,7 @@ export class GameHUD {
   private logPanel: HTMLDivElement;
   private notificationEl: HTMLDivElement;
   private opponentSelectPanel: HTMLDivElement;
+  private waitingBanner: HTMLDivElement;
   private muteBtn: HTMLButtonElement;
   private notificationTimeout: number | null = null;
 
@@ -111,6 +112,21 @@ export class GameHUD {
       display: none;
     `;
     this.container.appendChild(this.opponentSelectPanel);
+
+    // Waiting-for-opponent persistent banner (below turn bar)
+    this.waitingBanner = document.createElement('div');
+    this.waitingBanner.style.cssText = `
+      position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(6px);
+      border-radius: 10px; padding: 10px 28px;
+      text-align: center; font-size: 15px; font-weight: 600;
+      border: 1px solid rgba(255, 170, 0, 0.5);
+      color: #ffaa00;
+      pointer-events: none;
+      display: none;
+    `;
+    this.container.appendChild(this.waitingBanner);
 
     // Notification overlay (center)
     this.notificationEl = document.createElement('div');
@@ -390,6 +406,16 @@ export class GameHUD {
 
   hideOpponentSelectPrompt(): void {
     this.opponentSelectPanel.style.display = 'none';
+  }
+
+  /** Show a persistent banner below the turn bar (no auto-dismiss). Use hideWaitingBanner() to clear it. */
+  showWaitingBanner(message: string): void {
+    this.waitingBanner.textContent = message;
+    this.waitingBanner.style.display = 'block';
+  }
+
+  hideWaitingBanner(): void {
+    this.waitingBanner.style.display = 'none';
   }
 
   showNotification(title: string, message: string, durationMs: number = 5000): void {

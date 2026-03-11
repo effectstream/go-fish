@@ -143,6 +143,61 @@ export const split_field_bits = (fieldValue: bigint): [bigint, bigint] => {
   return [high, low];
 };
 
+// JubJub curve parameters for point validation
+// Base field prime p = BLS12-381 scalar field
+const JUBJUB_P = 52435875175126190479447740508185965837690552500527637822603658699938581184513n;
+// Twisted Edwards d parameter: d = -(10240/10241) mod p
+const JUBJUB_BASE_D = 19257038036680949359750312669786877991949435402254120286184196891950884077233n;
+// Prime-order subgroup order r
+const JUBJUB_R = 6554484396890773809930967563523245729705921265872317281365359162392183254199n;
+
+// Twisted Edwards point addition: (x1,y1) + (x2,y2) = (x3,y3)
+function _edwardsAdd(x1: bigint, y1: bigint, x2: bigint, y2: bigint): [bigint, bigint] {
+  const p = JUBJUB_P, d = JUBJUB_BASE_D;
+  const x1y2 = x1 * y2 % p, y1x2 = y1 * x2 % p;
+  const x1x2 = x1 * x2 % p, y1y2 = y1 * y2 % p;
+  const t = d * x1x2 % p * y1y2 % p;
+  // a = -1, so: x3 = (x1y2+y1x2) / (1+t),  y3 = (y1y2+x1x2) / (1-t)
+  const x3 = (x1y2 + y1x2) % p * _modinv(1n + t, p) % p;
+  const y3 = (y1y2 + x1x2) % p * _modinv((1n + p - t) % p, p) % p;
+  return [x3, y3];
+}
+function _modinv(a: bigint, m: bigint): bigint {
+  let t = 0n, newT = 1n, r = m, newR = a;
+  while (newR !== 0n) {
+    const q = r / newR;
+    [t, newT] = [newT, t - q * newT];
+    [r, newR] = [newR, r - q * newR];
+  }
+  return t < 0n ? t + m : t;
+}
+// Scalar multiplication via double-and-add (used only for subgroup check)
+function _edwardsMul(x: bigint, y: bigint, k: bigint): [bigint, bigint] {
+  let rx = 0n, ry = 1n; // identity
+  let px = x, py = y;
+  while (k > 0n) {
+    if (k & 1n) [rx, ry] = _edwardsAdd(rx, ry, px, py);
+    [px, py] = _edwardsAdd(px, py, px, py);
+    k >>= 1n;
+  }
+  return [rx, ry];
+}
+
+function isOnJubJubCurve(x: bigint, y: bigint): boolean {
+  // Twisted Edwards: -x^2 + y^2 = 1 + d*x^2*y^2 (mod p)
+  const x2 = (x * x) % JUBJUB_P;
+  const y2 = (y * y) % JUBJUB_P;
+  const lhs = (JUBJUB_P - x2 + y2) % JUBJUB_P;
+  const rhs = (1n + JUBJUB_BASE_D * x2 % JUBJUB_P * y2 % JUBJUB_P) % JUBJUB_P;
+  return lhs === rhs;
+}
+
+function isInJubJubSubgroup(x: bigint, y: bigint): boolean {
+  // r * P should be the identity (0, 1)
+  const [rx, ry] = _edwardsMul(x, y, JUBJUB_R);
+  return rx === 0n && ry === 1n;
+}
+
 const printAny = <B>(
   a: WitnessContext<Ledger, PrivateState>,
   _b: B,
@@ -151,17 +206,53 @@ const printAny = <B>(
   return [a.privateState, true];
 };
 
+const printCurvePoint = (
+  a: WitnessContext<Ledger, PrivateState>,
+  point: { x: bigint; y: bigint },
+): [PrivateState, boolean] => {
+  const onCurve = isOnJubJubCurve(point.x, point.y);
+  const inSubgroup = onCurve ? isInJubJubSubgroup(point.x, point.y) : false;
+  console.log(`[Witnesses] print_curve_point: x=0x${point.x.toString(16).padStart(64,"0")}, y=0x${point.y.toString(16).padStart(64,"0")}, onCurve=${onCurve}, inSubgroup=${inSubgroup}`);
+  if (!onCurve) console.error(`[Witnesses] print_curve_point: POINT NOT ON JUBJUB CURVE!`);
+  else if (!inSubgroup) console.error(`[Witnesses] print_curve_point: POINT NOT IN SUBGROUP!`);
+  return [a.privateState, true];
+};
+
 export const witnesses = {
   print_field: printAny,
   print_bytes_32: printAny,
   print_vector_2_field: printAny,
-  print_curve_point: printAny,
+  print_curve_point: printCurvePoint,
   print_uint_64: printAny,
 
   get_sorted_deck_witness: (
     { privateState }: WitnessContext<Ledger, PrivateState>,
     input: { x: bigint; y: bigint }[],
   ): [PrivateState, { x: bigint; y: bigint }[]] => {
+    // Validate points are on the JubJub curve AND in the prime-order subgroup
+    // Full subgroup check (r*P=identity) is expensive; check first point fully, rest curve-only
+    let allValid = true;
+    for (let i = 0; i < input.length; i++) {
+      const pt = input[i]!;
+      const onCurve = isOnJubJubCurve(pt.x, pt.y);
+      if (!onCurve) {
+        console.error(`[Witnesses] get_sorted_deck_witness: point[${i}] NOT ON JUBJUB CURVE! x=0x${pt.x.toString(16)}, y=0x${pt.y.toString(16)}`);
+        allValid = false;
+      } else if (i === 0) {
+        // Full subgroup check only for first point (expensive)
+        const t0 = Date.now();
+        const inSubgroup = isInJubJubSubgroup(pt.x, pt.y);
+        const elapsed = Date.now() - t0;
+        console.log(`[Witnesses] get_sorted_deck_witness: point[0] subgroup check: inSubgroup=${inSubgroup} (${elapsed}ms)`);
+        if (!inSubgroup) {
+          console.error(`[Witnesses] get_sorted_deck_witness: point[0] ON CURVE BUT NOT IN SUBGROUP!`);
+          allValid = false;
+        }
+      }
+    }
+    if (allValid) {
+      console.log(`[Witnesses] get_sorted_deck_witness: all ${input.length} points on JubJub curve, point[0] in subgroup ✓`);
+    }
     const mappedPoints = input.map((point) => {
       return {
         x: point.x,
@@ -170,12 +261,12 @@ export const witnesses = {
       };
     });
 
-    for (let i = 0; i < input.length; i++) {
-      for (let j = i + 1; j < input.length; j++) {
+    for (let i = 0; i < mappedPoints.length; i++) {
+      for (let j = i + 1; j < mappedPoints.length; j++) {
         if (mappedPoints[i]!.weight > mappedPoints[j]!.weight) {
-          const temp = input[i];
-          input[i] = input[j]!;
-          input[j] = temp!;
+          const temp = mappedPoints[i]!;
+          mappedPoints[i] = mappedPoints[j]!;
+          mappedPoints[j] = temp;
         }
       }
     }
@@ -199,7 +290,15 @@ export const witnesses = {
       throw new Error(`Scalar ${x} is >= Jubjub scalar field order`);
     }
     const inverse = modInverse_old(x, JUBJUB_SCALAR_FIELD_ORDER);
-    console.log(`[Witnesses] getFieldInverse: x=${x}, inv=${inverse}, check=${(x * inverse) % JUBJUB_SCALAR_FIELD_ORDER === 1n}`);
+    const check = (x * inverse) % JUBJUB_SCALAR_FIELD_ORDER === 1n;
+    console.log(`[Witnesses] getFieldInverse: x=${x}`);
+    console.log(`[Witnesses] getFieldInverse: inv=${inverse}`);
+    console.log(`[Witnesses] getFieldInverse: x_hex=0x${x.toString(16).padStart(64, "0")}`);
+    console.log(`[Witnesses] getFieldInverse: inv_hex=0x${inverse.toString(16).padStart(64, "0")}`);
+    console.log(`[Witnesses] getFieldInverse: inverse_valid=${check}`);
+    if (!check) {
+      console.error(`[Witnesses] getFieldInverse: INVERSE VERIFICATION FAILED for x=${x}`);
+    }
     return [privateState, inverse];
   },
   shuffle_seed: (
@@ -209,7 +308,10 @@ export const witnesses = {
   ): [PrivateState, Uint8Array] => {
     // Convert gameId to hex for dynamic lookup
     const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
-    return [privateState, getShuffleSeed(gameIdHex, Number(playerIndex))];
+    console.log(`[Witnesses] shuffle_seed called: player=${playerIndex}, gameIdHex=${gameIdHex}`);
+    const seed = getShuffleSeed(gameIdHex, Number(playerIndex));
+    console.log(`[Witnesses] shuffle_seed: player=${playerIndex}, seed_hex=${Array.from(seed).map(b => b.toString(16).padStart(2,"0")).join("")}`);
+    return [privateState, seed];
   },
   player_secret_key: (
     { privateState }: WitnessContext<Ledger, PrivateState>,
@@ -217,6 +319,7 @@ export const witnesses = {
     playerIndex: bigint,
   ): [PrivateState, bigint] => {
     const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
+    console.log(`[Witnesses] player_secret_key called: player=${playerIndex}, gameIdHex=${gameIdHex}`);
     const secret = getSecretKey(gameIdHex, Number(playerIndex));
     if (secret === 0n) {
       console.error(`[Witnesses] player_secret_key: ZERO secret for player ${playerIndex} in game ${gameIdHex} — this will produce the identity point!`);
@@ -226,7 +329,7 @@ export const witnesses = {
       console.error(`[Witnesses] player_secret_key: secret ${secret} >= field order for player ${playerIndex}`);
       throw new Error(`Secret ${secret} >= Jubjub scalar field order for player ${playerIndex}`);
     }
-    console.log(`[Witnesses] player_secret_key: player=${playerIndex}, secret_nonzero=true, secret_in_range=true`);
+    console.log(`[Witnesses] player_secret_key: player=${playerIndex}, secret_hex=0x${secret.toString(16).padStart(64, "0")}`);
     return [privateState, secret];
   },
 };

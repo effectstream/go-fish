@@ -35,7 +35,7 @@
     "string_decoder": "node:string_decoder",
     "perf_hooks": "node:perf_hooks",
     "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
-    "@midnight-ntwrk/onchain-runtime-v2": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0",
+    "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0",
     "@midnight-ntwrk/ledger-v7": "npm:@midnight-ntwrk/ledger-v7@7.0.0"
   },
   "nodeModulesDir": "auto"

@@ -11,7 +11,7 @@ export const contractAddressesEvmMain: () => Record<
 
   let chain31337: Record<string, `0x${string}`> = {};
 
-  if (Deno && Deno.statSync(file1).isFile) {
+  if (typeof Deno !== 'undefined' && Deno && Deno.statSync(file1).isFile) {
     chain31337 = JSON.parse(Deno.readTextFileSync(file1));
   }
 

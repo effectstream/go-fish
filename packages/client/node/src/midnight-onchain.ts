@@ -42,6 +42,40 @@ interface GameState {
 const setupStateMap = new Map<string, GameSetupState>();
 const gameStateMap = new Map<string, GameState>();
 
+// ---------------------------------------------------------------------------
+// Persistence helpers — survive node restarts
+// ---------------------------------------------------------------------------
+const SETUP_STATE_FILE = "./data/setup-state.json";
+
+function loadPersistedSetupState(): void {
+  try {
+    const text = Deno.readTextFileSync(SETUP_STATE_FILE);
+    const data = JSON.parse(text) as Record<string, GameSetupState>;
+    for (const [key, value] of Object.entries(data)) {
+      setupStateMap.set(key, value);
+    }
+    console.log(`[MidnightOnChain] Loaded ${setupStateMap.size} persisted setup entries from disk`);
+  } catch {
+    // File doesn't exist yet — that's fine on first run
+  }
+}
+
+function persistSetupState(): void {
+  try {
+    Deno.mkdirSync("./data", { recursive: true });
+    const data: Record<string, GameSetupState> = {};
+    for (const [key, value] of setupStateMap.entries()) {
+      data[key] = value;
+    }
+    Deno.writeTextFileSync(SETUP_STATE_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.warn("[MidnightOnChain] Failed to persist setup state:", err);
+  }
+}
+
+// Load persisted state immediately so it's available before any request arrives
+loadPersistedSetupState();
+
 /**
  * Load contract address from deployment file
  */
@@ -113,6 +147,7 @@ export function updateSetupStatus(
   const current = setupStateMap.get(key) || { hasMaskApplied: false, hasDealt: false };
   const updated = { ...current, ...update };
   setupStateMap.set(key, updated);
+  persistSetupState();
   console.log(`[MidnightOnChain] Updated setup status for ${lobbyId} player ${playerId}:`, updated);
 }
 
@@ -282,6 +317,7 @@ export function getContractAddress(): string | null {
 export function clearOnChainCache(): void {
   setupStateMap.clear();
   gameStateMap.clear();
+  persistSetupState();
   console.log("[MidnightOnChain] Cleared all local state");
 }
 
@@ -292,5 +328,6 @@ export function clearLobbyState(lobbyId: string): void {
   setupStateMap.delete(getSetupStateKey(lobbyId, 1));
   setupStateMap.delete(getSetupStateKey(lobbyId, 2));
   gameStateMap.delete(lobbyId);
+  persistSetupState();
   console.log(`[MidnightOnChain] Cleared state for lobby ${lobbyId}`);
 }

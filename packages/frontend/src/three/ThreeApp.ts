@@ -176,9 +176,15 @@ export class ThreeApp {
 
   /** Enable or disable hover animations on player hand cards. */
   setCardsInteractive(interactive: boolean): void {
-    for (const card of this.playerHand.getCards()) {
+    const cards = this.playerHand.getCards();
+    for (const card of cards) {
       card.setInteractive(interactive);
+      // Clear hover state so cards snap back to rest immediately
+      if (!interactive) card.setHovered(false);
     }
+    // When non-interactive, remove cards from raycaster so the cursor
+    // doesn't change and no hover detection runs at all.
+    this.inputManager.setInteractiveCards(interactive ? cards : []);
   }
 
   /** Shake the camera to indicate something impactful (e.g., losing cards). */

@@ -29,6 +29,7 @@ export ledger maskAppliedP2: Map<Bytes<32>, Boolean>; // Track if player 2 appli
 export ledger preDrawRankCount: Map<Bytes<32>, Uint<8>>;
 export ledger hasDealtP1: Map<Bytes<32>, Boolean>; // Track if player 1 has called dealCards
 export ledger hasDealtP2: Map<Bytes<32>, Boolean>; // Track if player 2 has called dealCards
+export ledger lastMoveAt: Map<Bytes<32>, Uint<64>>; // Block timestamp of the last move (for timeout)
 
 // Initialize a new game with the given gameId
 export circuit init_game(gameId: Bytes<32>): [] {
@@ -50,6 +51,7 @@ export circuit init_game(gameId: Bytes<32>): [] {
     maskAppliedP2.insert(gid, false);
     hasDealtP1.insert(gid, false);
     hasDealtP2.insert(gid, false);
+    lastMoveAt.insert(gid, 0 as Uint<64>);
     return [];
 }
 
@@ -314,10 +316,32 @@ export circuit getPlayersDealtCount(gameId: Bytes<32>): Uint<8> {
 export circuit getScores(gameId: Bytes<32>): [Uint<8>, Uint<8>] {
     const gid = disclose(gameId);
     assert(gameExists.member(gid), "Game does not exist");
-    
+
     const s1 = scoreP1.lookup(gid) as Uint<8>;
     const s2 = scoreP2.lookup(gid) as Uint<8>;
     return [s1, s2];
+}
+
+// Record the timestamp of the most recent move.
+// Called from every game-progressing circuit (askForCard, respondToAsk, goFish, afterGoFish).
+export circuit setLastMoveAt(gameId: Bytes<32>, now: Uint<64>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    lastMoveAt.insert(gid, disclose(now));
+    return [];
+}
+
+// Return the timestamp of the last recorded move.
+export circuit getLastMoveAt(gameId: Bytes<32>): Uint<64> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return lastMoveAt.lookup(gid) as Uint<64>;
+}
+
+// Return the turn timeout constant (exposed so off-chain code can read it).
+// 300 seconds = 5 minutes per turn.
+export circuit getTurnTimeout(): Uint<64> {
+    return 300 as Uint<64>;
 }
 
 }

@@ -11,8 +11,13 @@ export const config: BatcherConfig<DefaultBatcherInput> = {
   pollingIntervalMs: batchIntervalMs,
   enableHttpServer: true,
   namespace: "", // Empty for now - namespace affects signature verification
-  confirmationLevel: "wait-effectstream-processed",
-  enableEventSystem: true,
+  // "wait-receipt" waits only for on-chain confirmation, not EffectStream sync.
+  // "wait-effectstream-processed" times out because the parallelMidnight chain
+  // sync events don't fire reliably within the timeout window, causing dealCards
+  // and other circuit submissions to be reported as failed even though the tx
+  // confirmed on-chain — which breaks notify_setup and askForCard card ownership.
+  confirmationLevel: "wait-receipt",
+  enableEventSystem: false,
   port,
 };
 

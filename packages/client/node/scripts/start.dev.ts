@@ -34,6 +34,10 @@ const skipEvmLaunch = Deno.env.get("SKIP_EVM_LAUNCH") === "true";
 // Set SKIP_PGLITE=true to skip launching pglite database
 const skipPglite = Deno.env.get("SKIP_PGLITE") === "true";
 
+// Suppress noisy infrastructure logs (hardhat-evmMain, effectstream-sync-block-merge, etc.)
+// Set QUIET_LOGS=true to hide these and keep only batcher/node/game-relevant output
+const quietLogs = Deno.env.get("QUIET_LOGS") === "true";
+
 // Debug logging
 console.log(`[Orchestrator] USE_TYPESCRIPT_CONTRACT=${useTypescriptContract}, USE_BATCHER_MODE=${useBatcherMode}, DEPLOY_MIDNIGHT_CONTRACT=${deployMidnightContract}, SKIP_MIDNIGHT_INFRA=${skipMidnightInfra}, SKIP_EVM_LAUNCH=${skipEvmLaunch}, SKIP_PGLITE=${skipPglite}`);
 
@@ -259,7 +263,12 @@ const config = Value.Parse(OrchestratorConfig, {
   processesToLaunch: [
     // Launch EVM contracts (Hardhat node + deploy)
     // Skip if SKIP_EVM_LAUNCH=true (when using external Hardhat instance)
-    ...(skipEvmLaunch ? [] : launchEvm("@go-fish/evm-contracts")),
+    ...(skipEvmLaunch ? [] : launchEvm("@go-fish/evm-contracts").map(p => {
+      // QUIET_LOGS=true: suppress hardhat chain logs (evmMain, evmParallel, block-merge, etc.)
+      if (!quietLogs) return p;
+      const q: typeof p = { ...p, logs: "none" };
+      return q;
+    })),
     ...customProcesses,
   ],
 });

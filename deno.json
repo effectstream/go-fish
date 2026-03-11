@@ -9,6 +9,8 @@
     "dev": "deno task --filter @go-fish/node dev",
     "dev:batcher": "USE_BATCHER_MODE=true deno task --filter @go-fish/node dev",
     "dev:typescript": "USE_TYPESCRIPT_CONTRACT=true deno task --filter @go-fish/node dev",
+    "dev:quiet": "deno task --filter @go-fish/node dev:quiet",
+    "dev:batcher:quiet": "USE_BATCHER_MODE=true deno task --filter @go-fish/node dev:quiet",
     "testnet": "deno task --filter @go-fish/node testnet",
     "frontend:dev": "cd packages/frontend && npm run dev",
     "frontend:dev:batcher": "cd packages/frontend && npm run dev:batcher",

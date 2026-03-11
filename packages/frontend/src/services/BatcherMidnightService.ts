@@ -26,6 +26,9 @@ interface CircuitCall {
   // Player secrets for proof generation (included for batcher proving)
   playerSecret?: string;
   shuffleSeed?: string;
+  // Opponent secrets — needed for circuits that remove the opponent's mask (e.g. goFish)
+  opponentSecret?: string;
+  opponentShuffleSeed?: string;
 }
 
 // Address type enum (matches @paimaexample/wallets WalletMode)
@@ -124,7 +127,12 @@ function serializeArgs(args: unknown[]): unknown[] {
 async function submitCircuitCall(
   circuit: string,
   args: unknown[],
-  secrets?: { playerSecret: bigint; shuffleSeed: Uint8Array }
+  secrets?: {
+    playerSecret: bigint;
+    shuffleSeed: Uint8Array;
+    opponentSecret?: bigint;
+    opponentShuffleSeed?: Uint8Array;
+  }
 ): Promise<{ success: boolean; txId?: string; error?: string }> {
   const wallet = getWallet();
   const timestamp = Date.now();
@@ -139,6 +147,14 @@ async function submitCircuitCall(
     circuitCall.shuffleSeed = Array.from(secrets.shuffleSeed)
       .map(b => b.toString(16).padStart(2, "0"))
       .join("");
+    if (secrets.opponentSecret !== undefined) {
+      circuitCall.opponentSecret = secrets.opponentSecret.toString(16).padStart(64, "0");
+    }
+    if (secrets.opponentShuffleSeed !== undefined) {
+      circuitCall.opponentShuffleSeed = Array.from(secrets.opponentShuffleSeed)
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
   }
 
   const input = JSON.stringify(circuitCall);
@@ -241,13 +257,18 @@ export async function applyMask(
   // Get player secrets from PlayerKeyManager
   const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
   const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
+  // Include opponent secrets so the batcher can forward them to the node for local replay.
+  // The node needs both players' secrets to faithfully replicate the on-chain state.
+  const opponentId = playerId === 1 ? 2 : 1;
+  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
 
   console.log(`[BatcherMidnight] applyMask with client-side secret for player ${playerId}`);
 
   const result = await submitCircuitCall(
     "applyMask",
     [gameId, playerId],
-    { playerSecret, shuffleSeed }
+    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
   );
   return { success: result.success, error: result.error };
 }
@@ -265,13 +286,19 @@ export async function dealCards(
   // Get player secrets from PlayerKeyManager
   const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
   const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
+  // Include opponent secrets so the batcher can forward them to the node for local replay.
+  // dealCards double-masks every card with both players' secrets — the node's local replay
+  // must use the same secrets to produce a matching cardOwnership ledger.
+  const opponentId = playerId === 1 ? 2 : 1;
+  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
 
   console.log(`[BatcherMidnight] dealCards with client-side secret for player ${playerId}`);
 
   const result = await submitCircuitCall(
     "dealCards",
     [gameId, playerId],
-    { playerSecret, shuffleSeed }
+    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
   );
   return { success: result.success, error: result.error };
 }
@@ -286,15 +313,22 @@ export async function askForCard(
   rank: number
 ): Promise<{ success: boolean; error?: string }> {
   const gameId = lobbyIdToGameIdHex(lobbyId);
+  const now = Math.floor(Date.now() / 1000);
 
-  // Get player secrets
+  // Get asking player's secrets
   const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
   const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
 
+  // doesPlayerHaveCard calls deck_getSecretFromPlayerId for BOTH players unconditionally
+  // (EC-MUL guard bug fix). We must therefore also supply the opponent's secrets.
+  const opponentId = playerId === 1 ? 2 : 1;
+  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+
   const result = await submitCircuitCall(
     "askForCard",
-    [gameId, playerId, rank],
-    { playerSecret, shuffleSeed }
+    [gameId, playerId, rank, now],
+    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
   );
   return { success: result.success, error: result.error };
 }
@@ -308,15 +342,22 @@ export async function respondToAsk(
   playerId: 1 | 2
 ): Promise<{ success: boolean; hasCards?: boolean; cardCount?: number; error?: string }> {
   const gameId = lobbyIdToGameIdHex(lobbyId);
+  const now = Math.floor(Date.now() / 1000);
 
-  // Get player secrets
+  // Get responding player's secrets
   const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
   const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
 
+  // transferCardOfRank fetches BOTH players' secrets unconditionally (EC-MUL guard bug fix).
+  // We must therefore also supply the asking player's secrets to the batcher.
+  const opponentId = playerId === 1 ? 2 : 1;
+  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+
   const result = await submitCircuitCall(
     "respondToAsk",
-    [gameId, playerId],
-    { playerSecret, shuffleSeed }
+    [gameId, playerId, now],
+    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
   );
   // Note: The actual hasCards/cardCount comes from on-chain state, not the tx result
   return { success: result.success, error: result.error };
@@ -331,15 +372,23 @@ export async function goFish(
   playerId: 1 | 2
 ): Promise<{ success: boolean; error?: string }> {
   const gameId = lobbyIdToGameIdHex(lobbyId);
+  const now = Math.floor(Date.now() / 1000);
 
-  // Get player secrets
+  // Get drawing player's secrets
   const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
   const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
 
+  // goFish calls getTopCardForOpponent which does partial_decryption with the
+  // OPPONENT's secret (to remove their mask from the top deck card).
+  // We must therefore also supply the opponent's secrets to the batcher.
+  const opponentId = playerId === 1 ? 2 : 1;
+  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+
   const result = await submitCircuitCall(
     "goFish",
-    [gameId, playerId],
-    { playerSecret, shuffleSeed }
+    [gameId, playerId, now],
+    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
   );
   return { success: result.success, error: result.error };
 }
@@ -354,15 +403,22 @@ export async function afterGoFish(
   drewRequestedCard: boolean
 ): Promise<{ success: boolean; error?: string }> {
   const gameId = lobbyIdToGameIdHex(lobbyId);
+  const now = Math.floor(Date.now() / 1000);
 
-  // Get player secrets
+  // Get drawing player's secrets
   const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
   const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
 
+  // countCardsOfRank calls deck_getSecretFromPlayerId for BOTH players unconditionally
+  // (EC-MUL guard bug fix). We must therefore also supply the opponent's secrets.
+  const opponentId = playerId === 1 ? 2 : 1;
+  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+
   const result = await submitCircuitCall(
     "afterGoFish",
-    [gameId, playerId, drewRequestedCard],
-    { playerSecret, shuffleSeed }
+    [gameId, playerId, drewRequestedCard, now],
+    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
   );
   return { success: result.success, error: result.error };
 }
@@ -379,6 +435,19 @@ export async function switchTurn(
   return { success: result.success, error: result.error };
 }
 
+/**
+ * Claim a win because the active player has not moved within the timeout window.
+ * Can only be called by the waiting player (the one whose turn it is NOT).
+ */
+export async function claimTimeoutWin(
+  lobbyId: string,
+  claimingPlayerId: 1 | 2
+): Promise<{ success: boolean; error?: string }> {
+  const gameId = lobbyIdToGameIdHex(lobbyId);
+  const result = await submitCircuitCall("claimTimeoutWin", [gameId, claimingPlayerId]);
+  return { success: result.success, error: result.error };
+}
+
 // Export the service
 export const BatcherMidnightService = {
   initDeck,
@@ -389,6 +458,7 @@ export const BatcherMidnightService = {
   goFish,
   afterGoFish,
   switchTurn,
+  claimTimeoutWin,
 };
 
 export default BatcherMidnightService;

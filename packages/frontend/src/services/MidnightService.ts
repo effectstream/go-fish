@@ -163,10 +163,13 @@ export async function tryInitializeOnChain(): Promise<boolean> {
 
 /**
  * Apply mask action (setup phase)
+ * playerSecretHex: hex-encoded player secret (no 0x prefix) from PlayerKeyManager.
+ * Passing it here ensures the backend uses the same secret for setup and hand queries.
  */
 export async function applyMask(
   lobbyId: string,
-  playerId: 1 | 2
+  playerId: 1 | 2,
+  playerSecretHex?: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
   // In production mode with on-chain ready, use on-chain service
   if (isOnChainModeActive()) {
@@ -176,15 +179,24 @@ export async function applyMask(
 
   // Otherwise fall back to backend
   console.log("[MidnightService] applyMask via backend");
-  return callBackendAction("apply_mask", { lobby_id: lobbyId, player_id: playerId });
+  return callBackendAction("apply_mask", {
+    lobby_id: lobbyId,
+    player_id: playerId,
+    ...(playerSecretHex ? { player_secret: playerSecretHex } : {}),
+  });
 }
 
 /**
  * Deal cards action (setup phase)
+ * playerSecretHex: hex-encoded player secret (no 0x prefix) from PlayerKeyManager.
+ * shuffleSeedHex: hex-encoded shuffle seed (no 0x prefix) from PlayerKeyManager.
+ * Passing both ensures the backend local simulation matches what was done on-chain.
  */
 export async function dealCards(
   lobbyId: string,
-  playerId: 1 | 2
+  playerId: 1 | 2,
+  playerSecretHex?: string,
+  shuffleSeedHex?: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
   if (isOnChainModeActive()) {
     console.log("[MidnightService] dealCards via on-chain");
@@ -192,7 +204,12 @@ export async function dealCards(
   }
 
   console.log("[MidnightService] dealCards via backend");
-  return callBackendAction("deal_cards", { lobby_id: lobbyId, player_id: playerId });
+  return callBackendAction("deal_cards", {
+    lobby_id: lobbyId,
+    player_id: playerId,
+    ...(playerSecretHex ? { player_secret: playerSecretHex } : {}),
+    ...(shuffleSeedHex ? { shuffle_seed: shuffleSeedHex } : {}),
+  });
 }
 
 /**
@@ -271,6 +288,23 @@ export async function afterGoFish(
 }
 
 /**
+ * Claim a win because the active player has not moved within the timeout window.
+ * Can only be called by the waiting player (the one whose turn it is NOT).
+ */
+export async function claimTimeoutWin(
+  lobbyId: string,
+  claimingPlayerId: 1 | 2
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (isOnChainModeActive()) {
+    console.log("[MidnightService] claimTimeoutWin via on-chain");
+    return MidnightOnChainService.claimTimeoutWin(lobbyId, claimingPlayerId);
+  }
+
+  console.log("[MidnightService] claimTimeoutWin via backend");
+  return callBackendAction("claim_timeout_win", { lobby_id: lobbyId, player_id: claimingPlayerId });
+}
+
+/**
  * Skip draw when deck is empty
  */
 export async function skipDrawDeckEmpty(
@@ -292,7 +326,7 @@ export async function skipDrawDeckEmpty(
 // ============================================================================
 
 /**
- * Get player's hand
+ * Get player's hand (mock/batcher mode — returns approximate hand, may not match on-chain state)
  */
 export async function getPlayerHand(
   lobbyId: string,
@@ -308,6 +342,47 @@ export async function getPlayerHand(
     }
   } catch (error) {
     console.error("[MidnightService] Failed to get player hand:", error);
+  }
+  return [];
+}
+
+/**
+ * Get player's real on-chain hand by supplying the player secret.
+ * In batcher mode the backend lacks player secrets, so the frontend must pass
+ * its locally-stored secret (from PlayerKeyManager) to get the real hand.
+ */
+export async function getPlayerHandWithSecret(
+  lobbyId: string,
+  playerId: 1 | 2,
+  playerSecretHex: string,
+  options?: {
+    shuffleSeedHex?: string;
+    opponentSecretHex?: string;
+    opponentShuffleSeedHex?: string;
+  }
+): Promise<Array<{ rank: number; suit: number }>> {
+  try {
+    const body: Record<string, unknown> = {
+      lobby_id: lobbyId,
+      player_id: playerId,
+      player_secret: playerSecretHex,
+    };
+    if (options?.shuffleSeedHex) body.shuffle_seed = options.shuffleSeedHex;
+    if (options?.opponentSecretHex) body.opponent_secret = options.opponentSecretHex;
+    if (options?.opponentShuffleSeedHex) body.opponent_shuffle_seed = options.opponentShuffleSeedHex;
+
+    const response = await fetch(`${BACKEND_URL}/api/midnight/player_hand_with_secret`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data.hand || [];
+    }
+    console.error("[MidnightService] getPlayerHandWithSecret bad response:", response.status);
+  } catch (error) {
+    console.error("[MidnightService] Failed to get player hand with secret:", error);
   }
   return [];
 }
@@ -402,8 +477,10 @@ export const MidnightService = {
   goFish,
   afterGoFish,
   skipDrawDeckEmpty,
+  claimTimeoutWin,
   // Queries
   getPlayerHand,
+  getPlayerHandWithSecret,
   getSetupStatus,
   getGameState,
 };

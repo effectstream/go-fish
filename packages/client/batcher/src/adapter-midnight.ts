@@ -18,6 +18,7 @@ import * as goFishContractInfo from "@go-fish/midnight-contract";
 import * as goFishContract from "@go-fish/midnight-contract/contract";
 import { setPlayerSecrets, clearPlayerSecrets } from "@go-fish/midnight-contract/witnesses";
 import { CryptoManager } from "@paimaexample/crypto";
+import { storage } from "./config.ts";
 
 // Network configuration - use environment variables or defaults
 const isTestnet = Deno.env.get("EFFECTSTREAM_ENV") === "testnet";
@@ -67,8 +68,10 @@ const SKIP_SIGNATURE_VERIFICATION = Deno.env.get("SKIP_SIGNATURE_VERIFICATION") 
 interface CircuitCallWithSecrets {
   circuit: string;
   args: unknown[];
-  playerSecret?: string;  // Hex-encoded bigint
-  shuffleSeed?: string;   // Hex-encoded 32 bytes
+  playerSecret?: string;        // Hex-encoded bigint
+  shuffleSeed?: string;         // Hex-encoded 32 bytes
+  opponentSecret?: string;      // Hex-encoded bigint (needed for goFish)
+  opponentShuffleSeed?: string; // Hex-encoded 32 bytes (needed for goFish)
 }
 
 /**
@@ -129,7 +132,42 @@ class GoFishMidnightAdapter extends MidnightAdapter {
           setPlayerSecrets(gameId, playerId, secret, shuffleSeed);
           secretInfo = { gameId, playerId };
           console.log(`[GoFishMidnightAdapter] Set client secrets for ${circuit}: game ${gameId}, player ${playerId}`);
+
+          // Also set opponent secrets when provided (e.g. goFish needs opponent's secret
+          // to remove their mask during partial_decryption of the top deck card).
+          if (payload.opponentSecret && payload.opponentShuffleSeed) {
+            const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+            const opponentSecret = BigInt("0x" + payload.opponentSecret);
+            const opponentShuffleSeed = hexToBytes(payload.opponentShuffleSeed);
+            setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
+            console.log(`[GoFishMidnightAdapter] Set opponent secrets for ${circuit}: game ${gameId}, player ${opponentId}`);
+          }
         }
+      }
+    }
+
+    // Refresh the `now` timestamp arg immediately, before any attempt.
+    // The batcher stores the original payload and re-builds it on every poll
+    // cycle, so `now` in args is always the value from when the frontend sent
+    // the request — potentially minutes stale by the time we execute here.
+    // blockTimeLt(now + 6) requires now to be within 6s of the block time.
+    // Circuits that carry `now` and their arg positions:
+    //   askForCard:   args[3]  → [gameId, playerId, rank, now]
+    //   respondToAsk: args[2]  → [gameId, playerId, now]
+    //   goFish:       args[2]  → [gameId, playerId, now]
+    //   afterGoFish:  args[3]  → [gameId, playerId, drewRequestedCard, now]
+    const NOW_ARG_INDEX: Record<string, number> = {
+      askForCard: 3,
+      respondToAsk: 2,
+      goFish: 2,
+      afterGoFish: 3,
+    };
+    if (data?.payloads?.[0] && NOW_ARG_INDEX[circuit] !== undefined) {
+      const nowArgIdx = NOW_ARG_INDEX[circuit];
+      if (Array.isArray(data.payloads[0].args)) {
+        const freshNow = Math.floor(Date.now() / 1000);
+        data.payloads[0].args[nowArgIdx] = freshNow;
+        console.log(`[GoFishMidnightAdapter] Refreshed now=${freshNow} at args[${nowArgIdx}] for ${circuit}`);
       }
     }
 
@@ -170,17 +208,63 @@ class GoFishMidnightAdapter extends MidnightAdapter {
           return result;
         } catch (error) {
           const errMsg = error instanceof Error ? error.message : String(error);
+
+          // FailFallible = transaction was submitted, proved, and mined on-chain, but the
+          // contract's runtime assertion failed (e.g. wrong phase, card not in hand).
+          // This is a PERMANENT failure — retrying with the same payload will always fail.
+          // Purge the entire pending queue so the stale input doesn't re-fire on future polls,
+          // which would advance the game phase unexpectedly and break subsequent moves.
+          const isFailFallible = (error as any)?.name === "CallTxFailedError" ||
+            (error as any)?.finalizedTxData?.status === "FailFallible" ||
+            errMsg.includes("FailFallible");
+          if (isFailFallible) {
+            console.error(`[GoFishMidnightAdapter] ${circuit} FailFallible — purging batcher queue to prevent stale replay`);
+            try {
+              await storage.clearAllInputs();
+              console.warn(`[GoFishMidnightAdapter] Batcher queue cleared after FailFallible`);
+            } catch (clearErr) {
+              console.error(`[GoFishMidnightAdapter] Failed to clear queue:`, clearErr);
+            }
+            throw error; // Don't retry
+          }
+
           const isUnreachable = error instanceof Error &&
             (errMsg.includes("unreachable") || errMsg.includes("RuntimeError"));
           // Proof server 500 means the circuit's on-chain assertions failed during /check,
           // which happens when the indexer hasn't yet confirmed the preceding transaction
           // (e.g. both applyMask transactions must be on-chain before dealCards /check passes).
           const isProofServer500 = errMsg.includes("code=\"500\"") || errMsg.includes("code=500");
-          const isRetryable = isUnreachable || isProofServer500;
+          // "failed assert" from createUnprovenCallTxFromInitialStates means the local WASM simulation
+          // read stale indexer state. For setup-dependent circuits (dealCards, askForCard), the
+          // preceding transaction (e.g. opponent's dealCards) may not yet be indexed.
+          //
+          // HOWEVER: some assertions are permanent — the circuit has already been run on-chain
+          // for this player/game, so retrying will always fail. These must be treated like
+          // FailFallible: purge the queue immediately so the duplicate doesn't block subsequent
+          // circuits (e.g. a stale second applyMask blocking dealCards for 75+ seconds).
+          const isPermanentAssert = errMsg.includes("already applied") ||
+            errMsg.includes("already dealt") ||
+            errMsg.includes("already initialized") ||
+            errMsg.includes("already started");
+          const isStaleAssert = errMsg.includes("failed assert") && !isPermanentAssert;
+          const isRetryable = isUnreachable || isProofServer500 || isStaleAssert;
+
+          if (isPermanentAssert) {
+            console.error(`[GoFishMidnightAdapter] ${circuit} permanent assert ("${errMsg.slice(0, 120)}") — purging batcher queue to prevent stale replay`);
+            try {
+              await storage.clearAllInputs();
+              console.warn(`[GoFishMidnightAdapter] Batcher queue cleared after permanent assert`);
+            } catch (clearErr) {
+              console.error(`[GoFishMidnightAdapter] Failed to clear queue:`, clearErr);
+            }
+            throw error; // Don't retry
+          }
 
           if (isRetryable && attempt < MAX_RETRIES) {
             const elapsed = Math.round((Date.now() - startTime) / 1000);
-            const reason = isProofServer500 ? "proof server 500 (on-chain state not yet confirmed)" : "WASM unreachable";
+            const reason = isProofServer500 ? "proof server 500 (on-chain state not yet confirmed)" :
+              isStaleAssert ? "failed assert (indexer state likely stale — opponent tx not yet indexed)" :
+              "WASM unreachable";
             try {
               const blockNum = await this.getBlockNumber();
               console.warn(
@@ -199,8 +283,37 @@ class GoFishMidnightAdapter extends MidnightAdapter {
               const secret = BigInt("0x" + payload.playerSecret);
               const shuffleSeed = hexToBytes(payload.shuffleSeed!);
               setPlayerSecrets(secretInfo.gameId, secretInfo.playerId as 1 | 2, secret, shuffleSeed);
+              // Re-set opponent secrets too
+              if (payload.opponentSecret && payload.opponentShuffleSeed) {
+                const opponentId = (secretInfo.playerId === 1 ? 2 : 1) as 1 | 2;
+                const opponentSecret = BigInt("0x" + payload.opponentSecret);
+                const opponentShuffleSeed = hexToBytes(payload.opponentShuffleSeed);
+                setPlayerSecrets(secretInfo.gameId, opponentId, opponentSecret, opponentShuffleSeed);
+              }
             }
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            // Refresh the `now` timestamp arg AFTER the sleep, so the value is
+            // fresh when submitBatch is called on the next attempt.
+            // blockTimeLt(now + 6) requires now be within 6s of the block time.
+            // Circuits that carry `now` and their arg positions:
+            //   askForCard:   args[3]  → [gameId, playerId, rank, now]
+            //   respondToAsk: args[2]  → [gameId, playerId, now]
+            //   goFish:       args[2]  → [gameId, playerId, now]
+            //   afterGoFish:  args[3]  → [gameId, playerId, drewRequestedCard, now]
+            if (data?.payloads?.[0]) {
+              const nowCircuits: Record<string, number> = {
+                askForCard: 3,
+                respondToAsk: 2,
+                goFish: 2,
+                afterGoFish: 3,
+              };
+              const nowArgIdx = nowCircuits[circuit];
+              if (nowArgIdx !== undefined && Array.isArray(data.payloads[0].args)) {
+                const freshNow = Math.floor(Date.now() / 1000);
+                data.payloads[0].args[nowArgIdx] = freshNow;
+                console.log(`[GoFishMidnightAdapter] Refreshed now=${freshNow} at args[${nowArgIdx}] for ${circuit} retry`);
+              }
+            }
             continue;
           }
 
@@ -213,6 +326,12 @@ class GoFishMidnightAdapter extends MidnightAdapter {
       // Always clear secrets after all attempts
       if (secretInfo) {
         this.clearSecrets(secretInfo.gameId, secretInfo.playerId);
+        // Also clear opponent secrets if they were set
+        const payload = data?.payloads?.[0];
+        if (payload?.opponentSecret) {
+          const opponentId = (secretInfo.playerId === 1 ? 2 : 1) as 1 | 2;
+          this.clearSecrets(secretInfo.gameId, opponentId);
+        }
       }
     }
   }
@@ -269,6 +388,15 @@ class GoFishMidnightAdapter extends MidnightAdapter {
       setPlayerSecrets(gameId, playerId, secret, shuffleSeed);
       console.log(`[GoFishMidnightAdapter] Set client secrets for game ${gameId}, player ${playerId}`);
 
+      // Also set opponent secrets when provided
+      if (circuitCall.opponentSecret && circuitCall.opponentShuffleSeed) {
+        const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+        const opponentSecret = BigInt("0x" + circuitCall.opponentSecret);
+        const opponentShuffleSeed = hexToBytes(circuitCall.opponentShuffleSeed);
+        setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
+        console.log(`[GoFishMidnightAdapter] Set opponent secrets for game ${gameId}, player ${opponentId}`);
+      }
+
       return { gameId, playerId };
     } catch (error) {
       console.error("[GoFishMidnightAdapter] Error extracting secrets:", error);
@@ -290,7 +418,8 @@ class GoFishMidnightAdapter extends MidnightAdapter {
     const action = actionMap[circuit];
     if (!action || !data?.payloads?.[0]) return;
 
-    const args = data.payloads[0].args;
+    const payload = data.payloads[0];
+    const args = payload.args;
     if (!Array.isArray(args) || args.length < 2) return;
 
     // Convert hex gameId back to lobbyId string
@@ -298,12 +427,23 @@ class GoFishMidnightAdapter extends MidnightAdapter {
     const playerId = Number(args[1]);
     const lobbyId = this.hexToLobbyId(gameIdHex);
 
+    // Include player secrets so the node can replay the circuit locally on its own
+    // in-memory contract instance, keeping the local actionContext in sync with
+    // what was just written to the real Midnight chain.
+    // Also forward opponent secrets — dealCards needs both players' secrets to reproduce
+    // the same cardOwnership ledger as the real on-chain transaction.
+    const body: Record<string, unknown> = { lobby_id: lobbyId, player_id: playerId, action };
+    if (payload.playerSecret) body.player_secret = payload.playerSecret;
+    if (payload.shuffleSeed) body.shuffle_seed = payload.shuffleSeed;
+    if (payload.opponentSecret) body.opponent_secret = payload.opponentSecret;
+    if (payload.opponentShuffleSeed) body.opponent_shuffle_seed = payload.opponentShuffleSeed;
+
     const backendUrl = Deno.env.get("BACKEND_URL") || "http://localhost:9996";
     try {
       const response = await fetch(`${backendUrl}/api/midnight/notify_setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lobby_id: lobbyId, player_id: playerId, action }),
+        body: JSON.stringify(body),
       });
       if (response.ok) {
         console.log(`[GoFishMidnightAdapter] Backend notified: ${action} for ${lobbyId} player ${playerId}`);

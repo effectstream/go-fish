@@ -1,4 +1,5 @@
 import { MidnightService } from '../../services/MidnightService';
+import { PlayerKeyManager } from '../../services/PlayerKeyManager';
 import type { Card, Rank, Suit } from '../../../../shared/data-types/src/go-fish-types';
 
 const INDEX_TO_RANK: Rank[] = ['A', '2', '3', '4', '5', '6', '7'];
@@ -85,19 +86,52 @@ export class GameStateAdapter {
       const rawState = await MidnightService.getGameState(this.lobbyId, this.walletAddress);
       if (!rawState) return;
 
-      // Decrypt player hand
+      // Decrypt player hand using the real player secret stored in PlayerKeyManager.
+      // Only query once cards have been dealt — during setup/dealing phase the ledger
+      // has no cards yet, so the query would correctly return 0 cards but mislead the UI.
       let myHand: Card[] = [];
-      try {
-        const rawHand = await MidnightService.getPlayerHand(
-          this.lobbyId,
-          rawState.playerId as 1 | 2,
-        );
-        myHand = rawHand.map((c: { rank: number; suit: number }) => ({
-          rank: INDEX_TO_RANK[c.rank] ?? 'A',
-          suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
-        }));
-      } catch (err) {
-        console.warn('[GameStateAdapter] Failed to decrypt hand:', err);
+      const phase = rawState.phase ?? 'dealing';
+      const handIsReady = phase !== 'dealing' && phase !== 'waiting';
+      console.log(`[GameStateAdapter] poll: phase=${phase}, handIsReady=${handIsReady}, handSizes=${JSON.stringify(rawState.handSizes)}`);
+      if (handIsReady) {
+        try {
+          const pid = rawState.playerId as 1 | 2;
+          const opponentId = (pid === 1 ? 2 : 1) as 1 | 2;
+
+          const playerSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid);
+          const playerSecretHex = playerSecret.toString(16).padStart(64, '0');
+
+          const shuffleSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
+          const shuffleSeedHex = Array.from(shuffleSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+
+          // Pass opponent secrets too so the node can replay setup if its local sim
+          // lost the game state (e.g. after a node restart). No-op if already in context.
+          let opponentSecretHex: string | undefined;
+          let opponentShuffleSeedHex: string | undefined;
+          try {
+            const opponentSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, opponentId);
+            opponentSecretHex = opponentSecret.toString(16).padStart(64, '0');
+            const opponentSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, opponentId);
+            opponentShuffleSeedHex = Array.from(opponentSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+          } catch {
+            // Opponent keys may not be available (e.g. player 2 doesn't have player 1's keys)
+          }
+
+          console.log(`[GameStateAdapter] fetching hand for player ${pid}, secret prefix=${playerSecretHex.slice(0, 8)}...`);
+          const rawHand = await MidnightService.getPlayerHandWithSecret(
+            this.lobbyId,
+            pid,
+            playerSecretHex,
+            { shuffleSeedHex, opponentSecretHex, opponentShuffleSeedHex },
+          );
+          console.log(`[GameStateAdapter] rawHand returned ${rawHand.length} cards:`, JSON.stringify(rawHand));
+          myHand = rawHand.map((c: { rank: number; suit: number }) => ({
+            rank: INDEX_TO_RANK[c.rank] ?? 'A',
+            suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
+          }));
+        } catch (err) {
+          console.warn('[GameStateAdapter] Failed to decrypt hand:', err);
+        }
       }
 
       const players = rawState.players || [];

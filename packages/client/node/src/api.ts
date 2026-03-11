@@ -17,6 +17,8 @@ import {
 } from "./midnight-onchain.ts";
 import {
   getPlayerHand as getMidnightPlayerHand,
+  getPlayerHandWithSecret as getMidnightPlayerHandWithSecret,
+  ensureGameReplayedIfNeeded as midnightEnsureGameReplayedIfNeeded,
   askForCard as midnightAskForCard,
   goFish as midnightGoFish,
   applyMask as midnightApplyMask,
@@ -568,6 +570,44 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     return { hand };
   });
 
+  // Get player's real hand using their secret key (batcher mode)
+  // The frontend passes its secret so the backend can run doesPlayerHaveSpecificCard
+  // with the correct witness. The secret is never persisted — used only for this call.
+  server.post("/api/midnight/player_hand_with_secret", async (request, reply) => {
+    const { lobby_id, player_id, player_secret, shuffle_seed, opponent_secret, opponent_shuffle_seed } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      player_secret: string;          // hex-encoded bigint, no 0x prefix
+      shuffle_seed?: string;          // hex-encoded 32 bytes — used for setup replay
+      opponent_secret?: string;       // opponent's secret — used for setup replay
+      opponent_shuffle_seed?: string; // opponent's shuffle seed — used for setup replay
+    };
+
+    if (!lobby_id || !player_id || !player_secret) {
+      return reply.code(400).send({ error: 'Missing lobby_id, player_id, or player_secret' });
+    }
+
+    const playerId = parseInt(String(player_id)) as 1 | 2;
+    if (playerId !== 1 && playerId !== 2) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    // If the local simulation doesn't have this game's state (e.g. node restarted),
+    // replay the setup sequence using the provided secrets before querying the hand.
+    // This is a no-op when the game is already in the actionContext.
+    await midnightEnsureGameReplayedIfNeeded(
+      lobby_id,
+      playerId,
+      player_secret,
+      shuffle_seed,
+      opponent_secret,
+      opponent_shuffle_seed,
+    );
+
+    const hand = await getMidnightPlayerHandWithSecret(lobby_id, playerId, player_secret);
+    return { hand };
+  });
+
   // Ask for card action
   server.post("/api/midnight/ask_for_card", async (request, reply) => {
     const { lobby_id, player_id, rank } = request.body as {
@@ -611,9 +651,10 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
   // Apply Mask action (setup phase)
   server.post("/api/midnight/apply_mask", async (request, reply) => {
-    const { lobby_id, player_id } = request.body as {
+    const { lobby_id, player_id, player_secret } = request.body as {
       lobby_id: string;
       player_id: number;
+      player_secret?: string;
     };
 
     if (!lobby_id || !player_id) {
@@ -625,15 +666,17 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
-    const result = await midnightApplyMask(lobby_id, playerId);
+    const result = await midnightApplyMask(lobby_id, playerId, player_secret);
     return result;
   });
 
   // Deal Cards action (setup phase)
   server.post("/api/midnight/deal_cards", async (request, reply) => {
-    const { lobby_id, player_id } = request.body as {
+    const { lobby_id, player_id, player_secret, shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;
+      player_secret?: string;
+      shuffle_seed?: string;
     };
 
     if (!lobby_id || !player_id) {
@@ -645,7 +688,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
-    const result = await midnightDealCards(lobby_id, playerId);
+    const result = await midnightDealCards(lobby_id, playerId, player_secret, shuffle_seed);
     return result;
   });
 
@@ -742,12 +785,18 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     };
   });
 
-  // Notify setup complete (called by frontend after batcher transaction succeeds)
+  // Notify setup complete (called by batcher after on-chain transaction succeeds).
+  // When player_secret is included, also replays the circuit on the local actionContract
+  // so the node's in-memory state stays in sync with the real Midnight chain state.
   server.post("/api/midnight/notify_setup", async (request, reply) => {
-    const { lobby_id, player_id, action } = request.body as {
+    const { lobby_id, player_id, action, player_secret, shuffle_seed, opponent_secret, opponent_shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;
       action: "mask_applied" | "dealt_complete";
+      player_secret?: string;         // hex-encoded bigint, no 0x prefix
+      shuffle_seed?: string;          // hex-encoded 32 bytes, no 0x prefix
+      opponent_secret?: string;       // hex-encoded bigint, no 0x prefix
+      opponent_shuffle_seed?: string; // hex-encoded 32 bytes, no 0x prefix
     };
 
     if (!lobby_id || !player_id || !action) {
@@ -763,11 +812,37 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Invalid action' });
     }
 
+    const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+
     // Update local state tracking
     if (action === "mask_applied") {
       markMaskApplied(lobby_id, playerId);
+      // Replay applyMask on local actionContract so getPlayerHandWithSecret works later.
+      // Pre-inject opponent secret first so it's available if the replay needs it.
+      if (opponent_secret) {
+        midnightApplyMask(lobby_id, opponentId, opponent_secret).catch(() => {});
+      }
+      if (player_secret) {
+        console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player ${playerId}`);
+        midnightApplyMask(lobby_id, playerId, player_secret).catch((err: Error) => {
+          console.warn(`[API] Local applyMask replay failed (non-critical):`, err?.message);
+        });
+      }
     } else if (action === "dealt_complete") {
       markDealtComplete(lobby_id, playerId);
+      // Replay dealCards on local actionContract so getPlayerHandWithSecret works later.
+      // Both player_secret AND shuffle_seed are required for the local replay to produce
+      // the same cardOwnership ledger as the real on-chain transaction.
+      // Pre-inject opponent secret so both players' secrets are available during replay.
+      if (opponent_secret) {
+        midnightDealCards(lobby_id, opponentId, opponent_secret, opponent_shuffle_seed).catch(() => {});
+      }
+      if (player_secret) {
+        console.log(`[API] Replaying dealCards locally for lobby ${lobby_id} player ${playerId}`);
+        midnightDealCards(lobby_id, playerId, player_secret, shuffle_seed).catch((err: Error) => {
+          console.warn(`[API] Local dealCards replay failed (non-critical):`, err?.message);
+        });
+      }
     }
 
     console.log(`[API] Setup notification received: ${action} for lobby ${lobby_id} player ${playerId}`);

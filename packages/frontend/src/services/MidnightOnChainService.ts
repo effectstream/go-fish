@@ -881,7 +881,8 @@ export async function onChainAskForCard(
   try {
     const callTx = getCallTx();
     const gameId = lobbyIdToGameId(lobbyId);
-    await callTx.askForCard(gameId, BigInt(playerId), BigInt(rank));
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.askForCard(gameId, BigInt(playerId), BigInt(rank), now);
     return { success: true };
   } catch (error) {
     console.error("[MidnightOnChain] askForCard failed:", error);
@@ -919,7 +920,8 @@ export async function onChainRespondToAsk(
   try {
     const callTx = getCallTx();
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = await callTx.respondToAsk(gameId, BigInt(playerId));
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = await callTx.respondToAsk(gameId, BigInt(playerId), now);
     // Result is [boolean, bigint] - hasCards and count
     const [hasCards, cardCount] = result as [boolean, bigint];
     return { success: true, hasCards, cardCount: Number(cardCount) };
@@ -954,7 +956,8 @@ export async function onChainGoFish(
   try {
     const callTx = getCallTx();
     const gameId = lobbyIdToGameId(lobbyId);
-    await callTx.goFish(gameId, BigInt(playerId));
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.goFish(gameId, BigInt(playerId), now);
     return { success: true };
   } catch (error) {
     console.error("[MidnightOnChain] goFish failed:", error);
@@ -988,7 +991,8 @@ export async function onChainAfterGoFish(
   try {
     const callTx = getCallTx();
     const gameId = lobbyIdToGameId(lobbyId);
-    await callTx.afterGoFish(gameId, BigInt(playerId), drewRequestedCard);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.afterGoFish(gameId, BigInt(playerId), drewRequestedCard, now);
     return { success: true };
   } catch (error) {
     console.error("[MidnightOnChain] afterGoFish failed:", error);
@@ -1022,6 +1026,35 @@ export async function onChainSkipDrawDeckEmpty(
     return { success: true };
   } catch (error) {
     console.error("[MidnightOnChain] skipDrawDeckEmpty failed:", error);
+    return { success: false, errorMessage: String(error) };
+  }
+}
+
+/**
+ * Claim a win because the active player has not moved within the timeout window.
+ * Can only be called by the waiting player (the one whose turn it is NOT).
+ */
+export async function onChainClaimTimeoutWin(
+  lobbyId: string,
+  claimingPlayerId: 1 | 2
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using batcher service for claimTimeoutWin...");
+    const result = await BatcherMidnightService.claimTimeoutWin(lobbyId, claimingPlayerId);
+    return { success: result.success, errorMessage: result.error };
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    await callTx.claimTimeoutWin(gameId, BigInt(claimingPlayerId));
+    return { success: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] claimTimeoutWin failed:", error);
     return { success: false, errorMessage: String(error) };
   }
 }
@@ -1069,6 +1102,7 @@ export const MidnightOnChainService = {
   goFish: onChainGoFish,
   afterGoFish: onChainAfterGoFish,
   skipDrawDeckEmpty: onChainSkipDrawDeckEmpty,
+  claimTimeoutWin: onChainClaimTimeoutWin,
 };
 
 export default MidnightOnChainService;

@@ -193,12 +193,12 @@ function cleanupExpiredSessions(): void {
   const now = Date.now();
   let hasChanges = false;
 
-  for (const [gameId, state] of Object.entries(states.games)) {
+  for (const [key, state] of Object.entries(states.games)) {
     if (now - state.createdAt > SESSION_EXPIRATION_MS) {
-      delete states.games[gameId];
-      gameStateCache.delete(gameId);
+      delete states.games[key];
+      gameStateCache.delete(key);
       hasChanges = true;
-      console.log(`[PlayerKeyManager] Cleaned up expired session for game ${gameId}`);
+      console.log(`[PlayerKeyManager] Cleaned up expired session for game ${key}`);
     }
   }
 
@@ -217,8 +217,11 @@ export function getOrCreatePlayerState(
   gameId: string,
   playerId: 1 | 2
 ): GamePlayerState {
+  const cacheKey = `${gameId}:${playerId}`;
+  const storageKey = `${gameId}:${playerId}`;
+
   // Check memory cache first
-  const cached = gameStateCache.get(gameId);
+  const cached = gameStateCache.get(cacheKey);
   if (cached) {
     console.log(`[PlayerKeyManager] Cache hit for game ${gameId}`);
     return cached;
@@ -226,20 +229,11 @@ export function getOrCreatePlayerState(
 
   // Check localStorage
   const states = loadStoredStates();
-  if (states.games[gameId]) {
-    const stored = states.games[gameId];
-    // Verify player ID matches (prevent using wrong player's keys)
-    if (stored.playerId !== playerId) {
-      console.warn(
-        `[PlayerKeyManager] Player ID mismatch for game ${gameId}: stored=${stored.playerId}, requested=${playerId}`
-      );
-      // This is a security concern - don't return wrong player's keys
-      // Generate new state instead
-    } else {
-      gameStateCache.set(gameId, stored);
-      console.log(`[PlayerKeyManager] Loaded stored state for game ${gameId}`);
-      return stored;
-    }
+  if (states.games[storageKey]) {
+    const stored = states.games[storageKey];
+    gameStateCache.set(cacheKey, stored);
+    console.log(`[PlayerKeyManager] Loaded stored state for game ${gameId}`);
+    return stored;
   }
 
   // Generate new state
@@ -255,8 +249,8 @@ export function getOrCreatePlayerState(
   };
 
   // Save to cache and storage
-  gameStateCache.set(gameId, newState);
-  states.games[gameId] = newState;
+  gameStateCache.set(cacheKey, newState);
+  states.games[storageKey] = newState;
   saveStoredStates(states);
 
   console.log(`[PlayerKeyManager] New keys generated and stored for game ${gameId}`);
@@ -306,24 +300,35 @@ export function getShuffleSeed(gameId: string, playerId: 1 | 2): Uint8Array {
 /**
  * Check if player has existing keys for a game
  */
-export function hasExistingKeys(gameId: string): boolean {
-  if (gameStateCache.has(gameId)) {
-    return true;
+export function hasExistingKeys(gameId: string, playerId?: 1 | 2): boolean {
+  if (playerId !== undefined) {
+    const key = `${gameId}:${playerId}`;
+    if (gameStateCache.has(key)) return true;
+    const states = loadStoredStates();
+    return !!states.games[key];
   }
-  const states = loadStoredStates();
-  return !!states.games[gameId];
+  // Legacy: check either player slot
+  return (
+    gameStateCache.has(`${gameId}:1`) ||
+    gameStateCache.has(`${gameId}:2`) ||
+    (() => {
+      const states = loadStoredStates();
+      return !!states.games[`${gameId}:1`] || !!states.games[`${gameId}:2`];
+    })()
+  );
 }
 
 /**
  * Get the stored player ID for a game (if any)
  */
 export function getStoredPlayerId(gameId: string): 1 | 2 | null {
-  const cached = gameStateCache.get(gameId);
-  if (cached) {
-    return cached.playerId;
+  for (const pid of [1, 2] as const) {
+    const key = `${gameId}:${pid}`;
+    if (gameStateCache.has(key)) return pid;
+    const states = loadStoredStates();
+    if (states.games[key]) return pid;
   }
-  const states = loadStoredStates();
-  return states.games[gameId]?.playerId ?? null;
+  return null;
 }
 
 /**
@@ -339,9 +344,11 @@ export function clearAllKeys(): void {
  * Clear keys for a specific game
  */
 export function clearGameKeys(gameId: string): void {
-  gameStateCache.delete(gameId);
+  gameStateCache.delete(`${gameId}:1`);
+  gameStateCache.delete(`${gameId}:2`);
   const states = loadStoredStates();
-  delete states.games[gameId];
+  delete states.games[`${gameId}:1`];
+  delete states.games[`${gameId}:2`];
   saveStoredStates(states);
   console.log(`[PlayerKeyManager] Cleared keys for game ${gameId}`);
 }

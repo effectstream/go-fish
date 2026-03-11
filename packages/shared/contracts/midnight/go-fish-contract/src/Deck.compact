@@ -173,29 +173,22 @@ export circuit partial_decryption(gameId: Bytes<32>, point: NativePoint, playerI
 export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): NativePoint {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(_playerId);
-    
+
     const topIndex = gameTopCardIndex.lookup(gid) as Uint<32>;
     const deckKey = makeDeckCardKey(gid, disclose(topIndex) as Field);
     const point = gameDeck.lookup(disclose(deckKey)) as NativePoint;
-    
+
     // Increment top card index
     gameTopCardIndex.insert(gid, topIndex + 1 as Uint<32>);
     const deckSize = gameDeckSize.lookup(gid) as Uint<64>;
     assert(topIndex + 1 as Uint<32> <= deckSize as Uint<32>, "Top card index is greater than deck size");
-    
-    if (disclosed_playerId == 1 as Uint<64>) {
-        const masked_card = partial_decryption(gid, disclose(point), _playerId);
-        return masked_card;
-    }
-    else if (disclosed_playerId == 2 as Uint<64>) {
-        const masked_card = partial_decryption(gid, disclose(point), _playerId);
-        return masked_card;
-    }
-    else { 
-        assert(false, "Invalid player index");
-    }
 
-    return point;
+    // Both player branches call partial_decryption identically — no conditional needed.
+    // This ensures the ec_mul inside partial_decryption is unconditional in the ZKIR,
+    // preventing the proof server from receiving zero/invalid curve point inputs.
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+    const masked_card = partial_decryption(gid, disclose(point), _playerId);
+    return masked_card;
 }
 
 // Get a card from the deck at a specific index without removing it

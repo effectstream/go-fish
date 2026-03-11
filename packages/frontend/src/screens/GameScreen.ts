@@ -8,6 +8,7 @@ import type { GoFishGameState, GoFishPlayer, Rank, Suit } from '../../../shared/
 import { getUniqueRanks } from '../../../shared/data-types/src/go-fish-types';
 import { getWalletAddress } from '../effectstreamBridge';
 import { MidnightService } from '../services/MidnightService';
+import { PlayerKeyManager } from '../services/PlayerKeyManager';
 
 // Type for API game state response
 interface GameStateResponse {
@@ -163,14 +164,20 @@ export class GameScreen {
 
     console.log(`[GameScreen] State: phase=${this.gameState.phase}, currentTurn=${this.gameState.currentTurn}, myPlayerId=${this.gameState.playerId}, isMyTurn=${isMyTurn}, myHandSize=${myHandSize}`);
 
-    // Decrypt player's hand via MidnightService
+    // Decrypt player's hand via MidnightService using the player's secret
+    // getPlayerHand (no secret) returns a mock hand in batcher mode — use
+    // getPlayerHandWithSecret so the backend can actually decrypt on-chain cards.
     if (myHandSize > 0 && this.gameState.playerId) {
       try {
-        this.myDecryptedHand = await MidnightService.getPlayerHand(
+        const playerId = this.gameState.playerId as 1 | 2;
+        const playerState = PlayerKeyManager.getOrCreatePlayerState(this.lobbyId, playerId);
+        console.log(`[GameScreen] fetchHand: player=${playerId} secret prefix=${playerState.secret.slice(0, 8)}...`);
+        this.myDecryptedHand = await MidnightService.getPlayerHandWithSecret(
           this.lobbyId,
-          this.gameState.playerId as 1 | 2
+          playerId,
+          playerState.secret
         );
-        console.log(`[GameScreen] Hand fetched: ${this.myDecryptedHand.length} cards for player ${this.gameState.playerId}`);
+        console.log(`[GameScreen] Hand fetched: ${this.myDecryptedHand.length} cards for player ${playerId}:`, JSON.stringify(this.myDecryptedHand));
       } catch (error) {
         console.error('[GameScreen] Error fetching hand:', error);
         this.myDecryptedHand = [];
@@ -1792,6 +1799,7 @@ export class GameScreen {
               'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6
             };
             const targetRank = rankMap[this.selectedRank] ?? 0;
+            console.log(`[GameScreen] askForCard: selectedRank="${this.selectedRank}" → targetRank=${targetRank}, hand=`, JSON.stringify(this.myDecryptedHand));
 
             const result = await MidnightService.askForCard(
               this.lobbyId,
