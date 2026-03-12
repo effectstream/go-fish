@@ -1,15 +1,12 @@
 /**
  * Midnight On-Chain Integration Service
  *
- * This module provides on-chain integration with the Midnight blockchain.
+ * In batcher mode, game state is tracked locally because the contract's ledger()
+ * function returns an empty object and parsing raw indexer state requires
+ * understanding the compact serialization format.
  *
- * In batcher mode, we track game state locally because:
- * 1. The contract's ledger() function returns an empty object (doesn't expose public state)
- * 2. Parsing raw indexer state requires understanding the compact serialization format
- * 3. The batcher confirms transactions, so we can track state based on successful txs
- *
- * State is tracked in-memory and updated when transactions succeed.
- * This is appropriate for dev/testing. Production would need persistent storage.
+ * Both setupStateMap and gameStateMap are persisted to disk so they survive
+ * node restarts.
  */
 
 // Indexer URL for GraphQL queries (for future use when ledger parsing works)
@@ -27,15 +24,55 @@ interface GameSetupState {
   hasDealt: boolean;
 }
 
+/** Valid game phases in the order they can appear. */
+export type GamePhase =
+  | "dealing"
+  | "turn_start"
+  | "wait_response"
+  | "wait_transfer"
+  | "wait_draw"
+  | "wait_draw_check"
+  | "finished";
+
 interface GameState {
-  phase: string;
-  currentTurn: number;
+  phase: GamePhase;
+  currentTurn: 1 | 2;
   scores: [number, number];
   handSizes: [number, number];
   deckCount: number;
   isGameOver: boolean;
   lastAskedRank: number | null;
   lastAskingPlayer: number | null;
+}
+
+/** Valid phase transitions. A phase not in this map can only be the initial phase. */
+const VALID_TRANSITIONS: Partial<Record<GamePhase, GamePhase[]>> = {
+  dealing:          ["turn_start"],
+  turn_start:       ["wait_response", "finished"],
+  wait_response:    ["wait_transfer", "wait_draw", "finished"],
+  wait_transfer:    ["turn_start", "finished"],
+  wait_draw:        ["wait_draw_check", "turn_start", "finished"],
+  wait_draw_check:  ["turn_start", "finished"],
+};
+
+function validatePhaseTransition(prev: GamePhase, next: GamePhase): void {
+  if (prev === next) return; // No-op update is always fine
+  const allowed = VALID_TRANSITIONS[prev];
+  if (allowed && !allowed.includes(next)) {
+    console.warn(`[MidnightOnChain] Unexpected phase transition: ${prev} → ${next}`);
+  }
+}
+
+function isValidPlayerId(id: number): id is 1 | 2 {
+  return id === 1 || id === 2;
+}
+
+/**
+ * Validate that a lobbyId is a safe, well-formed string.
+ * Returns true if the id matches the expected alphanumeric + hyphen/underscore format.
+ */
+export function isValidLobbyId(id: string): boolean {
+  return typeof id === "string" && id.length > 0 && id.length <= 50 && /^[a-zA-Z0-9_-]+$/.test(id);
 }
 
 // Local state tracking maps
@@ -46,6 +83,7 @@ const gameStateMap = new Map<string, GameState>();
 // Persistence helpers — survive node restarts
 // ---------------------------------------------------------------------------
 const SETUP_STATE_FILE = "./data/setup-state.json";
+const GAME_STATE_FILE = "./data/game-state.json";
 
 function loadPersistedSetupState(): void {
   try {
@@ -73,15 +111,41 @@ function persistSetupState(): void {
   }
 }
 
+function loadPersistedGameState(): void {
+  try {
+    const text = Deno.readTextFileSync(GAME_STATE_FILE);
+    const data = JSON.parse(text) as Record<string, GameState>;
+    for (const [key, value] of Object.entries(data)) {
+      gameStateMap.set(key, value);
+    }
+    console.log(`[MidnightOnChain] Loaded ${gameStateMap.size} persisted game state entries from disk`);
+  } catch {
+    // File doesn't exist yet — fine on first run
+  }
+}
+
+function persistGameState(): void {
+  try {
+    Deno.mkdirSync("./data", { recursive: true });
+    const data: Record<string, GameState> = {};
+    for (const [key, value] of gameStateMap.entries()) {
+      data[key] = value;
+    }
+    Deno.writeTextFileSync(GAME_STATE_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.warn("[MidnightOnChain] Failed to persist game state:", err);
+  }
+}
+
 // Load persisted state immediately so it's available before any request arrives
 loadPersistedSetupState();
+loadPersistedGameState();
 
 /**
  * Load contract address from deployment file
  */
 async function loadContractAddress(): Promise<string | null> {
   try {
-    // Path from /packages/client/node/src/ up to /packages/ then into shared/
     const deploymentPath = new URL(
       "../../../shared/contracts/midnight/go-fish-contract.undeployed.json",
       import.meta.url
@@ -107,7 +171,6 @@ export async function initializeOnChainService(): Promise<void> {
   try {
     console.log("[MidnightOnChain] Initializing on-chain service...");
 
-    // Load contract address
     contractAddress = await loadContractAddress();
     if (!contractAddress) {
       console.warn("[MidnightOnChain] No contract address found - using local state tracking only");
@@ -183,7 +246,6 @@ export async function queryOnChainSetupStatus(
     return state;
   }
 
-  // No state tracked yet
   console.log(`[MidnightOnChain] No setup state for ${lobbyId} player ${playerId} - returning defaults`);
   return { hasMaskApplied: false, hasDealt: false };
 }
@@ -192,7 +254,6 @@ export async function queryOnChainSetupStatus(
  * Check if a game exists (based on local tracking)
  */
 export async function queryGameExists(lobbyId: string): Promise<boolean> {
-  // Check if either player has any setup state
   const key1 = getSetupStateKey(lobbyId, 1);
   const key2 = getSetupStateKey(lobbyId, 2);
   return setupStateMap.has(key1) || setupStateMap.has(key2) || gameStateMap.has(lobbyId);
@@ -205,11 +266,9 @@ export async function queryGameExists(lobbyId: string): Promise<boolean> {
 export async function queryOnChainGamePhase(lobbyId: string): Promise<number> {
   const state = gameStateMap.get(lobbyId);
   if (!state) {
-    // Check if we're in setup phase based on setup state
     const p1State = setupStateMap.get(getSetupStateKey(lobbyId, 1));
     const p2State = setupStateMap.get(getSetupStateKey(lobbyId, 2));
 
-    // If both players have dealt, we're past setup
     if (p1State?.hasDealt && p2State?.hasDealt) {
       return 1; // TurnStart
     }
@@ -217,55 +276,59 @@ export async function queryOnChainGamePhase(lobbyId: string): Promise<number> {
     return 0; // Setup
   }
 
-  // Phase enum mapping (reverse)
   const phaseMap: Record<string, number> = {
-    "setup": 0,
-    "not_started": 0,
-    "dealing": 0,
-    "turn_start": 1,
-    "playing": 1,
-    "waiting_for_response": 2,
-    "wait_for_transfer": 3,
-    "wait_for_draw": 4,
-    "wait_for_draw_check": 5,
-    "game_over": 6,
+    "dealing":          0,
+    "turn_start":       1,
+    "wait_response":    2,
+    "wait_transfer":    3,
+    "wait_draw":        4,
+    "wait_draw_check":  5,
+    "finished":         6,
   };
 
   return phaseMap[state.phase] ?? 0;
 }
 
+const DEFAULT_GAME_STATE: GameState = {
+  phase: "dealing",
+  currentTurn: 1,
+  scores: [0, 0],
+  handSizes: [7, 7],
+  deckCount: 38,
+  isGameOver: false,
+  lastAskedRank: null,
+  lastAskingPlayer: null,
+};
+
 /**
- * Update game state
+ * Update game state with validation.
+ * Logs a warning on invalid phase transitions or out-of-bounds values.
+ * update.currentTurn must be 1 or 2 if provided.
  */
 export function updateGameState(lobbyId: string, update: Partial<GameState>): void {
-  const current = gameStateMap.get(lobbyId) || {
-    phase: "dealing",
-    currentTurn: 1,
-    scores: [0, 0] as [number, number],
-    handSizes: [7, 7] as [number, number],
-    deckCount: 38,
-    isGameOver: false,
-    lastAskedRank: null,
-    lastAskingPlayer: null,
-  };
-  const updated = { ...current, ...update };
+  const current = gameStateMap.get(lobbyId) ?? { ...DEFAULT_GAME_STATE };
+
+  // Validate phase transition
+  if (update.phase && update.phase !== current.phase) {
+    validatePhaseTransition(current.phase, update.phase);
+  }
+
+  // Validate currentTurn
+  if (update.currentTurn !== undefined && !isValidPlayerId(update.currentTurn)) {
+    console.warn(`[MidnightOnChain] updateGameState: invalid currentTurn=${update.currentTurn} — ignoring`);
+    delete update.currentTurn;
+  }
+
+  const updated = { ...current, ...update } as GameState;
   gameStateMap.set(lobbyId, updated);
+  persistGameState();
   console.log(`[MidnightOnChain] Updated game state for ${lobbyId}:`, updated);
 }
 
 /**
  * Query game state from local tracking
  */
-export async function queryOnChainGameState(lobbyId: string): Promise<{
-  phase: string;
-  currentTurn: number;
-  scores: [number, number];
-  handSizes: [number, number];
-  deckCount: number;
-  isGameOver: boolean;
-  lastAskedRank: number | null;
-  lastAskingPlayer: number | null;
-}> {
+export async function queryOnChainGameState(lobbyId: string): Promise<GameState> {
   const state = gameStateMap.get(lobbyId);
 
   if (state) {
@@ -273,25 +336,12 @@ export async function queryOnChainGameState(lobbyId: string): Promise<{
     return state;
   }
 
-  // Check setup status to determine initial state
+  // Check setup status to determine initial phase
   const p1State = setupStateMap.get(getSetupStateKey(lobbyId, 1));
   const p2State = setupStateMap.get(getSetupStateKey(lobbyId, 2));
 
-  let phase = "dealing";
-  if (p1State?.hasDealt && p2State?.hasDealt) {
-    phase = "turn_start";  // Frontend expects "turn_start" for cards to be clickable
-  }
-
-  const defaultState = {
-    phase,
-    currentTurn: 1,
-    scores: [0, 0] as [number, number],
-    handSizes: [7, 7] as [number, number],
-    deckCount: 38,
-    isGameOver: false,
-    lastAskedRank: null,
-    lastAskingPlayer: null,
-  };
+  const phase: GamePhase = (p1State?.hasDealt && p2State?.hasDealt) ? "turn_start" : "dealing";
+  const defaultState: GameState = { ...DEFAULT_GAME_STATE, phase };
 
   console.log(`[MidnightOnChain] No game state for ${lobbyId} - returning defaults with phase=${phase}`);
   return defaultState;
@@ -318,6 +368,7 @@ export function clearOnChainCache(): void {
   setupStateMap.clear();
   gameStateMap.clear();
   persistSetupState();
+  persistGameState();
   console.log("[MidnightOnChain] Cleared all local state");
 }
 
@@ -329,5 +380,6 @@ export function clearLobbyState(lobbyId: string): void {
   setupStateMap.delete(getSetupStateKey(lobbyId, 2));
   gameStateMap.delete(lobbyId);
   persistSetupState();
+  persistGameState();
   console.log(`[MidnightOnChain] Cleared state for lobby ${lobbyId}`);
 }

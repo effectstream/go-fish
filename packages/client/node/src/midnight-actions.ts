@@ -20,15 +20,12 @@ import {
   releaseMidnightLock,
   isMidnightLocked,
 } from './midnight-query.ts';
+import { USE_BATCHER_MODE, MIN_OPERATION_GAP_MS } from './batcher-config.ts';
+import { INDEX_TO_RANK } from '@go-fish/data-types';
 
 // Private state type
 type PrivateState = Record<string, never>;
 
-/**
- * Minimum gap between operations to let Paima sync processes run
- * Increased to 200ms to give sync processes more time between our CPU-intensive operations
- */
-const MIN_OPERATION_GAP_MS = 200;
 let lastActionEndTime = 0;
 
 /**
@@ -84,8 +81,9 @@ async function processActionQueue() {
     await yieldToEventLoop();
     const result = await item.fn();
     item.resolve(result);
-  } catch (error: any) {
-    item.resolve({ success: false, errorMessage: error.message });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    item.resolve({ success: false, errorMessage });
   } finally {
     lastActionEndTime = Date.now();
     isActionInProgress = false;
@@ -123,6 +121,54 @@ const JUBJUB_SCALAR_FIELD_ORDER =
 const playerSecrets = new Map<string, bigint>();
 // Shuffle seeds injected from the batcher notification (real seeds used during dealCards on-chain)
 const playerShuffleSeeds = new Map<string, Uint8Array>();
+
+/**
+ * Last shuffle seed captured by the shuffle_seed witness.
+ * Used by get_sorted_deck_witness to produce a deterministic permutation that
+ * matches what the batcher's witnesses.ts produces for the same seed.
+ * The contract always calls shuffle_seed immediately before get_sorted_deck_witness.
+ */
+let lastActionShuffleSeed: Uint8Array | null = null;
+
+/**
+ * Generate deterministic pseudo-random weights using xorshift32 PRNG seeded
+ * from the first 4 bytes of the shuffle seed. Must match the implementation
+ * in witnesses.ts so both the batcher and backend produce the same permutation.
+ */
+function deterministicActionWeights(seed: Uint8Array, count: number): number[] {
+  let state =
+    ((seed[0]! | 0) |
+     ((seed[1]! | 0) << 8) |
+     ((seed[2]! | 0) << 16) |
+     ((seed[3]! | 0) << 24)) >>> 0;
+  if (state === 0) state = 0xdeadbeef;
+  const weights: number[] = [];
+  for (let i = 0; i < count; i++) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state = state >>> 0;
+    weights.push(state % 1000000);
+  }
+  return weights;
+}
+
+/**
+ * Long-term secret store — populated during setup replay and never cleared by hand queries.
+ * Used by the batcher adapter to look up the opponent's secret when running game-phase
+ * circuits (askForCard, respondToAsk, goFish, afterGoFish) that require both players' secrets.
+ * Key format: `${hexGameId}-${playerId}` (same as playerSecrets, but persists across hand queries).
+ */
+const persistentSecrets = new Map<string, bigint>();
+const persistentShuffleSeeds = new Map<string, Uint8Array>();
+
+/**
+ * Set of game IDs (hex-encoded) that have been correctly replayed with real seeds.
+ * A game is added here once ensureGameReplayedIfNeeded completes a full replay using
+ * actual shuffle seeds (not the deterministic fallback). This prevents short-circuiting
+ * on phase >= 1 when the initial replay used wrong seeds (e.g. from notify_setup).
+ */
+const gamesReplayedWithSeeds = new Set<string>();
 
 // Singleton contract instance (using any for flexibility with Contract's generic types)
 let actionContract: any = null;
@@ -170,6 +216,8 @@ const actionWitnesses: any = {
     if (playerShuffleSeeds.has(key)) {
       const seed = playerShuffleSeeds.get(key)!;
       console.log(`[MidnightActions] shuffle_seed: HIT key="${key}"`);
+      // Capture so get_sorted_deck_witness can generate deterministic weights
+      lastActionShuffleSeed = seed;
       return [context.privateState, seed];
     }
 
@@ -180,25 +228,31 @@ const actionWitnesses: any = {
     for (let i = 0; i < 32; i++) {
       seed[i] = (gameIdBytes[i % gameIdBytes.length] + Number(player) * (i + 1)) % 256;
     }
+    lastActionShuffleSeed = seed;
     return [context.privateState, seed];
   },
 
   get_sorted_deck_witness: (context: any, input: { x: bigint; y: bigint }[]) => {
-    // Assign random weights and sort (shuffles the deck)
-    // input is array of { x: bigint, y: bigint } curve points
-    const mappedPoints = input.map((point) => ({
+    // Use deterministic weights from the last shuffle seed so the backend replay
+    // produces the same card permutation as the batcher's on-chain transaction.
+    // shuffle_seed is always called immediately before this witness within shuffle_deck.
+    const weights = lastActionShuffleSeed
+      ? deterministicActionWeights(lastActionShuffleSeed, input.length)
+      : input.map(() => Math.floor(Math.random() * 1000000) | 0);
+
+    const mappedPoints = input.map((point, i) => ({
       x: point.x,
       y: point.y,
-      weight: Math.floor(Math.random() * 1000000) | 0,
+      weight: weights[i]!,
     }));
 
-    // Bubble sort by weight
-    for (let i = 0; i < input.length; i++) {
-      for (let j = i + 1; j < input.length; j++) {
+    // Bubble sort by weight (sort mappedPoints in-place, keeping x/y/weight together)
+    for (let i = 0; i < mappedPoints.length; i++) {
+      for (let j = i + 1; j < mappedPoints.length; j++) {
         if (mappedPoints[i]!.weight > mappedPoints[j]!.weight) {
-          const temp = input[i];
-          input[i] = input[j]!;
-          input[j] = temp!;
+          const temp = mappedPoints[i]!;
+          mappedPoints[i] = mappedPoints[j]!;
+          mappedPoints[j] = temp;
         }
       }
     }
@@ -284,47 +338,6 @@ export async function initializeActionContract(): Promise<void> {
   }
 }
 
-// Cache batcher mode check to avoid repeated file reads
-let batcherModeCache: boolean | null = null;
-
-/**
- * Check if running in batcher mode
- */
-function isInBatcherMode(): boolean {
-  // Return cached result if available
-  if (batcherModeCache !== null) {
-    return batcherModeCache;
-  }
-
-  // Check environment variable first
-  const envBatcherMode = Deno.env.get("USE_BATCHER_MODE");
-  if (envBatcherMode === "true") {
-    console.log("[MidnightActions] Batcher mode enabled via USE_BATCHER_MODE env");
-    batcherModeCache = true;
-    return true;
-  }
-
-  // Check runtime config file
-  try {
-    const configPath = new URL("../runtime-config.json", import.meta.url);
-    console.log(`[MidnightActions] Looking for config at: ${configPath.pathname}`);
-    const configText = Deno.readTextFileSync(configPath);
-    const config = JSON.parse(configText);
-    console.log(`[MidnightActions] runtime-config.json: ${JSON.stringify(config)}`);
-    if (config.useBatcherMode === true) {
-      console.log("[MidnightActions] Batcher mode enabled via runtime-config.json");
-      batcherModeCache = true;
-      return true;
-    }
-    batcherModeCache = false;
-  } catch (error) {
-    console.log(`[MidnightActions] Could not read runtime-config.json: ${error}`);
-    batcherModeCache = false;
-  }
-
-  console.log("[MidnightActions] Batcher mode NOT enabled");
-  return false;
-}
 
 /**
  * Generate a deterministic mock hand for batcher mode
@@ -402,9 +415,8 @@ export async function getPlayerHand(
   }
 
   // In batcher mode, return mock hands since we can't decrypt real cards
-  const batcherMode = isInBatcherMode();
-  console.log(`[MidnightActions] getPlayerHand - isInBatcherMode() = ${batcherMode}`);
-  if (batcherMode) {
+  console.log(`[MidnightActions] getPlayerHand - USE_BATCHER_MODE = ${USE_BATCHER_MODE}`);
+  if (USE_BATCHER_MODE) {
     console.log(`[MidnightActions] Using mock hand for batcher mode`);
     const mockHand = generateMockHand(lobbyId, playerId);
     playerHandCache.set(cacheKey, { hand: mockHand, timestamp: now });
@@ -481,6 +493,38 @@ export async function getPlayerHand(
 }
 
 /**
+ * Get a stored player secret for a specific game.
+ * Returns the hex-encoded secret if it's in the persistent secret store
+ * (populated during dealCards setup replay from notify_setup), or null if not available.
+ *
+ * Used by the batcher adapter to look up the opponent secret before running circuits
+ * that require both players' secrets (askForCard, respondToAsk, goFish, afterGoFish).
+ * Uses `persistentSecrets` (not `playerSecrets`) so hand queries don't evict it.
+ */
+export function getStoredPlayerSecret(lobbyId: string, playerId: 1 | 2): string | null {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const hexGameId = Array.from(gameId).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+  const key = `${hexGameId}-${playerId}`;
+  const secret = persistentSecrets.get(key);
+  if (secret === undefined) return null;
+  return secret.toString(16).padStart(64, '0');
+}
+
+/**
+ * Get a stored shuffle seed for a specific game.
+ * Returns the hex-encoded seed if it's in the persistent seed store,
+ * or null if not available.
+ */
+export function getStoredShuffleSeed(lobbyId: string, playerId: 1 | 2): string | null {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const hexGameId = Array.from(gameId).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+  const key = `${hexGameId}-${playerId}`;
+  const seed = persistentShuffleSeeds.get(key);
+  if (seed === undefined) return null;
+  return Array.from(seed).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * Invalidate hand cache for a player (call after actions that modify hands)
  */
 export function invalidateHandCache(lobbyId: string, playerId?: 1 | 2): void {
@@ -528,70 +572,118 @@ export async function ensureGameReplayedIfNeeded(
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: game not in context, replaying setup for ${lobbyId}`);
     }
 
-    // If dealCards has already been replayed (phase >= 1 = TurnStart), hand queries work — done.
-    if (currentPhase >= 1) return;
-
     const hexGameId = Array.from(gameId).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+
+    // If the game was already replayed with correct seeds, nothing more to do.
+    if (gamesReplayedWithSeeds.has(hexGameId)) {
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: game already correctly replayed for ${lobbyId}`);
+      return;
+    }
+
+    // Determine whether we have both shuffle seeds for a correct replay.
+    const hasRealSeeds = !!(shuffleSeedHex && opponentShuffleSeedHex);
+
+    // If game is in context with phase >= 1 but was NOT correctly replayed yet,
+    // and we now have the real seeds, we must reset actionContext and redo from scratch
+    // so the shuffle uses the real seeds and cardOwnership matches on-chain.
+    if (currentPhase >= 1 && hasRealSeeds) {
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: phase=${currentPhase} but seeds now available — resetting context for fresh replay`);
+      // Reset actionContext to the initial post-constructor state (deck mappings only).
+      // This discards all in-memory game state, which is fine since the local sim is
+      // only used for hand queries and is rebuilt on demand.
+      const { currentPrivateState, currentContractState, currentZswapLocalState } =
+        actionContract.initialState(createConstructorContext({}, '0'.repeat(64)));
+      actionContext = {
+        currentPrivateState,
+        currentZswapLocalState,
+        currentQueryContext: new QueryContext(
+          currentContractState.data,
+          sampleContractAddress(),
+        ),
+        costModel: CostModel.initialCostModel(),
+      };
+      const initDeckResult = actionContract.impureCircuits.init_deck(actionContext);
+      actionContext = initDeckResult.context;
+      // Clear the "correctly replayed" set since we just reset all game state
+      gamesReplayedWithSeeds.clear();
+      currentPhase = -1; // force full replay below
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: context reset to initial state`);
+    } else if (currentPhase >= 1) {
+      // In context but no seeds available yet — can't do a correct replay.
+      // Hand queries will use whatever (possibly wrong) cardOwnership is in the local sim.
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: phase=${currentPhase}, no seeds available — skipping replay`);
+      return;
+    }
+
     const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
 
-    // Inject all available secrets before replay
-    const p1Id = playerId;
-    const p2Id = opponentId;
-    const p1SecretKey = `${hexGameId}-${p1Id}`;
-    const p2SecretKey = `${hexGameId}-${p2Id}`;
+    // The contract requires setup to be replayed in canonical P1→P2 order (player 1 always first).
+    // Use named variables that reflect canonical ordering, not "my/opponent" perspective.
+    const canonicalP1 = 1 as const;
+    const canonicalP2 = 2 as const;
+    const mySecretKey = `${hexGameId}-${playerId}`;
+    const opponentSecretKey = `${hexGameId}-${opponentId}`;
 
-    playerSecrets.set(p1SecretKey, BigInt('0x' + playerSecretHex));
+    // Inject caller's secret under their actual player ID key
+    playerSecrets.set(mySecretKey, BigInt('0x' + playerSecretHex));
 
     if (opponentSecretHex) {
-      playerSecrets.set(p2SecretKey, BigInt('0x' + opponentSecretHex));
+      playerSecrets.set(opponentSecretKey, BigInt('0x' + opponentSecretHex));
     }
     if (shuffleSeedHex) {
       const seed = new Uint8Array(shuffleSeedHex.length / 2);
       for (let i = 0; i < seed.length; i++) seed[i] = parseInt(shuffleSeedHex.substr(i * 2, 2), 16);
-      playerShuffleSeeds.set(p1SecretKey, seed);
+      playerShuffleSeeds.set(mySecretKey, seed);
     }
     if (opponentShuffleSeedHex) {
       const seed = new Uint8Array(opponentShuffleSeedHex.length / 2);
       for (let i = 0; i < seed.length; i++) seed[i] = parseInt(opponentShuffleSeedHex.substr(i * 2, 2), 16);
-      playerShuffleSeeds.set(p2SecretKey, seed);
+      playerShuffleSeeds.set(opponentSecretKey, seed);
     }
 
-    // Replay: applyMask P1, applyMask P2, dealCards P1, dealCards P2
-    // Each step is a single circuit call on the local actionContext (no Midnight network involved).
+    // Replay in canonical P1→P2 order: applyMask P1, applyMask P2, dealCards P1, dealCards P2.
+    // The contract enforces this ordering — replaying out of order produces wrong card ownership.
     // If currentPhase === 0, applyMask is already done in the local sim — skip those steps
     // to avoid "already applied" errors and go straight to dealCards.
     if (currentPhase < 0) {
-      // Game not in context at all — replay applyMask for both players first
+      // Game not in context at all — replay applyMask for both players first (P1 before P2)
       try {
-        const r1 = actionContract.impureCircuits.applyMask(actionContext, gameId, BigInt(p1Id));
+        const r1 = actionContract.impureCircuits.applyMask(actionContext, gameId, BigInt(canonicalP1));
         actionContext = r1.context;
-        console.log(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${p1Id} replayed`);
-      } catch (e: any) {
-        console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${p1Id} failed: ${e?.message}`);
+        console.log(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP1} replayed`);
+      } catch (e: unknown) {
+        console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP1} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       try {
-        const r2 = actionContract.impureCircuits.applyMask(actionContext, gameId, BigInt(p2Id));
+        const r2 = actionContract.impureCircuits.applyMask(actionContext, gameId, BigInt(canonicalP2));
         actionContext = r2.context;
-        console.log(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${p2Id} replayed`);
-      } catch (e: any) {
-        console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${p2Id} failed: ${e?.message}`);
+        console.log(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP2} replayed`);
+      } catch (e: unknown) {
+        console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP2} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else {
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: phase=${currentPhase}, skipping applyMask replay`);
     }
+    // dealCards P1 before P2 (canonical order)
     try {
-      const r3 = actionContract.impureCircuits.dealCards(actionContext, gameId, BigInt(p1Id));
+      const r3 = actionContract.impureCircuits.dealCards(actionContext, gameId, BigInt(canonicalP1));
       actionContext = r3.context;
-      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${p1Id} replayed`);
-    } catch (e: any) {
-      console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${p1Id} failed: ${e?.message}`);
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP1} replayed`);
+    } catch (e: unknown) {
+      console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP1} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     try {
-      const r4 = actionContract.impureCircuits.dealCards(actionContext, gameId, BigInt(p2Id));
+      const r4 = actionContract.impureCircuits.dealCards(actionContext, gameId, BigInt(canonicalP2));
       actionContext = r4.context;
-      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${p2Id} replayed`);
-    } catch (e: any) {
-      console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${p2Id} failed: ${e?.message}`);
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} replayed`);
+    } catch (e: unknown) {
+      console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Mark this game as correctly replayed if we had real seeds
+    if (hasRealSeeds) {
+      gamesReplayedWithSeeds.add(hexGameId);
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: marked ${lobbyId} as correctly replayed with seeds`);
     }
 
     syncQueryContextFromAction(actionContext!);
@@ -603,26 +695,40 @@ export async function ensureGameReplayedIfNeeded(
  * Get player's real hand using their actual secret key.
  * Used in batcher mode where the backend doesn't store player secrets —
  * the frontend passes its secret so the backend can run doesPlayerHaveSpecificCard
- * with the correct witness, then the secret is immediately removed.
+ * with the correct witness, then both secrets are immediately removed.
+ *
+ * IMPORTANT: doesPlayerHaveSpecificCard (via deck_getSecretFromPlayerId) calls
+ * player_secret_key for BOTH players unconditionally. The opponent secret must
+ * therefore also be injected before any circuit call, otherwise the witness falls
+ * back to generating a random key which produces wrong results.
  */
 export async function getPlayerHandWithSecret(
   lobbyId: string,
   playerId: 1 | 2,
   playerSecretHex: string,
+  opponentSecretHex?: string,
 ): Promise<Array<{ rank: number; suit: number }>> {
   const gameId = lobbyIdToGameId(lobbyId);
   const hexGameId = Array.from(gameId).map((b: number) => b.toString(16).padStart(2, '0')).join('');
   const secretKey = `${hexGameId}-${playerId}`;
+  const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+  const opponentSecretKey = `${hexGameId}-${opponentId}`;
   const secret = BigInt('0x' + playerSecretHex);
 
-  // Set the real secret so doesPlayerHaveSpecificCard witness resolves correctly
+  // Inject calling player's secret
   playerSecrets.set(secretKey, secret);
-  console.log(`[MidnightActions] getPlayerHandWithSecret: injected secret for key="${secretKey}", secret=0x${secret.toString(16).padStart(16, '0')}...`);
-  console.log(`[MidnightActions] getPlayerHandWithSecret: playerSecrets now has keys: [${Array.from(playerSecrets.keys()).join(', ')}]`);
-  // Log all registered secrets so we can verify both players' secrets are present
-  for (const [k, v] of playerSecrets.entries()) {
-    console.log(`[MidnightActions] getPlayerHandWithSecret: registered secret key="${k}" value=0x${v.toString(16).slice(0, 8)}...`);
+
+  // Inject opponent secret if provided — the circuit always fetches both
+  let injectedOpponentSecret = false;
+  if (opponentSecretHex) {
+    playerSecrets.set(opponentSecretKey, BigInt('0x' + opponentSecretHex));
+    injectedOpponentSecret = true;
+    console.log(`[MidnightActions] getPlayerHandWithSecret: injected opponent secret for key="${opponentSecretKey}"`);
+  } else {
+    console.warn(`[MidnightActions] getPlayerHandWithSecret: no opponent secret provided for player ${playerId} — hand check may return 0 cards`);
   }
+
+  console.log(`[MidnightActions] getPlayerHandWithSecret: injected secret for key="${secretKey}", secret=0x${secret.toString(16).padStart(16, '0')}...`);
 
   try {
     return await enqueueAction(async () => {
@@ -655,10 +761,10 @@ export async function getPlayerHandWithSecret(
               hand.push({ rank, suit });
               console.log(`[MidnightActions] getPlayerHandWithSecret: card found rank=${rank} suit=${suit} (cardIndex=${cardIndex})`);
             }
-          } catch (error: any) {
+          } catch (error: unknown) {
             errorCount++;
             if (errorCount <= 3) {
-              console.warn(`[MidnightActions] getPlayerHandWithSecret: error at cardIndex=${cardIndex}: ${error?.message}`);
+              console.warn(`[MidnightActions] getPlayerHandWithSecret: error at cardIndex=${cardIndex}: ${error instanceof Error ? error.message : String(error)}`);
             }
             continue;
           }
@@ -669,8 +775,11 @@ export async function getPlayerHandWithSecret(
       return hand;
     });
   } finally {
-    // Always remove the secret — never leave it in memory longer than needed
+    // Always remove injected secrets — never leave them in memory longer than needed
     playerSecrets.delete(secretKey);
+    if (injectedOpponentSecret) {
+      playerSecrets.delete(opponentSecretKey);
+    }
   }
 }
 
@@ -802,6 +911,9 @@ export async function dealCards(
   if (playerSecretHex) {
     const s = BigInt('0x' + playerSecretHex);
     playerSecrets.set(secretKey, s);
+    // Also persist in the long-term store so the batcher can retrieve it later for
+    // game-phase circuits that need the opponent's secret (askForCard, respondToAsk, etc.)
+    persistentSecrets.set(secretKey, s);
     console.log(`[MidnightActions] dealCards: injected frontend secret key="${secretKey}", secret=0x${s.toString(16).padStart(16, '0')}...`);
   } else {
     console.warn(`[MidnightActions] dealCards: NO secret provided for player ${playerId} — will use fallback random secret`);
@@ -813,6 +925,7 @@ export async function dealCards(
       seed[i] = parseInt(shuffleSeedHex.substr(i * 2, 2), 16);
     }
     playerShuffleSeeds.set(secretKey, seed);
+    persistentShuffleSeeds.set(secretKey, seed);
     console.log(`[MidnightActions] dealCards: injected shuffle seed for key="${secretKey}"`);
   } else {
     console.warn(`[MidnightActions] dealCards: NO shuffle seed provided for player ${playerId} — will use deterministic fallback`);
@@ -1010,9 +1123,9 @@ export async function skipDrawDeckEmpty(
 
       console.log('[MidnightActions] skipDrawDeckEmpty succeeded - turn ended without drawing');
       return { success: true };
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('[MidnightActions] skipDrawDeckEmpty failed:', error);
-      return { success: false, errorMessage: error.message || String(error) };
+      return { success: false, errorMessage: error instanceof Error ? error.message : String(error) };
     }
   });
 }
@@ -1025,7 +1138,6 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
   if (!actionContract || !actionContext) return;
 
   console.log(`[MidnightActions] Checking for books for player ${playerId}...`);
-  const rankNames = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
   let booksFound = 0;
 
   // Check all 7 ranks for possible books (simplified deck)
@@ -1041,14 +1153,14 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
 
       if (result.result) {
         booksFound++;
-        console.log(`[MidnightActions] ✓ Player ${playerId} completed a book of ${rankNames[rank]}s!`);
+        console.log(`[MidnightActions] ✓ Player ${playerId} completed a book of ${INDEX_TO_RANK[rank]}s!`);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Log unexpected errors (not just "doesn't have all 4")
-      const errorMsg = error?.message || String(error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
       // Only log if it's not a simple "no book" error (contract returns false, not throws)
       if (!errorMsg.includes('assertion') && !errorMsg.includes('Circuit failed')) {
-        console.warn(`[MidnightActions] checkAndScoreBook error for rank ${rankNames[rank]}:`, errorMsg);
+        console.warn(`[MidnightActions] checkAndScoreBook error for rank ${INDEX_TO_RANK[rank]}:`, errorMsg);
       }
       continue;
     }
@@ -1079,7 +1191,6 @@ export async function checkAndScoreBooks(
     console.log(`[MidnightActions] checkAndScoreBooks(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     let booksScored = 0;
-    const rankNames = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
 
     // Check all 7 ranks for possible books (simplified deck)
     for (let rank = 0; rank < 7; rank++) {
@@ -1094,7 +1205,7 @@ export async function checkAndScoreBooks(
 
         if (result.result) {
           booksScored++;
-          console.log(`[MidnightActions] Player ${playerId} completed a book of ${rankNames[rank]}s!`);
+          console.log(`[MidnightActions] Player ${playerId} completed a book of ${INDEX_TO_RANK[rank]}s!`);
         }
       } catch (_error) {
         // Errors are expected for ranks the player doesn't have all 3 of

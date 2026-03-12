@@ -23,35 +23,20 @@ import {
   isOnChainServiceAvailable,
   updateSetupStatus,
 } from './midnight-onchain.ts';
+import { USE_BATCHER_MODE, MIN_OPERATION_GAP_MS } from './batcher-config.ts';
 
-// Check if running in batcher mode (queries should use on-chain indexer)
-function isInBatcherMode(): boolean {
-  // Check environment variable first
-  const envBatcherMode = Deno.env.get("USE_BATCHER_MODE");
-  if (envBatcherMode === "true") {
-    console.log("[MidnightQuery] Batcher mode enabled via USE_BATCHER_MODE env");
-    return true;
-  }
-  // Check runtime config file
-  try {
-    const configPath = new URL("../runtime-config.json", import.meta.url);
-    console.log(`[MidnightQuery] Looking for config at: ${configPath.pathname}`);
-    const configText = Deno.readTextFileSync(configPath);
-    const config = JSON.parse(configText);
-    console.log(`[MidnightQuery] runtime-config.json: ${JSON.stringify(config)}`);
-    if (config.useBatcherMode === true) {
-      console.log("[MidnightQuery] Batcher mode enabled via runtime-config.json");
-      return true;
-    }
-  } catch (error) {
-    console.log(`[MidnightQuery] Could not read runtime-config.json: ${error}`);
-  }
-  console.log("[MidnightQuery] Batcher mode NOT enabled");
-  return false;
-}
-
-const USE_BATCHER_MODE = isInBatcherMode();
 console.log(`[MidnightQuery] === Final batcher mode setting: ${USE_BATCHER_MODE} ===`);
+
+/**
+ * Error messages that are expected during the setup/dealing phase.
+ * Used consistently across all query functions to suppress noise.
+ */
+const EXPECTED_QUERY_ERRORS = ['Game does not exist', 'expected a cell, received null'] as const;
+
+function isExpectedQueryError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return EXPECTED_QUERY_ERRORS.some(expected => msg.includes(expected));
+}
 
 // Private state type (backend doesn't need secrets)
 type PrivateState = Record<string, never>;
@@ -198,9 +183,8 @@ export async function queryGamePhase(lobbyId: string): Promise<number | null> {
     const phase = Number(result.result);
     console.log(`[MidnightQuery] queryGamePhase(${lobbyId}): ${phase}`);
     return phase;
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryGamePhase failed:', error);
     } else {
       console.log(`[MidnightQuery] queryGamePhase(${lobbyId}): Game does not exist yet`);
@@ -224,9 +208,8 @@ export async function queryScores(lobbyId: string): Promise<[number, number] | n
 
     const [score1, score2] = result.result;
     return [Number(score1), Number(score2)];
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryScores failed:', error);
     }
     return null;
@@ -247,9 +230,8 @@ export async function queryCurrentTurn(lobbyId: string): Promise<number | null> 
     queryContext = result.context;
 
     return Number(result.result);
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryCurrentTurn failed:', error);
     }
     return null;
@@ -270,9 +252,8 @@ export async function queryIsGameOver(lobbyId: string): Promise<boolean> {
     queryContext = result.context;
 
     return result.result;
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryIsGameOver failed:', error);
     }
     return false;
@@ -294,9 +275,8 @@ export async function queryHandSizes(lobbyId: string): Promise<[number, number] 
 
     const [size1, size2] = result.result;
     return [Number(size1), Number(size2)];
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryHandSizes failed:', error);
     }
     return null;
@@ -324,10 +304,8 @@ export async function queryDeckCount(lobbyId: string): Promise<number | null> {
     const topCardIndex = Number(topCardResult.result);
 
     return deckSize - topCardIndex;
-  } catch (error: any) {
-    // "Game does not exist" is expected during setup phase - don't log as error
-    if (!error?.message?.includes('Game does not exist') &&
-        !error?.message?.includes('expected a cell, received null')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryDeckCount failed:', error);
     }
     return null;
@@ -370,7 +348,6 @@ const SETUP_CACHE_TTL_MS = 2000;
 /**
  * Yield to event loop - critical for preventing mutex deadlocks
  * Gives Paima's sync processes a chance to run
- * Uses 10ms delay to give sync processes real time to execute
  */
 async function yieldToEventLoop(): Promise<void> {
   return new Promise(r => setTimeout(r, 10));
@@ -382,7 +359,6 @@ async function yieldToEventLoop(): Promise<void> {
  */
 let isMidnightOperationInProgress = false;
 let lastOperationEndTime = 0;
-const MIN_OPERATION_GAP_MS = 200; // Increased gap between operations to let sync run
 
 /**
  * Request queue to prevent concurrent Midnight queries that can cause mutex deadlocks
@@ -460,8 +436,8 @@ export async function queryLastAskedRank(lobbyId: string): Promise<number | null
     queryContext = result.context;
 
     return Number(result.result);
-  } catch (error: any) {
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryLastAskedRank failed:', error);
     }
     return null;
@@ -483,8 +459,8 @@ export async function queryLastAskingPlayer(lobbyId: string): Promise<number | n
     queryContext = result.context;
 
     return Number(result.result);
-  } catch (error: any) {
-    if (!error?.message?.includes('Game does not exist')) {
+  } catch (error: unknown) {
+    if (!isExpectedQueryError(error)) {
       console.error('[MidnightQuery] queryLastAskingPlayer failed:', error);
     }
     return null;
@@ -564,9 +540,8 @@ export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Pro
       queryContext = result.context;
 
       return result.result;
-    } catch (error: any) {
-      // "Game does not exist" is expected during setup phase - don't log as error
-      if (!error?.message?.includes('Game does not exist')) {
+    } catch (error: unknown) {
+      if (!isExpectedQueryError(error)) {
         console.error('[MidnightQuery] queryHasMaskApplied failed:', error);
       }
       return false;
@@ -618,9 +593,8 @@ export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<b
       const hasDealt = cardsDealt > 0;
       console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt} (via getCardsDealt to opponent: ${cardsDealt})`);
       return hasDealt;
-    } catch (error: any) {
-      // "Game does not exist" is expected during setup phase - don't log as error
-      if (!error?.message?.includes('Game does not exist')) {
+    } catch (error: unknown) {
+      if (!isExpectedQueryError(error)) {
         console.error('[MidnightQuery] queryHasDealt failed:', error);
       }
       return false;

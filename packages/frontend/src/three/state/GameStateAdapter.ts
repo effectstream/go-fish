@@ -1,9 +1,7 @@
 import { MidnightService } from '../../services/MidnightService';
 import { PlayerKeyManager } from '../../services/PlayerKeyManager';
-import type { Card, Rank, Suit } from '../../../../shared/data-types/src/go-fish-types';
-
-const INDEX_TO_RANK: Rank[] = ['A', '2', '3', '4', '5', '6', '7'];
-const INDEX_TO_SUIT: Suit[] = ['hearts', 'diamonds', 'clubs'];
+import type { Card } from '../../../../shared/data-types/src/go-fish-types';
+import { INDEX_TO_RANK, INDEX_TO_SUIT } from '../../../../shared/data-types/src/go-fish-types';
 
 export interface GameSceneState {
   phase: string;
@@ -104,17 +102,20 @@ export class GameStateAdapter {
           const shuffleSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
           const shuffleSeedHex = Array.from(shuffleSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
 
-          // Pass opponent secrets too so the node can replay setup if its local sim
-          // lost the game state (e.g. after a node restart). No-op if already in context.
+          // Pass opponent secrets only if they are already stored locally.
+          // getPlayerSecret() creates a new random key if none exists, which would
+          // corrupt the backend's local simulation with the wrong secret.
           let opponentSecretHex: string | undefined;
           let opponentShuffleSeedHex: string | undefined;
-          try {
-            const opponentSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, opponentId);
-            opponentSecretHex = opponentSecret.toString(16).padStart(64, '0');
-            const opponentSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, opponentId);
-            opponentShuffleSeedHex = Array.from(opponentSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-          } catch {
-            // Opponent keys may not be available (e.g. player 2 doesn't have player 1's keys)
+          if (PlayerKeyManager.hasExistingKeys(this.lobbyId, opponentId)) {
+            try {
+              const opponentSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, opponentId);
+              opponentSecretHex = opponentSecret.toString(16).padStart(64, '0');
+              const opponentSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, opponentId);
+              opponentShuffleSeedHex = Array.from(opponentSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+            } catch {
+              // Ignore — opponent keys unavailable
+            }
           }
 
           console.log(`[GameStateAdapter] fetching hand for player ${pid}, secret prefix=${playerSecretHex.slice(0, 8)}...`);

@@ -19,6 +19,25 @@
 
 import { PlayerKeyManager } from './PlayerKeyManager';
 
+/**
+ * Get opponent secrets only if they have been previously stored in this browser.
+ * PlayerKeyManager.getPlayerSecret() creates a new random key if none exists — calling
+ * it for the opponent would corrupt the backend's local simulation with a fake secret.
+ * Returns undefined if the opponent's keys are not available locally.
+ */
+function getOpponentSecretsIfAvailable(
+  lobbyId: string,
+  opponentId: 1 | 2,
+): { opponentSecret: bigint; opponentShuffleSeed: Uint8Array } | undefined {
+  if (!PlayerKeyManager.hasExistingKeys(lobbyId, opponentId)) {
+    return undefined;
+  }
+  return {
+    opponentSecret: PlayerKeyManager.getPlayerSecret(lobbyId, opponentId),
+    opponentShuffleSeed: PlayerKeyManager.getShuffleSeed(lobbyId, opponentId),
+  };
+}
+
 // Circuit call interface for Midnight contract
 interface CircuitCall {
   circuit: string;
@@ -260,15 +279,14 @@ export async function applyMask(
   // Include opponent secrets so the batcher can forward them to the node for local replay.
   // The node needs both players' secrets to faithfully replicate the on-chain state.
   const opponentId = playerId === 1 ? 2 : 1;
-  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
-  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+  const opponentKeys = getOpponentSecretsIfAvailable(lobbyId, opponentId);
 
   console.log(`[BatcherMidnight] applyMask with client-side secret for player ${playerId}`);
 
   const result = await submitCircuitCall(
     "applyMask",
     [gameId, playerId],
-    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
+    { playerSecret, shuffleSeed, ...opponentKeys && { opponentSecret: opponentKeys.opponentSecret, opponentShuffleSeed: opponentKeys.opponentShuffleSeed } }
   );
   return { success: result.success, error: result.error };
 }
@@ -290,15 +308,14 @@ export async function dealCards(
   // dealCards double-masks every card with both players' secrets — the node's local replay
   // must use the same secrets to produce a matching cardOwnership ledger.
   const opponentId = playerId === 1 ? 2 : 1;
-  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
-  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+  const opponentKeys = getOpponentSecretsIfAvailable(lobbyId, opponentId);
 
   console.log(`[BatcherMidnight] dealCards with client-side secret for player ${playerId}`);
 
   const result = await submitCircuitCall(
     "dealCards",
     [gameId, playerId],
-    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
+    { playerSecret, shuffleSeed, ...opponentKeys && { opponentSecret: opponentKeys.opponentSecret, opponentShuffleSeed: opponentKeys.opponentShuffleSeed } }
   );
   return { success: result.success, error: result.error };
 }
@@ -322,13 +339,12 @@ export async function askForCard(
   // doesPlayerHaveCard calls deck_getSecretFromPlayerId for BOTH players unconditionally
   // (EC-MUL guard bug fix). We must therefore also supply the opponent's secrets.
   const opponentId = playerId === 1 ? 2 : 1;
-  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
-  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+  const opponentKeys = getOpponentSecretsIfAvailable(lobbyId, opponentId);
 
   const result = await submitCircuitCall(
     "askForCard",
     [gameId, playerId, rank, now],
-    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
+    { playerSecret, shuffleSeed, ...opponentKeys && { opponentSecret: opponentKeys.opponentSecret, opponentShuffleSeed: opponentKeys.opponentShuffleSeed } }
   );
   return { success: result.success, error: result.error };
 }
@@ -351,13 +367,12 @@ export async function respondToAsk(
   // transferCardOfRank fetches BOTH players' secrets unconditionally (EC-MUL guard bug fix).
   // We must therefore also supply the asking player's secrets to the batcher.
   const opponentId = playerId === 1 ? 2 : 1;
-  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
-  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+  const opponentKeys = getOpponentSecretsIfAvailable(lobbyId, opponentId);
 
   const result = await submitCircuitCall(
     "respondToAsk",
     [gameId, playerId, now],
-    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
+    { playerSecret, shuffleSeed, ...opponentKeys && { opponentSecret: opponentKeys.opponentSecret, opponentShuffleSeed: opponentKeys.opponentShuffleSeed } }
   );
   // Note: The actual hasCards/cardCount comes from on-chain state, not the tx result
   return { success: result.success, error: result.error };
@@ -382,13 +397,12 @@ export async function goFish(
   // OPPONENT's secret (to remove their mask from the top deck card).
   // We must therefore also supply the opponent's secrets to the batcher.
   const opponentId = playerId === 1 ? 2 : 1;
-  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
-  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+  const opponentKeys = getOpponentSecretsIfAvailable(lobbyId, opponentId);
 
   const result = await submitCircuitCall(
     "goFish",
     [gameId, playerId, now],
-    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
+    { playerSecret, shuffleSeed, ...opponentKeys && { opponentSecret: opponentKeys.opponentSecret, opponentShuffleSeed: opponentKeys.opponentShuffleSeed } }
   );
   return { success: result.success, error: result.error };
 }
@@ -412,13 +426,12 @@ export async function afterGoFish(
   // countCardsOfRank calls deck_getSecretFromPlayerId for BOTH players unconditionally
   // (EC-MUL guard bug fix). We must therefore also supply the opponent's secrets.
   const opponentId = playerId === 1 ? 2 : 1;
-  const opponentSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
-  const opponentShuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+  const opponentKeys = getOpponentSecretsIfAvailable(lobbyId, opponentId);
 
   const result = await submitCircuitCall(
     "afterGoFish",
     [gameId, playerId, drewRequestedCard, now],
-    { playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed }
+    { playerSecret, shuffleSeed, ...opponentKeys && { opponentSecret: opponentKeys.opponentSecret, opponentShuffleSeed: opponentKeys.opponentShuffleSeed } }
   );
   return { success: result.success, error: result.error };
 }

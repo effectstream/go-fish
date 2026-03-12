@@ -14,6 +14,7 @@ import {
   markMaskApplied,
   markDealtComplete,
   updateGameState,
+  isValidLobbyId,
 } from "./midnight-onchain.ts";
 import {
   getPlayerHand as getMidnightPlayerHand,
@@ -26,13 +27,24 @@ import {
   respondToAsk as midnightRespondToAsk,
   afterGoFish as midnightAfterGoFish,
   skipDrawDeckEmpty as midnightSkipDrawDeckEmpty,
+  getStoredPlayerSecret,
+  getStoredShuffleSeed,
 } from "./midnight-actions.ts";
 
 // Database connection pool - set by apiRouter from the runtime-provided connection
 let dbPool: Pool | null = null;
 
-// Rank names for display - simplified deck (7 ranks)
-const RANK_NAMES = ['Ace', '2', '3', '4', '5', '6', '7'];
+// Rank names for display — must match the Rank type in go-fish-types.ts
+const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7'] as const;
+
+/**
+ * Parse and validate a player_id parameter from an API request.
+ * Returns 1 | 2 or null (caller must return 400 when null).
+ */
+function parsePlayerId(raw: unknown): 1 | 2 | null {
+  const n = parseInt(String(raw), 10);
+  return n === 1 || n === 2 ? n : null;
+}
 
 /**
  * Persistent game log storage - maintains full log history per game
@@ -441,6 +453,9 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     if (!lobby_id || !wallet) {
       return reply.code(400).send({ error: 'Missing lobby_id or wallet parameter' });
     }
+    if (!isValidLobbyId(lobby_id)) {
+      return reply.code(400).send({ error: 'Invalid lobby_id format' });
+    }
 
     const db = dbPool!;
 
@@ -561,8 +576,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing lobby_id or player_id' });
     }
 
-    const playerId = parseInt(player_id) as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -587,8 +602,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing lobby_id, player_id, or player_secret' });
     }
 
-    const playerId = parseInt(String(player_id)) as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -604,7 +619,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       opponent_shuffle_seed,
     );
 
-    const hand = await getMidnightPlayerHandWithSecret(lobby_id, playerId, player_secret);
+    const hand = await getMidnightPlayerHandWithSecret(lobby_id, playerId, player_secret, opponent_secret);
     return { hand };
   });
 
@@ -620,8 +635,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -640,8 +655,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -661,8 +676,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -683,8 +698,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -703,8 +718,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -724,8 +739,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -744,8 +759,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -764,8 +779,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = parseInt(player_id) as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -783,6 +798,36 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       opponentHasMaskApplied,
       opponentHasDealt,
     };
+  });
+
+  // Get a stored player secret — called by the batcher adapter to retrieve the opponent's
+  // secret for circuits that require both players' secrets (askForCard, respondToAsk, etc.).
+  // The secret is only available after notify_setup has been processed for this player.
+  // This endpoint is intentionally NOT authenticated — it's only reachable from localhost
+  // (the batcher runs on the same host as the node).
+  server.get("/api/midnight/player_secret", async (request, reply) => {
+    const { lobby_id, player_id } = request.query as {
+      lobby_id: string;
+      player_id: string;
+    };
+
+    if (!lobby_id || !player_id) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    const secret = getStoredPlayerSecret(lobby_id, playerId);
+    const shuffleSeed = getStoredShuffleSeed(lobby_id, playerId);
+
+    if (secret === null) {
+      return reply.code(404).send({ error: 'No secret stored for this player/game' });
+    }
+
+    return { secret, shuffleSeed };
   });
 
   // Notify setup complete (called by batcher after on-chain transaction succeeds).
@@ -803,8 +848,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
@@ -818,31 +863,49 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     if (action === "mask_applied") {
       markMaskApplied(lobby_id, playerId);
       // Replay applyMask on local actionContract so getPlayerHandWithSecret works later.
-      // Pre-inject opponent secret first so it's available if the replay needs it.
-      if (opponent_secret) {
-        midnightApplyMask(lobby_id, opponentId, opponent_secret).catch(() => {});
-      }
-      if (player_secret) {
-        console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player ${playerId}`);
-        midnightApplyMask(lobby_id, playerId, player_secret).catch((err: Error) => {
-          console.warn(`[API] Local applyMask replay failed (non-critical):`, err?.message);
-        });
-      }
+      // IMPORTANT: the contract requires P1 to act before P2. Always replay P1 first.
+      const p1Secret = playerId === 1 ? player_secret : opponent_secret;
+      const p2Secret = playerId === 2 ? player_secret : opponent_secret;
+      const replayMasks = async () => {
+        if (p1Secret) {
+          console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player 1`);
+          await midnightApplyMask(lobby_id, 1, p1Secret).catch((err: Error) => {
+            console.warn(`[API] Local applyMask P1 replay failed (non-critical):`, err?.message);
+          });
+        }
+        if (p2Secret) {
+          console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player 2`);
+          await midnightApplyMask(lobby_id, 2, p2Secret).catch((err: Error) => {
+            console.warn(`[API] Local applyMask P2 replay failed (non-critical):`, err?.message);
+          });
+        }
+      };
+      replayMasks().catch(() => {});
     } else if (action === "dealt_complete") {
       markDealtComplete(lobby_id, playerId);
       // Replay dealCards on local actionContract so getPlayerHandWithSecret works later.
       // Both player_secret AND shuffle_seed are required for the local replay to produce
       // the same cardOwnership ledger as the real on-chain transaction.
-      // Pre-inject opponent secret so both players' secrets are available during replay.
-      if (opponent_secret) {
-        midnightDealCards(lobby_id, opponentId, opponent_secret, opponent_shuffle_seed).catch(() => {});
-      }
-      if (player_secret) {
-        console.log(`[API] Replaying dealCards locally for lobby ${lobby_id} player ${playerId}`);
-        midnightDealCards(lobby_id, playerId, player_secret, shuffle_seed).catch((err: Error) => {
-          console.warn(`[API] Local dealCards replay failed (non-critical):`, err?.message);
-        });
-      }
+      // IMPORTANT: the contract requires P1 to deal before P2. Always replay P1 first.
+      const p1Secret = playerId === 1 ? player_secret : opponent_secret;
+      const p1Seed = playerId === 1 ? shuffle_seed : opponent_shuffle_seed;
+      const p2Secret = playerId === 2 ? player_secret : opponent_secret;
+      const p2Seed = playerId === 2 ? shuffle_seed : opponent_shuffle_seed;
+      const replayDeals = async () => {
+        if (p1Secret) {
+          console.log(`[API] Replaying dealCards locally for lobby ${lobby_id} player 1`);
+          await midnightDealCards(lobby_id, 1, p1Secret, p1Seed).catch((err: Error) => {
+            console.warn(`[API] Local dealCards P1 replay failed (non-critical):`, err?.message);
+          });
+        }
+        if (p2Secret) {
+          console.log(`[API] Replaying dealCards locally for lobby ${lobby_id} player 2`);
+          await midnightDealCards(lobby_id, 2, p2Secret, p2Seed).catch((err: Error) => {
+            console.warn(`[API] Local dealCards P2 replay failed (non-critical):`, err?.message);
+          });
+        }
+      };
+      replayDeals().catch(() => {});
     }
 
     console.log(`[API] Setup notification received: ${action} for lobby ${lobby_id} player ${playerId}`);
@@ -865,8 +928,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
-    const playerId = player_id as 1 | 2;
-    if (playerId !== 1 && playerId !== 2) {
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 

@@ -103,6 +103,36 @@ function hexToBytes(hex: string): Uint8Array {
  */
 class GoFishMidnightAdapter extends MidnightAdapter {
   /**
+   * Fetch a stored player secret from the backend node.
+   * Called when the circuit payload doesn't include the opponent's secret
+   * (which happens for game-phase circuits like askForCard when the asking player's
+   * browser doesn't have the opponent's secret).
+   *
+   * Returns null if the backend doesn't have the secret (e.g. node just restarted).
+   */
+  private async fetchSecretFromBackend(
+    lobbyId: string,
+    playerId: 1 | 2,
+  ): Promise<{ secret: string; shuffleSeed: string | null } | null> {
+    const backendUrl = Deno.env.get("BACKEND_URL") || "http://localhost:9996";
+    try {
+      const response = await fetch(
+        `${backendUrl}/api/midnight/player_secret?lobby_id=${encodeURIComponent(lobbyId)}&player_id=${playerId}`,
+      );
+      if (response.ok) {
+        const data = await response.json() as { secret: string; shuffleSeed: string | null };
+        console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId}`);
+        return data;
+      }
+      console.warn(`[GoFishMidnightAdapter] Backend returned ${response.status} for player_secret lookup`);
+      return null;
+    } catch (err) {
+      console.warn(`[GoFishMidnightAdapter] Could not fetch opponent secret from backend:`, err);
+      return null;
+    }
+  }
+
+  /**
    * Override submitBatch to extract and set client-side secrets before circuit execution.
    * The Midnight SDK executes the circuit locally (in WASM) to build the unproven transaction.
    * Circuits like applyMask and dealCards require the player's secret key and shuffle seed
@@ -133,25 +163,41 @@ class GoFishMidnightAdapter extends MidnightAdapter {
           secretInfo = { gameId, playerId };
           console.log(`[GoFishMidnightAdapter] Set client secrets for ${circuit}: game ${gameId}, player ${playerId}`);
 
-          // Also set opponent secrets when provided (e.g. goFish needs opponent's secret
-          // to remove their mask during partial_decryption of the top deck card).
+          const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+
           if (payload.opponentSecret && payload.opponentShuffleSeed) {
-            const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+            // Opponent secret provided directly in the payload — use it.
             const opponentSecret = BigInt("0x" + payload.opponentSecret);
             const opponentShuffleSeed = hexToBytes(payload.opponentShuffleSeed);
             setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
             console.log(`[GoFishMidnightAdapter] Set opponent secrets for ${circuit}: game ${gameId}, player ${opponentId}`);
+          } else {
+            // Opponent secret not in payload (frontend doesn't have it — it's theirs to keep).
+            // Fall back to the backend node which stores both players' secrets after setup replay.
+            // This is needed for game-phase circuits (askForCard, respondToAsk, goFish,
+            // afterGoFish) that call player_secret_key for BOTH players unconditionally.
+            const lobbyId = this.hexToLobbyId(gameId);
+            const backendOpponent = await this.fetchSecretFromBackend(lobbyId, opponentId);
+            if (backendOpponent) {
+              const opponentSecret = BigInt("0x" + backendOpponent.secret);
+              setPlayerSecrets(gameId, opponentId, opponentSecret,
+                backendOpponent.shuffleSeed ? hexToBytes(backendOpponent.shuffleSeed) : new Uint8Array(32));
+              console.log(`[GoFishMidnightAdapter] Set backend-fetched opponent secret for ${circuit}: game ${gameId}, player ${opponentId}`);
+              // Store on payload so retries re-use it without another backend round-trip
+              payload.opponentSecret = backendOpponent.secret;
+              if (backendOpponent.shuffleSeed) payload.opponentShuffleSeed = backendOpponent.shuffleSeed;
+            } else {
+              console.warn(`[GoFishMidnightAdapter] No opponent secret available for ${circuit} — proof may fail`);
+            }
           }
         }
       }
     }
 
-    // Refresh the `now` timestamp arg immediately, before any attempt.
-    // The batcher stores the original payload and re-builds it on every poll
-    // cycle, so `now` in args is always the value from when the frontend sent
-    // the request — potentially minutes stale by the time we execute here.
+    // Circuits that carry a `now` timestamp arg and their arg position.
     // blockTimeLt(now + 6) requires now to be within 6s of the block time.
-    // Circuits that carry `now` and their arg positions:
+    // The batcher stores the original payload, so `now` can be stale by the
+    // time we execute — refresh it before every attempt (including retries).
     //   askForCard:   args[3]  → [gameId, playerId, rank, now]
     //   respondToAsk: args[2]  → [gameId, playerId, now]
     //   goFish:       args[2]  → [gameId, playerId, now]
@@ -162,14 +208,17 @@ class GoFishMidnightAdapter extends MidnightAdapter {
       goFish: 2,
       afterGoFish: 3,
     };
-    if (data?.payloads?.[0] && NOW_ARG_INDEX[circuit] !== undefined) {
+
+    const refreshNowArg = () => {
       const nowArgIdx = NOW_ARG_INDEX[circuit];
-      if (Array.isArray(data.payloads[0].args)) {
+      if (nowArgIdx !== undefined && data?.payloads?.[0] && Array.isArray(data.payloads[0].args)) {
         const freshNow = Math.floor(Date.now() / 1000);
         data.payloads[0].args[nowArgIdx] = freshNow;
         console.log(`[GoFishMidnightAdapter] Refreshed now=${freshNow} at args[${nowArgIdx}] for ${circuit}`);
       }
-    }
+    };
+
+    refreshNowArg();
 
     // Retry logic for WASM "unreachable" errors, which typically mean the
     // Midnight indexer hasn't synced the latest state yet (e.g., the circuit
@@ -292,28 +341,8 @@ class GoFishMidnightAdapter extends MidnightAdapter {
               }
             }
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-            // Refresh the `now` timestamp arg AFTER the sleep, so the value is
-            // fresh when submitBatch is called on the next attempt.
-            // blockTimeLt(now + 6) requires now be within 6s of the block time.
-            // Circuits that carry `now` and their arg positions:
-            //   askForCard:   args[3]  → [gameId, playerId, rank, now]
-            //   respondToAsk: args[2]  → [gameId, playerId, now]
-            //   goFish:       args[2]  → [gameId, playerId, now]
-            //   afterGoFish:  args[3]  → [gameId, playerId, drewRequestedCard, now]
-            if (data?.payloads?.[0]) {
-              const nowCircuits: Record<string, number> = {
-                askForCard: 3,
-                respondToAsk: 2,
-                goFish: 2,
-                afterGoFish: 3,
-              };
-              const nowArgIdx = nowCircuits[circuit];
-              if (nowArgIdx !== undefined && Array.isArray(data.payloads[0].args)) {
-                const freshNow = Math.floor(Date.now() / 1000);
-                data.payloads[0].args[nowArgIdx] = freshNow;
-                console.log(`[GoFishMidnightAdapter] Refreshed now=${freshNow} at args[${nowArgIdx}] for ${circuit} retry`);
-              }
-            }
+            // Refresh `now` after the sleep so it's fresh for the next attempt
+            refreshNowArg();
             continue;
           }
 

@@ -242,11 +242,17 @@ export async function respondToAsk(
   }
 
   console.log("[MidnightService] respondToAsk via backend");
-  const result = await callBackendAction("respond_to_ask", { lobby_id: lobbyId, player_id: playerId });
+  const result = await callBackendAction("respond_to_ask", { lobby_id: lobbyId, player_id: playerId }) as {
+    success: boolean;
+    errorMessage?: string;
+    hasCards?: boolean;
+    cardCount?: number;
+  };
   return {
-    ...result,
-    hasCards: (result as any).hasCards ?? false,
-    cardCount: (result as any).cardCount ?? 0,
+    success: result.success,
+    errorMessage: result.errorMessage,
+    hasCards: result.hasCards ?? false,
+    cardCount: result.cardCount ?? 0,
   };
 }
 
@@ -417,13 +423,32 @@ export async function getSetupStatus(
   };
 }
 
+/** Minimal shape of the game_state API response used by the frontend. */
+export interface GameStateResponse {
+  lobbyId: string;
+  phase: string;
+  currentTurn: number;
+  scores: [number, number];
+  handSizes: [number, number];
+  deckCount: number;
+  isGameOver: boolean;
+  playerId: number;
+  players: Array<{ accountId: number; name: string; walletAddress: string }>;
+  myHand: Array<{ rank: number; suit: number }>;
+  myBooks: string[];
+  gameLog: string[];
+  playerName?: string;
+  opponentName?: string;
+  [key: string]: unknown; // Allow extra fields without casting to any
+}
+
 /**
  * Get game state
  */
 export async function getGameState(
   lobbyId: string,
   wallet: string
-): Promise<any> {
+): Promise<GameStateResponse | null> {
   try {
     const response = await fetch(`${BACKEND_URL}/game_state?lobby_id=${lobbyId}&wallet=${wallet}`);
     if (response.ok) {
@@ -444,7 +469,7 @@ export async function getGameState(
  */
 async function callBackendAction(
   action: string,
-  body: Record<string, any>
+  body: Record<string, unknown>
 ): Promise<{ success: boolean; errorMessage?: string }> {
   try {
     const response = await fetch(`${BACKEND_URL}/api/midnight/${action}`, {
@@ -455,9 +480,9 @@ async function callBackendAction(
 
     const result = await response.json();
     return result;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[MidnightService] ${action} failed:`, error);
-    return { success: false, errorMessage: error.message || "Request failed" };
+    return { success: false, errorMessage: error instanceof Error ? error.message : "Request failed" };
   }
 }
 

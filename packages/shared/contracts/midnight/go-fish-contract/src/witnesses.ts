@@ -24,6 +24,42 @@ export const keys = {
 const dynamicSecrets = new Map<string, { secret: bigint; shuffleSeed: Uint8Array }>();
 
 /**
+ * Last shuffle seed provided to the shuffle_seed witness.
+ * Written by the shuffle_seed witness so get_sorted_deck_witness can generate
+ * deterministic weights from it, making the shuffle reproducible across replays.
+ * The contract always calls shuffle_seed before get_sorted_deck_witness within
+ * the same shuffle_deck circuit execution.
+ */
+let lastShuffleSeed: Uint8Array | null = null;
+
+/**
+ * Generate deterministic pseudo-random weights from a seed using a simple
+ * xorshift32 PRNG seeded from the first 4 bytes of the shuffle seed.
+ * Returns `count` non-negative integers in [0, 1000000).
+ */
+function deterministicWeights(seed: Uint8Array, count: number): number[] {
+  // Seed xorshift32 from the first 4 bytes of the shuffle seed
+  let state =
+    ((seed[0]! | 0) |
+     ((seed[1]! | 0) << 8) |
+     ((seed[2]! | 0) << 16) |
+     ((seed[3]! | 0) << 24)) >>> 0;
+  // Ensure non-zero state (xorshift32 breaks at 0)
+  if (state === 0) state = 0xdeadbeef;
+
+  const weights: number[] = [];
+  for (let i = 0; i < count; i++) {
+    // xorshift32
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state = state >>> 0; // keep as uint32
+    weights.push(state % 1000000);
+  }
+  return weights;
+}
+
+/**
  * Set player secrets for a specific game
  * Called by the batcher before executing a circuit call
  */
@@ -253,11 +289,19 @@ export const witnesses = {
     if (allValid) {
       console.log(`[Witnesses] get_sorted_deck_witness: all ${input.length} points on JubJub curve, point[0] in subgroup ✓`);
     }
-    const mappedPoints = input.map((point) => {
+    // Use deterministic weights derived from the shuffle seed so that replaying
+    // the same game (e.g. local sim after notify_setup) produces an identical
+    // card permutation to the original on-chain dealCards transaction.
+    // shuffle_seed is always called immediately before this witness within
+    // shuffle_deck, so lastShuffleSeed will always be populated here.
+    const weights = lastShuffleSeed
+      ? deterministicWeights(lastShuffleSeed, input.length)
+      : input.map(() => Math.floor(Math.random() * 1000000) | 0);
+    const mappedPoints = input.map((point, i) => {
       return {
         x: point.x,
         y: point.y,
-        weight: Math.floor(Math.random() * 1000000) | 0,
+        weight: weights[i]!,
       };
     });
 
@@ -311,6 +355,10 @@ export const witnesses = {
     console.log(`[Witnesses] shuffle_seed called: player=${playerIndex}, gameIdHex=${gameIdHex}`);
     const seed = getShuffleSeed(gameIdHex, Number(playerIndex));
     console.log(`[Witnesses] shuffle_seed: player=${playerIndex}, seed_hex=${Array.from(seed).map(b => b.toString(16).padStart(2,"0")).join("")}`);
+    // Capture the seed so get_sorted_deck_witness can generate deterministic weights.
+    // The contract always calls shuffle_seed immediately before get_sorted_deck_witness
+    // within the same shuffle_deck execution.
+    lastShuffleSeed = seed;
     return [privateState, seed];
   },
   player_secret_key: (

@@ -13,6 +13,23 @@ import { soundManager } from '../SoundManager';
 const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7'] as const;
 
 /**
+ * Explicit state machine for the setup phase.
+ * Replaces the 6 separate boolean flags that were previously spread across the class.
+ *
+ * Transitions:
+ *   idle → applying_mask → waiting_for_opponent → dealing → syncing → done
+ *   Any state → failed (on error, triggering a retry)
+ */
+type SetupPhase =
+  | 'idle'
+  | 'applying_mask'
+  | 'waiting_for_opponent'
+  | 'dealing'
+  | 'syncing'
+  | 'done'
+  | 'failed';
+
+/**
  * Orchestrates the full game scene: reads game state from MidnightService,
  * updates 3D objects (cards, deck, opponent), and manages the HTML HUD overlay.
  */
@@ -25,13 +42,8 @@ export class GameScene {
   private walletAddress: string = '';
   private playerId: number = 0;
 
-  // Setup phase state
-  private maskApplied = false;
-  private cardsDealt = false;
-  private setupInProgress = false;
-  private setupCompleted = false;
-  private setupAttempted = false;
-  private indexerSyncWaited = false;
+  // Setup phase — single explicit state machine replaces 6 boolean flags
+  private setupPhase: SetupPhase = 'idle';
 
   // Card ask flow: selected rank waiting for opponent selection
   private pendingAskRank: string | null = null;
@@ -52,12 +64,7 @@ export class GameScene {
   start(lobbyId: string, walletAddress: string): void {
     this.lobbyId = lobbyId;
     this.walletAddress = walletAddress;
-    this.maskApplied = false;
-    this.cardsDealt = false;
-    this.setupInProgress = false;
-    this.setupCompleted = false;
-    this.setupAttempted = false;
-    this.indexerSyncWaited = false;
+    this.setupPhase = 'idle';
     this.pendingAskRank = null;
     this.pendingAskRankIndex = -1;
     this.initialDealPlayed = false;
@@ -240,14 +247,8 @@ export class GameScene {
     this.hud.onBackToLobby = () => this.navigateToLobbyList();
 
     // Handle setup phase automation
-    // Trigger setup during 'dealing' phase, or if we haven't dealt yet even if phase advanced
-    // (P1 may have dealt first, transitioning the phase, but P2 still needs to deal)
-    const needsSetup = !this.setupCompleted && !this.setupInProgress && !this.setupAttempted;
-    const inDealingPhase = state.phase === 'dealing';
-    const stillNeedToDeal = !this.cardsDealt && !this.setupCompleted;
-
-    if (needsSetup && (inDealingPhase || stillNeedToDeal)) {
-      this.setupAttempted = true;
+    // Only run when idle — 'failed' retries are scheduled explicitly by runAutomaticSetup
+    if (this.setupPhase === 'idle' && (state.phase === 'dealing' || state.phase === 'turn_start')) {
       this.runAutomaticSetup();
     }
 
@@ -402,194 +403,167 @@ export class GameScene {
    * fire if game state hasn't changed between polls).
    */
   private scheduleSetupRetry(delayMs: number): void {
+    this.setupPhase = 'failed';
     setTimeout(() => {
-      if (this.setupCompleted || this.setupInProgress) return;
+      if (this.setupPhase !== 'failed') return; // Already progressed
+      this.setupPhase = 'idle';
       this.runAutomaticSetup();
     }, delayMs);
   }
 
   /**
    * Automatically run the setup sequence (applyMask + dealCards).
-   * Mirrors the robust logic from GameScreen — checks status, waits for opponent,
-   * enforces dealing order (Player 1 first), handles timeouts and retries.
+   * Orchestrates two focused steps: setupMask() and setupDealCards().
    */
   private async runAutomaticSetup(): Promise<void> {
-    this.setupInProgress = true;
+    if (this.setupPhase !== 'idle') return;
+    this.setupPhase = 'applying_mask';
 
     try {
       console.log(`[GameScene] Starting automatic setup... lobbyId=${this.lobbyId}, myPlayerId=${this.playerId}`);
 
-      // Check current setup status from backend
-      const status = await MidnightService.getSetupStatus(
-        this.lobbyId,
-        this.playerId as 1 | 2,
-      );
+      const status = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
       console.log('[GameScene] Setup status:', status);
 
-      // Step 1: Apply mask (only if not already applied)
-      if (!this.maskApplied && !status.hasMaskApplied) {
-        this.hud.showNotification('Setting Up', 'Applying cryptographic mask...', 30000);
-        console.log('[GameScene] Applying mask...');
-
-        const pid = this.playerId as 1 | 2;
-        const secret = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid);
-        const secretHex = secret.toString(16).padStart(64, '0');
-
-        const maskResult = await MidnightService.applyMask(this.lobbyId, pid, secretHex);
-
-        if (!maskResult.success) {
-          const maskErr = maskResult.errorMessage ?? '';
-          const maskAlreadyDone = maskErr.includes('already applied') ||
-                                  maskErr.includes('Player has already applied');
-          // EffectStream timeout means the tx landed on-chain but the batcher's
-          // post-confirmation event never fired — treat as success by polling.
-          const maskTimedOut = maskErr.includes('timed out') ||
-                               maskErr.includes('NetworkError') ||
-                               maskErr.includes('fetch') ||
-                               maskErr.includes('EffectStream processing validation failed') ||
-                               maskErr.includes('Timeout');
-
-          if (maskAlreadyDone) {
-            console.log('[GameScene] Mask already applied (detected via error) - continuing');
-            this.maskApplied = true;
-          } else if (maskTimedOut) {
-            console.log('[GameScene] Mask request timed out / EffectStream timeout, polling for on-chain status...');
-            const confirmed = await this.pollForSetupStatus('hasMaskApplied', 30000);
-            if (confirmed) {
-              console.log('[GameScene] Mask was applied despite timeout');
-              this.maskApplied = true;
-            } else {
-              console.log('[GameScene] Mask not confirmed after polling, will retry in 10s');
-              this.hud.showNotification('Setting Up', 'Retrying mask...', 10000);
-              this.scheduleSetupRetry(10000);
-              return;
-            }
-          } else {
-            console.log(`[GameScene] Mask failed: ${maskErr}, will retry in 5s`);
-            this.hud.showNotification('Error', maskErr || 'Mask failed', 5000);
-            this.scheduleSetupRetry(5000);
-            return;
-          }
-        } else {
-          console.log('[GameScene] Mask applied successfully (confirmed on-chain)');
-          this.maskApplied = true;
-        }
-      } else {
-        console.log('[GameScene] Mask already applied, skipping');
-        this.maskApplied = true;
-      }
-
-      // Step 2: Deal cards (requires both masks applied, Player 1 deals first)
-      console.log(`[GameScene] Step 2 check: cardsDealt=${this.cardsDealt}, status.hasDealt=${status.hasDealt}`);
-      if (!this.cardsDealt && !status.hasDealt) {
-        // Re-fetch status to get latest opponent info
-        const updatedStatus = await MidnightService.getSetupStatus(
-          this.lobbyId,
-          this.playerId as 1 | 2,
-        );
-        console.log('[GameScene] Updated setup status:', updatedStatus);
-
-        // Wait for opponent to apply their mask
-        if (!updatedStatus.opponentHasMaskApplied) {
-          console.log('[GameScene] Waiting for opponent to apply mask... will retry in 2s');
-          this.hud.showNotification('Setting Up', 'Waiting for opponent...', 30000);
-          this.scheduleSetupRetry(2000);
-          return;
-        }
-
-        // Wait for indexer to sync (only once)
-        if (!this.indexerSyncWaited) {
-          console.log('[GameScene] Opponent mask applied, waiting 8s for indexer to sync...');
-          this.hud.showNotification('Setting Up', 'Syncing blockchain state...', 10000);
-          await new Promise(resolve => setTimeout(resolve, 8000));
-          this.indexerSyncWaited = true;
-        }
-
-        // Re-fetch status after potential indexer wait to get latest opponent info
-        const postSyncStatus = await MidnightService.getSetupStatus(
-          this.lobbyId,
-          this.playerId as 1 | 2,
-        );
-        console.log('[GameScene] Post-sync setup status:', postSyncStatus);
-
-        // Player 2 must wait for Player 1 to deal first
-        if (this.playerId === 2 && !postSyncStatus.opponentHasDealt) {
-          console.log('[GameScene] Player 2 waiting for Player 1 to deal first... will retry in 2s');
-          this.hud.showNotification('Setting Up', 'Waiting for Player 1 to deal...', 30000);
-          this.scheduleSetupRetry(2000);
-          return;
-        }
-
-        this.hud.showNotification('Setting Up', 'Dealing cards...', 30000);
-        console.log(`[GameScene] Player ${this.playerId} dealing cards...`);
-
-        const dealPid = this.playerId as 1 | 2;
-        const dealSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, dealPid);
-        const dealSecretHex = dealSecret.toString(16).padStart(64, '0');
-        const dealSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, dealPid);
-        const dealSeedHex = Array.from(dealSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-
-        const dealResult = await MidnightService.dealCards(this.lobbyId, dealPid, dealSecretHex, dealSeedHex);
-
-        if (!dealResult.success) {
-          if (dealResult.errorMessage?.includes('must apply mask')) {
-            console.log('[GameScene] A player has not applied mask yet, will retry...');
-            this.scheduleSetupRetry(3000);
-            return;
-          } else if (dealResult.errorMessage?.includes('already dealt') ||
-                     dealResult.errorMessage?.includes('has already dealt')) {
-            console.log('[GameScene] Cards already dealt (detected via error) - continuing');
-            this.cardsDealt = true;
-          } else if (dealResult.errorMessage?.includes('timed out') ||
-                     dealResult.errorMessage?.includes('NetworkError') ||
-                     dealResult.errorMessage?.includes('fetch') ||
-                     dealResult.errorMessage?.includes('EffectStream processing validation failed') ||
-                     dealResult.errorMessage?.includes('Timeout')) {
-            console.log('[GameScene] Deal cards timed out / EffectStream timeout, polling for on-chain status...');
-            const confirmed = await this.pollForSetupStatus('hasDealt', 30000);
-            if (confirmed) {
-              console.log('[GameScene] Cards were dealt despite timeout');
-              this.cardsDealt = true;
-            } else {
-              console.log('[GameScene] Deal not confirmed, will retry in 10s');
-              this.hud.showNotification('Setting Up', 'Retrying deal...', 10000);
-              this.scheduleSetupRetry(10000);
-              return;
-            }
-          } else if (dealResult.errorMessage?.includes('unreachable')) {
-            console.log('[GameScene] Deal hit WASM assert (likely stale indexer state), will retry in 10s...');
-            this.hud.showNotification('Setting Up', 'Waiting for blockchain sync...', 10000);
-            this.scheduleSetupRetry(10000);
-            return;
-          } else {
-            console.log(`[GameScene] Deal failed: ${dealResult.errorMessage}, will retry in 5s`);
-            this.hud.showNotification('Error', dealResult.errorMessage ?? 'Deal failed', 5000);
-            this.scheduleSetupRetry(5000);
-            return;
-          }
-        } else {
-          console.log('[GameScene] Cards dealt successfully (confirmed on-chain)');
-          this.cardsDealt = true;
-        }
-      } else {
-        console.log('[GameScene] Cards already dealt, skipping');
-        this.cardsDealt = true;
-      }
+      if (!await this.setupMask(status)) return;
+      if (!await this.setupDealCards()) return;
 
       console.log('[GameScene] Automatic setup complete!');
-      this.setupCompleted = true;
+      this.setupPhase = 'done';
       this.hud.showNotification('Setup Complete', 'Waiting for game to start...', 5000);
-      // Force an immediate state poll now that both players have dealt on-chain.
-      // The regular 5-second interval would otherwise leave the player waiting
-      // up to 5 seconds before the phase transitions and their hand is shown.
       this.adapter?.forcePoll();
-    } catch (error: any) {
-      console.error('[GameScene] Automatic setup failed:', error);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[GameScene] Automatic setup failed:', msg);
       this.hud.showNotification('Error', 'Setup failed. Retrying...', 10000);
       this.scheduleSetupRetry(10000);
-    } finally {
-      this.setupInProgress = false;
     }
+  }
+
+  /** Step 1: Apply mask. Returns false if setup should be aborted/retried. */
+  private async setupMask(status: { hasMaskApplied: boolean }): Promise<boolean> {
+    if (status.hasMaskApplied) {
+      console.log('[GameScene] Mask already applied, skipping');
+      this.setupPhase = 'waiting_for_opponent';
+      return true;
+    }
+
+    this.hud.showNotification('Setting Up', 'Applying cryptographic mask...', 30000);
+    const pid = this.playerId as 1 | 2;
+    const secretHex = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid).toString(16).padStart(64, '0');
+    const maskResult = await MidnightService.applyMask(this.lobbyId, pid, secretHex);
+
+    if (maskResult.success) {
+      console.log('[GameScene] Mask applied successfully');
+      this.setupPhase = 'waiting_for_opponent';
+      return true;
+    }
+
+    const err = maskResult.errorMessage ?? '';
+    if (err.includes('already applied') || err.includes('Player has already applied')) {
+      console.log('[GameScene] Mask already applied (detected via error) - continuing');
+      this.setupPhase = 'waiting_for_opponent';
+      return true;
+    }
+    if (err.includes('timed out') || err.includes('NetworkError') || err.includes('fetch') ||
+        err.includes('EffectStream processing validation failed') || err.includes('Timeout')) {
+      console.log('[GameScene] Mask timed out, polling for on-chain confirmation...');
+      const confirmed = await this.pollForSetupStatus('hasMaskApplied', 30000);
+      if (confirmed) {
+        this.setupPhase = 'waiting_for_opponent';
+        return true;
+      }
+      this.hud.showNotification('Setting Up', 'Retrying mask...', 10000);
+      this.scheduleSetupRetry(10000);
+      return false;
+    }
+
+    console.log(`[GameScene] Mask failed: ${err}, will retry in 5s`);
+    this.hud.showNotification('Error', err || 'Mask failed', 5000);
+    this.scheduleSetupRetry(5000);
+    return false;
+  }
+
+  /** Step 2: Deal cards. Returns false if setup should be aborted/retried. */
+  private async setupDealCards(): Promise<boolean> {
+    const updatedStatus = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
+    console.log('[GameScene] Updated setup status:', updatedStatus);
+
+    if (updatedStatus.hasDealt) {
+      console.log('[GameScene] Cards already dealt, skipping');
+      return true;
+    }
+
+    // Wait for opponent to apply their mask
+    if (!updatedStatus.opponentHasMaskApplied) {
+      console.log('[GameScene] Waiting for opponent to apply mask... will retry in 2s');
+      this.hud.showNotification('Setting Up', 'Waiting for opponent...', 30000);
+      this.scheduleSetupRetry(2000);
+      return false;
+    }
+
+    // Wait for indexer to sync (only once per setup session)
+    if (this.setupPhase === 'waiting_for_opponent') {
+      console.log('[GameScene] Opponent mask applied, waiting 8s for indexer to sync...');
+      this.hud.showNotification('Setting Up', 'Syncing blockchain state...', 10000);
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      this.setupPhase = 'dealing';
+    }
+
+    const postSyncStatus = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
+    console.log('[GameScene] Post-sync setup status:', postSyncStatus);
+
+    // Player 2 must wait for Player 1 to deal first
+    if (this.playerId === 2 && !postSyncStatus.opponentHasDealt) {
+      console.log('[GameScene] Player 2 waiting for Player 1 to deal first... will retry in 2s');
+      this.hud.showNotification('Setting Up', 'Waiting for Player 1 to deal...', 30000);
+      this.setupPhase = 'waiting_for_opponent'; // Allow re-entry to syncing step
+      this.scheduleSetupRetry(2000);
+      return false;
+    }
+
+    this.hud.showNotification('Setting Up', 'Dealing cards...', 30000);
+    const pid = this.playerId as 1 | 2;
+    const secretHex = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid).toString(16).padStart(64, '0');
+    const seedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
+    const seedHex = Array.from(seedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+    const dealResult = await MidnightService.dealCards(this.lobbyId, pid, secretHex, seedHex);
+
+    if (dealResult.success) {
+      console.log('[GameScene] Cards dealt successfully');
+      return true;
+    }
+
+    const err = dealResult.errorMessage ?? '';
+    if (err.includes('already dealt') || err.includes('has already dealt')) {
+      console.log('[GameScene] Cards already dealt (detected via error) - continuing');
+      return true;
+    }
+    if (err.includes('must apply mask')) {
+      this.scheduleSetupRetry(3000);
+      return false;
+    }
+    if (err.includes('timed out') || err.includes('NetworkError') || err.includes('fetch') ||
+        err.includes('EffectStream processing validation failed') || err.includes('Timeout')) {
+      const confirmed = await this.pollForSetupStatus('hasDealt', 30000);
+      if (confirmed) {
+        console.log('[GameScene] Cards were dealt despite timeout');
+        return true;
+      }
+      this.hud.showNotification('Setting Up', 'Retrying deal...', 10000);
+      this.scheduleSetupRetry(10000);
+      return false;
+    }
+    if (err.includes('unreachable')) {
+      this.hud.showNotification('Setting Up', 'Waiting for blockchain sync...', 10000);
+      this.scheduleSetupRetry(10000);
+      return false;
+    }
+
+    console.log(`[GameScene] Deal failed: ${err}, will retry in 5s`);
+    this.hud.showNotification('Error', err || 'Deal failed', 5000);
+    this.scheduleSetupRetry(5000);
+    return false;
   }
 
   // --- Action Handlers ---
