@@ -291,8 +291,9 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
 
     // RULE 5: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
+    // 120s window accounts for ZK proof generation time on devnet/testnet
     assert(
-        blockTimeLt(disclose(now + 6 as Uint<64>)),
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
     );
 
@@ -330,11 +331,12 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     assert(disclosed_respondingId == 1 as Uint<64> || disclosed_respondingId == 2 as Uint<64>, "Invalid player index");
 
     // RULE 3: Timestamp must not be in the future
+    // 120s window accounts for ZK proof generation time on devnet/testnet
     assert(
-        blockTimeLt(disclose(now + 6 as Uint<64>)),
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
     );
-    
+
     // Get the rank being asked for
     const targetRank = go_fish_getLastAskedRank(gid);
     
@@ -416,8 +418,9 @@ export circuit goFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): Nat
     assert(topIndex as Uint<64> < deckSize, "Cannot draw - deck is empty");
 
     // RULE 4: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
+    // 120s window accounts for ZK proof generation time on devnet/testnet
     assert(
-        blockTimeLt(disclose(now + 6 as Uint<64>)),
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
     );
 
@@ -446,8 +449,9 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
     assert(disclosed_playerId == currentTurn, "Only current player can call afterGoFish");
 
     // RULE 3: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
+    // 120s window accounts for ZK proof generation time on devnet/testnet
     assert(
-        blockTimeLt(disclose(now + 6 as Uint<64>)),
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
     );
 

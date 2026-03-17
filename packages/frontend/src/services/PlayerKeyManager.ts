@@ -223,7 +223,6 @@ export function getOrCreatePlayerState(
   // Check memory cache first
   const cached = gameStateCache.get(cacheKey);
   if (cached) {
-    console.log(`[PlayerKeyManager] Cache hit for game ${gameId}`);
     return cached;
   }
 

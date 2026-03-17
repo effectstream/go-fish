@@ -162,6 +162,52 @@ function deterministicActionWeights(seed: Uint8Array, count: number): number[] {
 const persistentSecrets = new Map<string, bigint>();
 const persistentShuffleSeeds = new Map<string, Uint8Array>();
 
+// ---------------------------------------------------------------------------
+// Disk persistence for persistentSecrets / persistentShuffleSeeds
+// These Maps survive node restarts so that game-phase circuits (askForCard,
+// respondToAsk, etc.) can still retrieve the opponent's secret via
+// fetchSecretFromBackend even if the node was restarted between setup and play.
+// ---------------------------------------------------------------------------
+const SECRETS_FILE = './data/player-secrets.json';
+
+function loadPersistedSecrets(): void {
+  try {
+    const text = Deno.readTextFileSync(SECRETS_FILE);
+    const data = JSON.parse(text) as { secrets?: Record<string, string>; seeds?: Record<string, string> };
+    for (const [key, value] of Object.entries(data.secrets ?? {})) {
+      persistentSecrets.set(key, BigInt('0x' + value));
+    }
+    for (const [key, value] of Object.entries(data.seeds ?? {})) {
+      const seed = new Uint8Array(value.length / 2);
+      for (let i = 0; i < seed.length; i++) seed[i] = parseInt(value.substr(i * 2, 2), 16);
+      persistentShuffleSeeds.set(key, seed);
+    }
+    console.log(`[MidnightActions] Loaded ${persistentSecrets.size} persisted secrets, ${persistentShuffleSeeds.size} persisted seeds`);
+  } catch {
+    // File doesn't exist yet — first run
+  }
+}
+
+function persistSecrets(): void {
+  try {
+    Deno.mkdirSync('./data', { recursive: true });
+    const secrets: Record<string, string> = {};
+    const seeds: Record<string, string> = {};
+    for (const [k, v] of persistentSecrets.entries()) {
+      secrets[k] = v.toString(16).padStart(64, '0');
+    }
+    for (const [k, v] of persistentShuffleSeeds.entries()) {
+      seeds[k] = Array.from(v).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    Deno.writeTextFileSync(SECRETS_FILE, JSON.stringify({ secrets, seeds }, null, 2));
+  } catch (err) {
+    console.warn('[MidnightActions] Failed to persist secrets:', err);
+  }
+}
+
+// Load persisted data on module init
+loadPersistedSecrets();
+
 /**
  * Set of game IDs (hex-encoded) that have been correctly replayed with real seeds.
  * A game is added here once ensureGameReplayedIfNeeded completes a full replay using
@@ -538,6 +584,38 @@ export function invalidateHandCache(lobbyId: string, playerId?: 1 | 2): void {
 }
 
 /**
+ * Store (or refresh) a player secret without running any circuit.
+ * Called by the /api/midnight/register_secret endpoint so the frontend can
+ * push its secret to the backend at any time (reconnect, page load, etc.).
+ * This ensures fetchSecretFromBackend in the batcher always finds a valid secret
+ * even if the node was restarted after setup completed.
+ */
+export function storePlayerSecret(
+  lobbyId: string,
+  playerId: 1 | 2,
+  playerSecretHex: string,
+  shuffleSeedHex?: string,
+): void {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const hexGameId = Array.from(gameId).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+  const secretKey = `${hexGameId}-${playerId}`;
+
+  const s = BigInt('0x' + playerSecretHex);
+  playerSecrets.set(secretKey, s);
+  persistentSecrets.set(secretKey, s);
+  console.log(`[MidnightActions] storePlayerSecret: key="${secretKey}" secret=0x${s.toString(16).padStart(16, '0')}...`);
+
+  if (shuffleSeedHex) {
+    const seed = new Uint8Array(shuffleSeedHex.length / 2);
+    for (let i = 0; i < seed.length; i++) seed[i] = parseInt(shuffleSeedHex.substr(i * 2, 2), 16);
+    playerShuffleSeeds.set(secretKey, seed);
+    persistentShuffleSeeds.set(secretKey, seed);
+  }
+
+  persistSecrets();
+}
+
+/**
  * Check whether the local actionContext already has this game initialized.
  * If not, replay the setup sequence using the provided secrets so that
  * getPlayerHandWithSecret can query cards correctly.
@@ -580,6 +658,48 @@ export async function ensureGameReplayedIfNeeded(
       return;
     }
 
+    // Fill in missing seeds/secrets from the persistent store (populated by notify_setup).
+    // The frontend may not have the opponent's seed (different browser session), but the
+    // backend stored it during the setup replay triggered by notify_setup.
+    const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+    const myKey = `${hexGameId}-${playerId}`;
+    const opponentKey = `${hexGameId}-${opponentId}`;
+
+    const resolvedShuffleSeedHex = shuffleSeedHex
+      ?? (() => {
+        const s = persistentShuffleSeeds.get(myKey);
+        if (s) {
+          console.log(`[MidnightActions] ensureGameReplayedIfNeeded: filled my shuffleSeed from persistent store`);
+          return Array.from(s).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+        return undefined;
+      })();
+
+    const resolvedOpponentSecretHex = opponentSecretHex
+      ?? (() => {
+        const s = persistentSecrets.get(opponentKey);
+        if (s) {
+          console.log(`[MidnightActions] ensureGameReplayedIfNeeded: filled opponent secret from persistent store`);
+          return s.toString(16).padStart(64, '0');
+        }
+        return undefined;
+      })();
+
+    const resolvedOpponentShuffleSeedHex = opponentShuffleSeedHex
+      ?? (() => {
+        const s = persistentShuffleSeeds.get(opponentKey);
+        if (s) {
+          console.log(`[MidnightActions] ensureGameReplayedIfNeeded: filled opponent shuffleSeed from persistent store`);
+          return Array.from(s).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+        return undefined;
+      })();
+
+    // Use resolved values for the rest of this function
+    shuffleSeedHex = resolvedShuffleSeedHex;
+    opponentSecretHex = resolvedOpponentSecretHex;
+    opponentShuffleSeedHex = resolvedOpponentShuffleSeedHex;
+
     // Determine whether we have both shuffle seeds for a correct replay.
     const hasRealSeeds = !!(shuffleSeedHex && opponentShuffleSeedHex);
 
@@ -614,8 +734,6 @@ export async function ensureGameReplayedIfNeeded(
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: phase=${currentPhase}, no seeds available — skipping replay`);
       return;
     }
-
-    const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
 
     // The contract requires setup to be replayed in canonical P1→P2 order (player 1 always first).
     // Use named variables that reflect canonical ordering, not "my/opponent" perspective.
@@ -851,12 +969,14 @@ export async function goFish(
 /**
  * Execute applyMask action (setup phase)
  * playerSecretHex: hex-encoded player secret from frontend (no 0x prefix).
- * Pre-injecting the secret ensures the same secret is used here and in hand queries.
+ * shuffleSeedHex: hex-encoded shuffle seed from frontend (no 0x prefix, 64 hex chars = 32 bytes).
+ * Pre-injecting both ensures the local simulation's shuffle matches what was done on-chain.
  */
 export async function applyMask(
   lobbyId: string,
   playerId: 1 | 2,
   playerSecretHex?: string,
+  shuffleSeedHex?: string,
 ): Promise<{ success: boolean; errorMessage?: string }> {
   const gameId = lobbyIdToGameId(lobbyId);
   const hexGameId = Array.from(gameId).map((b: number) => b.toString(16).padStart(2, '0')).join('');
@@ -865,10 +985,24 @@ export async function applyMask(
   if (playerSecretHex) {
     const s = BigInt('0x' + playerSecretHex);
     playerSecrets.set(secretKey, s);
+    persistentSecrets.set(secretKey, s);
     console.log(`[MidnightActions] applyMask: injected frontend secret key="${secretKey}", secret=0x${s.toString(16).padStart(16, '0')}...`);
   } else {
     console.warn(`[MidnightActions] applyMask: NO secret provided for player ${playerId} — will use fallback random secret`);
   }
+
+  if (shuffleSeedHex) {
+    const seed = new Uint8Array(shuffleSeedHex.length / 2);
+    for (let i = 0; i < seed.length; i++) seed[i] = parseInt(shuffleSeedHex.substr(i * 2, 2), 16);
+    playerShuffleSeeds.set(secretKey, seed);
+    persistentShuffleSeeds.set(secretKey, seed);
+    console.log(`[MidnightActions] applyMask: injected shuffle seed for key="${secretKey}"`);
+  } else {
+    console.warn(`[MidnightActions] applyMask: NO shuffle seed provided for player ${playerId} — will use deterministic fallback`);
+  }
+
+  // Persist to disk so secrets survive node restarts
+  if (playerSecretHex || shuffleSeedHex) persistSecrets();
 
   return enqueueAction(async () => {
     if (!actionContract || !actionContext) {
@@ -930,6 +1064,9 @@ export async function dealCards(
   } else {
     console.warn(`[MidnightActions] dealCards: NO shuffle seed provided for player ${playerId} — will use deterministic fallback`);
   }
+
+  // Persist to disk so secrets survive node restarts
+  if (playerSecretHex || shuffleSeedHex) persistSecrets();
 
   return enqueueAction(async () => {
     if (!actionContract || !actionContext) {

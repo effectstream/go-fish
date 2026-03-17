@@ -19,6 +19,10 @@ import * as goFishContract from "@go-fish/midnight-contract/contract";
 import { setPlayerSecrets, clearPlayerSecrets } from "@go-fish/midnight-contract/witnesses";
 import { CryptoManager } from "@paimaexample/crypto";
 import { storage } from "./config.ts";
+import { createUnprovenCallTxFromInitialStates, getPublicStates } from "npm:@midnight-ntwrk/midnight-js-contracts@3.0.0";
+import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@3.0.0";
+import { parseCoinPublicKeyToHex } from "npm:@midnight-ntwrk/midnight-js-utils@3.0.0";
+import { getNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@3.0.0";
 
 // Network configuration - use environment variables or defaults
 const isTestnet = Deno.env.get("EFFECTSTREAM_ENV") === "testnet";
@@ -101,7 +105,7 @@ function hexToBytes(hex: string): Uint8Array {
  * In development mode (SKIP_SIGNATURE_VERIFICATION=true or NODE_ENV != production),
  * signature verification is skipped for easier testing.
  */
-class GoFishMidnightAdapter extends MidnightAdapter {
+export class GoFishMidnightAdapter extends MidnightAdapter {
   /**
    * Fetch a stored player secret from the backend node.
    * Called when the circuit payload doesn't include the opponent's secret
@@ -115,21 +119,43 @@ class GoFishMidnightAdapter extends MidnightAdapter {
     playerId: 1 | 2,
   ): Promise<{ secret: string; shuffleSeed: string | null } | null> {
     const backendUrl = Deno.env.get("BACKEND_URL") || "http://localhost:9996";
-    try {
-      const response = await fetch(
-        `${backendUrl}/api/midnight/player_secret?lobby_id=${encodeURIComponent(lobbyId)}&player_id=${playerId}`,
-      );
-      if (response.ok) {
-        const data = await response.json() as { secret: string; shuffleSeed: string | null };
-        console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId}`);
-        return data;
+    const url = `${backendUrl}/api/midnight/player_secret?lobby_id=${encodeURIComponent(lobbyId)}&player_id=${playerId}`;
+
+    // Retry up to 3 times with a short delay: the backend may still be processing
+    // notify_setup (which persists secrets) at the time this is called.
+    const MAX_FETCH_ATTEMPTS = 3;
+    const FETCH_RETRY_MS = 2000;
+
+    for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          const data = await response.json() as { secret: string; shuffleSeed: string | null };
+          if (attempt > 1) {
+            console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId} (attempt ${attempt})`);
+          } else {
+            console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId}`);
+          }
+          return data;
+        }
+        console.warn(`[GoFishMidnightAdapter] Backend returned ${response.status} for player_secret lookup (lobby=${lobbyId} player=${playerId}, attempt ${attempt}/${MAX_FETCH_ATTEMPTS})`);
+        if (response.status !== 404) {
+          // Non-404 error (e.g. 500) — don't retry
+          return null;
+        }
+        if (attempt < MAX_FETCH_ATTEMPTS) {
+          console.log(`[GoFishMidnightAdapter] Retrying player_secret lookup in ${FETCH_RETRY_MS}ms...`);
+          await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_MS));
+        }
+      } catch (err) {
+        console.warn(`[GoFishMidnightAdapter] Could not fetch opponent secret from backend (attempt ${attempt}/${MAX_FETCH_ATTEMPTS}):`, err);
+        if (attempt < MAX_FETCH_ATTEMPTS) {
+          await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_MS));
+        }
       }
-      console.warn(`[GoFishMidnightAdapter] Backend returned ${response.status} for player_secret lookup`);
-      return null;
-    } catch (err) {
-      console.warn(`[GoFishMidnightAdapter] Could not fetch opponent secret from backend:`, err);
-      return null;
     }
+    console.error(`[GoFishMidnightAdapter] Failed to fetch player ${playerId} secret for lobby ${lobbyId} after ${MAX_FETCH_ATTEMPTS} attempts — circuit will use fallback key and likely fail`);
+    return null;
   }
 
   /**
@@ -161,7 +187,7 @@ class GoFishMidnightAdapter extends MidnightAdapter {
 
           setPlayerSecrets(gameId, playerId, secret, shuffleSeed);
           secretInfo = { gameId, playerId };
-          console.log(`[GoFishMidnightAdapter] Set client secrets for ${circuit}: game ${gameId}, player ${playerId}`);
+          console.log(`[GoFishMidnightAdapter] Set client secrets for ${circuit}: gameIdHex=${gameId} player=${playerId} secret=${secret}`);
 
           const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
 
@@ -177,6 +203,7 @@ class GoFishMidnightAdapter extends MidnightAdapter {
             // This is needed for game-phase circuits (askForCard, respondToAsk, goFish,
             // afterGoFish) that call player_secret_key for BOTH players unconditionally.
             const lobbyId = this.hexToLobbyId(gameId);
+            console.log(`[GoFishMidnightAdapter] ${circuit}: no opponent secret in payload, fetching from backend for player ${opponentId} (lobby=${lobbyId})`);
             const backendOpponent = await this.fetchSecretFromBackend(lobbyId, opponentId);
             if (backendOpponent) {
               const opponentSecret = BigInt("0x" + backendOpponent.secret);
@@ -238,6 +265,9 @@ class GoFishMidnightAdapter extends MidnightAdapter {
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
+          if (secretInfo) {
+            console.log(`[GoFishMidnightAdapter] ${circuit} attempt ${attempt}: calling super.submitBatch with secretInfo game=${secretInfo.gameId} player=${secretInfo.playerId}`);
+          }
           const result = await super.submitBatch(data, fee);
           if (attempt > 1) {
             const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -294,7 +324,13 @@ class GoFishMidnightAdapter extends MidnightAdapter {
           const isPermanentAssert = errMsg.includes("already applied") ||
             errMsg.includes("already dealt") ||
             errMsg.includes("already initialized") ||
-            errMsg.includes("already started");
+            errMsg.includes("already started") ||
+            // Duplicate game-phase circuit: a previous transaction already advanced the phase.
+            // Retrying will never succeed — purge the queue immediately.
+            errMsg.includes("Not waiting for a response") ||
+            errMsg.includes("Not your turn") ||
+            errMsg.includes("Can only ask for cards at turn start") ||
+            errMsg.includes("Cannot ask for a rank you don't have");
           const isStaleAssert = errMsg.includes("failed assert") && !isPermanentAssert;
           const isRetryable = isUnreachable || isProofServer500 || isStaleAssert;
 
@@ -475,7 +511,8 @@ class GoFishMidnightAdapter extends MidnightAdapter {
         body: JSON.stringify(body),
       });
       if (response.ok) {
-        console.log(`[GoFishMidnightAdapter] Backend notified: ${action} for ${lobbyId} player ${playerId}`);
+        const secretSnippet = payload.playerSecret ? `secret=0x${payload.playerSecret.slice(0,16)}...` : 'no secret';
+        console.log(`[GoFishMidnightAdapter] Backend notified: ${action} for ${lobbyId} player ${playerId} (${secretSnippet})`);
       } else {
         console.warn(`[GoFishMidnightAdapter] Failed to notify backend: ${response.status}`);
       }
@@ -505,6 +542,139 @@ class GoFishMidnightAdapter extends MidnightAdapter {
   clearSecrets(gameId: string, playerId: number): void {
     clearPlayerSecrets(gameId, playerId as 1 | 2);
     console.log(`[GoFishMidnightAdapter] Cleared client secrets for game ${gameId}, player ${playerId}`);
+  }
+
+  /**
+   * Query the player's current hand from the on-chain indexer state.
+   *
+   * Uses createUnprovenCallTx to run doesPlayerHaveSpecificCard locally against
+   * the indexer's current ledger state (no proof generated, no tx submitted).
+   * This reflects the REAL on-chain hand — including cards received/lost via
+   * respondToAsk/goFish — unlike the backend's local simulation which only
+   * knows the post-deal state.
+   *
+   * @param lobbyId  The game lobby ID (UTF-8 string, padded to 32 bytes)
+   * @param playerId 1 or 2
+   * @param playerSecretHex Hex-encoded player secret (no "0x" prefix)
+   * @param shuffleSeedHex  Hex-encoded 32-byte shuffle seed (no "0x" prefix)
+   * @param opponentSecretHex   Optional opponent secret hex (no "0x" prefix)
+   * @param opponentShuffleSeedHex Optional opponent shuffle seed hex
+   * @returns Array of {rank, suit} for cards the player currently holds
+   */
+  async queryPlayerHand(
+    lobbyId: string,
+    playerId: 1 | 2,
+    playerSecretHex: string,
+    shuffleSeedHex: string,
+    opponentSecretHex?: string,
+    opponentShuffleSeedHex?: string,
+  ): Promise<Array<{ rank: number; suit: number }>> {
+    // Ensure the adapter is initialized (wallet, indexer connection)
+    if ((this as any).initializationPromise) {
+      await (this as any).initializationPromise;
+    }
+    if (!(this as any).isInitialized) {
+      throw new Error("[GoFishMidnightAdapter.queryPlayerHand] Adapter not initialized");
+    }
+
+    // Access private fields from the base class at runtime (TS private is compile-time only)
+    const compiledContract = (this as any).compiledContract;
+    const publicDataProvider = (this as any).publicDataProvider;
+    const walletProvider = (this as any).walletProvider;
+    const config = (this as any).config as typeof midnightAdapterConfig0;
+
+    if (!compiledContract || !publicDataProvider || !walletProvider) {
+      throw new Error("[GoFishMidnightAdapter.queryPlayerHand] Required providers not initialized");
+    }
+
+    // Build gameId as Uint8Array (32 bytes, UTF-8 lobby string zero-padded)
+    // AND as "0x"-prefixed hex (needed for setPlayerSecrets witness key format)
+    const encoder = new TextEncoder();
+    const lobbyBytes = encoder.encode(lobbyId);
+    const gameIdBytes = new Uint8Array(32);
+    gameIdBytes.set(lobbyBytes.slice(0, 32));
+    const gameIdHex = "0x" + Array.from(gameIdBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    // Set player secrets so the witness function resolves correctly during simulation
+    const secret = BigInt("0x" + playerSecretHex);
+    const shuffleSeed = hexToBytes(shuffleSeedHex);
+    setPlayerSecrets(gameIdHex, playerId, secret, shuffleSeed);
+
+    const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+    let opponentSet = false;
+    if (opponentSecretHex && opponentShuffleSeedHex) {
+      setPlayerSecrets(gameIdHex, opponentId, BigInt("0x" + opponentSecretHex), hexToBytes(opponentShuffleSeedHex));
+      opponentSet = true;
+    } else {
+      // doesPlayerHaveSpecificCard calls deck_getSecretFromPlayerId for both players
+      // unconditionally. Fetch the opponent's secret from the backend so the witness
+      // resolves correctly instead of falling back to the static random key.
+      const backendOpponent = await this.fetchSecretFromBackend(lobbyId, opponentId);
+      if (backendOpponent) {
+        setPlayerSecrets(
+          gameIdHex, opponentId,
+          BigInt("0x" + backendOpponent.secret),
+          backendOpponent.shuffleSeed ? hexToBytes(backendOpponent.shuffleSeed) : new Uint8Array(32),
+        );
+        opponentSet = true;
+      }
+    }
+
+    const zkConfigProvider = new NodeZkConfigProvider(config.zkConfigPath);
+
+    // Fetch contract public state ONCE — reused for all 21 card checks to avoid
+    // 21 separate indexer round-trips. createUnprovenCallTxFromInitialStates
+    // takes the state directly instead of fetching it on each call.
+    const { contractState, zswapChainState } = await (getPublicStates as any)(
+      publicDataProvider,
+      contractAddress0,
+    );
+    // parseCoinPublicKeyToHex converts the wallet's CoinPublicKey to the hex string
+    // format that createUnprovenCallTxFromInitialStates expects.
+    const coinPublicKey = parseCoinPublicKeyToHex(walletProvider.getCoinPublicKey(), getNetworkId());
+    const walletEncKey = walletProvider.getEncryptionPublicKey();
+
+    const hand: Array<{ rank: number; suit: number }> = [];
+
+    try {
+      // Check all 21 card indices (7 ranks × 3 suits, index = rank + suit*7)
+      // Args to doesPlayerHaveSpecificCard: (gameId: Uint8Array, playerId: bigint, cardIndex: bigint)
+      for (let cardIndex = 0; cardIndex < 21; cardIndex++) {
+        try {
+          const callTxData = await (createUnprovenCallTxFromInitialStates as any)(
+            zkConfigProvider,
+            {
+              compiledContract,
+              circuitId: "doesPlayerHaveSpecificCard",
+              contractAddress: contractAddress0,
+              coinPublicKey,
+              initialContractState: contractState,
+              initialZswapChainState: zswapChainState,
+              args: [gameIdBytes, BigInt(playerId), BigInt(cardIndex)],
+            },
+            walletEncKey,
+          );
+          const hasCard = callTxData?.private?.result as boolean | undefined;
+          if (hasCard === true) {
+            const rank = cardIndex % 7;
+            const suit = Math.floor(cardIndex / 7);
+            hand.push({ rank, suit });
+          }
+        } catch (err) {
+          // Log individual card check errors but continue — a WASM assert for one
+          // card index (e.g. because of a stale assert) shouldn't abort the whole query
+          console.warn(`[GoFishMidnightAdapter.queryPlayerHand] cardIndex=${cardIndex} error:`, err instanceof Error ? err.message : String(err));
+        }
+      }
+    } finally {
+      clearPlayerSecrets(gameIdHex, playerId);
+      if (opponentSet) {
+        clearPlayerSecrets(gameIdHex, opponentId);
+      }
+    }
+
+    console.log(`[GoFishMidnightAdapter.queryPlayerHand] player=${playerId} hand=${JSON.stringify(hand)}`);
+    return hand;
   }
 }
 

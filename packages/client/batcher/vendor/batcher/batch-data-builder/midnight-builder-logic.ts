@@ -1,4 +1,4 @@
-import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.7.0";
+import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.8.4";
 import type { DefaultBatcherInput } from "../core/types.ts";
 
 const BATCH_PREFIX = "&B";

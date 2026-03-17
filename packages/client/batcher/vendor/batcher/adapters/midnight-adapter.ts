@@ -13,7 +13,7 @@ import type { ContractInfo } from "./midnight-arg-parser.ts";
 import { parseCircuitArgs } from "./midnight-arg-parser.ts";
 import type { DefaultBatcherInput } from "../core/types.ts";
 import { MidnightBatchBuilderLogic, type MidnightBatchPayload } from "../batch-data-builder/midnight-builder-logic.ts";
-import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.7.2";
+import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.8.4";
 import type {
   MidnightProvider,
   UnboundTransaction,
@@ -44,8 +44,8 @@ import {
   syncAndWaitForFunds,
   waitForDustFunds,
   type NetworkUrls as MidnightNetworkUrls,
-} from "jsr:@paimaexample/midnight-contracts@^0.7.2/wallet-info";
-import type { WalletResult } from "jsr:@paimaexample/midnight-contracts@^0.7.2/types";
+} from "jsr:@paimaexample/midnight-contracts@^0.8.4/wallet-info";
+import type { WalletResult } from "jsr:@paimaexample/midnight-contracts@^0.8.4/types";
 import type { NetworkId as WalletNetworkId } from "npm:@midnight-ntwrk/wallet-sdk-abstractions@1.0.0";
 
 export interface MidnightAdapterConfig {

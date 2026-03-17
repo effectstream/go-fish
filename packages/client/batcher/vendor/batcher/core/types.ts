@@ -1,4 +1,4 @@
-import { AddressType } from "jsr:@paimaexample/utils@^0.7.0";
+import { AddressType } from "jsr:@paimaexample/utils@^0.8.4";
 
 export interface DefaultBatcherInput {
   addressType: AddressType;

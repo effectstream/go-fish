@@ -1,4 +1,5 @@
 import { MidnightService } from '../../services/MidnightService';
+import { queryHandFromBatcher } from '../../services/BatcherMidnightService';
 import { PlayerKeyManager } from '../../services/PlayerKeyManager';
 import type { Card } from '../../../../shared/data-types/src/go-fish-types';
 import { INDEX_TO_RANK, INDEX_TO_SUIT } from '../../../../shared/data-types/src/go-fish-types';
@@ -89,49 +90,61 @@ export class GameStateAdapter {
       // has no cards yet, so the query would correctly return 0 cards but mislead the UI.
       let myHand: Card[] = [];
       const phase = rawState.phase ?? 'dealing';
+
       const handIsReady = phase !== 'dealing' && phase !== 'waiting';
-      console.log(`[GameStateAdapter] poll: phase=${phase}, handIsReady=${handIsReady}, handSizes=${JSON.stringify(rawState.handSizes)}`);
       if (handIsReady) {
+        const pid = rawState.playerId as 1 | 2;
+
+        // Primary: query hand from the batcher's query server.
+        // The batcher uses real on-chain indexer state, so it correctly reflects
+        // card transfers from respondToAsk/goFish — unlike the backend's local sim.
         try {
-          const pid = rawState.playerId as 1 | 2;
-          const opponentId = (pid === 1 ? 2 : 1) as 1 | 2;
-
-          const playerSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid);
-          const playerSecretHex = playerSecret.toString(16).padStart(64, '0');
-
-          const shuffleSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
-          const shuffleSeedHex = Array.from(shuffleSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-
-          // Pass opponent secrets only if they are already stored locally.
-          // getPlayerSecret() creates a new random key if none exists, which would
-          // corrupt the backend's local simulation with the wrong secret.
-          let opponentSecretHex: string | undefined;
-          let opponentShuffleSeedHex: string | undefined;
-          if (PlayerKeyManager.hasExistingKeys(this.lobbyId, opponentId)) {
-            try {
-              const opponentSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, opponentId);
-              opponentSecretHex = opponentSecret.toString(16).padStart(64, '0');
-              const opponentSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, opponentId);
-              opponentShuffleSeedHex = Array.from(opponentSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-            } catch {
-              // Ignore — opponent keys unavailable
-            }
+          const batterHand = await queryHandFromBatcher(this.lobbyId, pid);
+          if (batterHand !== null) {
+            console.log(`[GameStateAdapter] batcher hand: ${batterHand.length} cards:`, JSON.stringify(batterHand));
+            myHand = batterHand.map((c: { rank: number; suit: number }) => ({
+              rank: INDEX_TO_RANK[c.rank] ?? 'A',
+              suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
+            }));
+          } else {
+            throw new Error("batcher returned null");
           }
-
-          console.log(`[GameStateAdapter] fetching hand for player ${pid}, secret prefix=${playerSecretHex.slice(0, 8)}...`);
-          const rawHand = await MidnightService.getPlayerHandWithSecret(
-            this.lobbyId,
-            pid,
-            playerSecretHex,
-            { shuffleSeedHex, opponentSecretHex, opponentShuffleSeedHex },
-          );
-          console.log(`[GameStateAdapter] rawHand returned ${rawHand.length} cards:`, JSON.stringify(rawHand));
-          myHand = rawHand.map((c: { rank: number; suit: number }) => ({
-            rank: INDEX_TO_RANK[c.rank] ?? 'A',
-            suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
-          }));
-        } catch (err) {
-          console.warn('[GameStateAdapter] Failed to decrypt hand:', err);
+        } catch (batcherErr) {
+          // Fallback: use the backend's local simulation (may be stale after card transfers)
+          console.warn('[GameStateAdapter] Batcher hand query failed, falling back to backend:', batcherErr instanceof Error ? batcherErr.message : String(batcherErr));
+          try {
+            const opponentId = (pid === 1 ? 2 : 1) as 1 | 2;
+            const playerSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid);
+            const playerSecretHex = playerSecret.toString(16).padStart(64, '0');
+            const shuffleSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
+            const shuffleSeedHex = Array.from(shuffleSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+            let opponentSecretHex: string | undefined;
+            let opponentShuffleSeedHex: string | undefined;
+            if (PlayerKeyManager.hasExistingKeys(this.lobbyId, opponentId)) {
+              try {
+                const opponentSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, opponentId);
+                opponentSecretHex = opponentSecret.toString(16).padStart(64, '0');
+                const opponentSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, opponentId);
+                opponentShuffleSeedHex = Array.from(opponentSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+              } catch {
+                // Ignore — opponent keys unavailable
+              }
+            }
+            console.log(`[GameStateAdapter] fallback: fetching hand for player ${pid} from backend`);
+            const rawHand = await MidnightService.getPlayerHandWithSecret(
+              this.lobbyId,
+              pid,
+              playerSecretHex,
+              { shuffleSeedHex, opponentSecretHex, opponentShuffleSeedHex },
+            );
+            console.log(`[GameStateAdapter] backend rawHand: ${rawHand.length} cards:`, JSON.stringify(rawHand));
+            myHand = rawHand.map((c: { rank: number; suit: number }) => ({
+              rank: INDEX_TO_RANK[c.rank] ?? 'A',
+              suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
+            }));
+          } catch (fallbackErr) {
+            console.warn('[GameStateAdapter] Backend hand fallback also failed:', fallbackErr);
+          }
         }
       }
 

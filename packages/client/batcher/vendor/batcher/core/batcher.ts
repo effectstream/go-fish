@@ -1,4 +1,4 @@
-import { CryptoManager } from "jsr:@paimaexample/crypto@^0.7.0";
+import { CryptoManager } from "jsr:@paimaexample/crypto@^0.8.4";
 import { call, lift, resource, sleep, spawn, suspend } from "npm:effection@^3.5.0";
 import type { Operation } from "npm:effection@^3.5.0";
 import type { BatcherStorage } from "./storage.ts";
@@ -24,7 +24,7 @@ import {
   ShutdownManager,
 } from "./shutdown-manager.ts";
 import type { BatcherGrammar, BatcherListener } from "./batcher-events.ts";
-import { BuiltinEvents, PaimaEventManager as EffectStreamEventManager } from "jsr:@paimaexample/event-client@^0.7.0";
+import { BuiltinEvents, PaimaEventManager as EffectStreamEventManager } from "jsr:@paimaexample/event-client@^0.8.4";
 
 /**
  * Custom error class for input validation failures

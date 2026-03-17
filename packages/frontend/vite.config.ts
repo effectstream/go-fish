@@ -157,6 +157,12 @@ export default defineConfig({
         target: 'http://localhost:3336',
         changeOrigin: true,
       },
+      // Proxy batcher hand-query endpoint (secondary server on port 9997)
+      '/batcher-query': {
+        target: 'http://localhost:9997',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/batcher-query/, ''),
+      },
     },
   },
   preview: {

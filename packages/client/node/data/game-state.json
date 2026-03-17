@@ -1,0 +1,98 @@
+{
+  "lobby_8_1773412316021": {
+    "phase": "wait_response",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 1,
+    "lastAskingPlayer": 1
+  },
+  "lobby_17_1773416326876": {
+    "phase": "wait_response",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 0,
+    "lastAskingPlayer": 1
+  },
+  "lobby_6_1773672635718": {
+    "phase": "wait_response",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 3,
+    "lastAskingPlayer": 1
+  },
+  "lobby_8_1773677045816": {
+    "phase": "wait_response",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 6,
+    "lastAskingPlayer": 1
+  },
+  "lobby_3_1773685165806": {
+    "phase": "wait_response",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 0,
+    "lastAskingPlayer": 1
+  },
+  "lobby_53_1773688341647": {
+    "phase": "wait_draw",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 6,
+    "lastAskingPlayer": 1
+  }
+}

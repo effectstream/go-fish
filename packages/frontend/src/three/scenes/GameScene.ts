@@ -7,6 +7,8 @@ import { AnimationQueue } from '../state/AnimationQueue';
 import { GameHUD } from '../ui/GameHUD';
 import { MidnightService } from '../../services/MidnightService';
 import { PlayerKeyManager } from '../../services/PlayerKeyManager';
+import { registerSecret as batcherRegisterSecret } from '../../services/BatcherMidnightService';
+import { isBatcherModeEnabled } from '../../proving/batcher-providers';
 import { animateDealHand, animateDrawFromDeck } from '../animations/CardAnimations';
 import { soundManager } from '../SoundManager';
 
@@ -53,6 +55,7 @@ export class GameScene {
   private initialDealPlayed = false;
   private drawInProgress = false;
   private askInProgress = false;
+  private respondInProgress = false;
 
   constructor(app: ThreeApp) {
     this.app = app;
@@ -70,6 +73,7 @@ export class GameScene {
     this.initialDealPlayed = false;
     this.drawInProgress = false;
     this.askInProgress = false;
+    this.respondInProgress = false;
 
     this.hud.show();
     this.hud.hideWaitingBanner();
@@ -168,8 +172,16 @@ export class GameScene {
       this.app.setDeckCount(state.deckCount);
     }
 
-    // Update opponent name on first load
+    // On first state update: register secret with backend and set opponent name.
     if (_previous === null) {
+      // Push this player's secret to the backend so fetchSecretFromBackend always
+      // has a valid secret for the opponent's proof, even after a node restart.
+      if (isBatcherModeEnabled() && state.playerId) {
+        batcherRegisterSecret(this.lobbyId, state.playerId as 1 | 2).catch(() => {
+          console.warn('[GameScene] registerSecret fire-and-forget failed — non-critical');
+        });
+      }
+
       this.app.setOpponentName(state.opponentName);
     }
 
@@ -238,6 +250,7 @@ export class GameScene {
       myBooks: state.myBooks,
       gameLog: state.gameLog,
       isGameOver: state.isGameOver,
+      respondInProgress: this.respondInProgress,
     });
 
     // Wire action buttons
@@ -662,6 +675,8 @@ export class GameScene {
   }
 
   private async handleRespondToAsk(): Promise<void> {
+    if (this.respondInProgress) return;
+    this.respondInProgress = true;
     try {
       this.hud.showNotification('Responding...', 'Checking hand...', 5000);
       const result = await MidnightService.respondToAsk(this.lobbyId, this.playerId as 1 | 2);
@@ -678,6 +693,8 @@ export class GameScene {
     } catch (err) {
       console.error('[GameScene] respondToAsk error:', err);
       this.hud.showNotification('Error', 'Failed to respond', 5000);
+    } finally {
+      this.respondInProgress = false;
     }
   }
 

@@ -29,6 +29,7 @@ import {
   skipDrawDeckEmpty as midnightSkipDrawDeckEmpty,
   getStoredPlayerSecret,
   getStoredShuffleSeed,
+  storePlayerSecret,
 } from "./midnight-actions.ts";
 
 // Database connection pool - set by apiRouter from the runtime-provided connection
@@ -666,10 +667,11 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
   // Apply Mask action (setup phase)
   server.post("/api/midnight/apply_mask", async (request, reply) => {
-    const { lobby_id, player_id, player_secret } = request.body as {
+    const { lobby_id, player_id, player_secret, shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;
       player_secret?: string;
+      shuffle_seed?: string;
     };
 
     if (!lobby_id || !player_id) {
@@ -681,7 +683,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
-    const result = await midnightApplyMask(lobby_id, playerId, player_secret);
+    const result = await midnightApplyMask(lobby_id, playerId, player_secret, shuffle_seed);
     return result;
   });
 
@@ -827,7 +829,35 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(404).send({ error: 'No secret stored for this player/game' });
     }
 
+    console.log(`[API] player_secret: returning secret for lobby=${lobby_id} player=${playerId} secret=0x${secret.slice(0, 16)}...`);
     return { secret, shuffleSeed };
+  });
+
+  // Register (or refresh) a player's secret outside of setup replay.
+  // The frontend calls this on game reconnect / page load so the backend always has
+  // the latest secrets for batcher-side proof generation, even after a node restart.
+  server.post("/api/midnight/register_secret", async (request, reply) => {
+    const { lobby_id, player_id, player_secret, shuffle_seed } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      player_secret: string;   // hex-encoded bigint, no 0x prefix
+      shuffle_seed?: string;   // hex-encoded 32 bytes, no 0x prefix
+    };
+
+    if (!lobby_id || !player_id || !player_secret) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    // Store directly in the persistent map (no circuit execution).
+    storePlayerSecret(lobby_id, playerId, player_secret, shuffle_seed);
+
+    console.log(`[API] register_secret: stored secret for lobby=${lobby_id} player=${playerId}`);
+    return { success: true };
   });
 
   // Notify setup complete (called by batcher after on-chain transaction succeeds).
@@ -859,23 +889,32 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
     const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
 
+    // Eagerly store all secrets into persistentSecrets BEFORE the async replay so that
+    // fetchSecretFromBackend (called by the batcher for game-phase circuits) can find them
+    // immediately, even if the circuit replay queue hasn't started yet.
+    if (player_secret) storePlayerSecret(lobby_id, playerId, player_secret, shuffle_seed);
+    if (opponent_secret) storePlayerSecret(lobby_id, opponentId, opponent_secret, opponent_shuffle_seed);
+
     // Update local state tracking
     if (action === "mask_applied") {
       markMaskApplied(lobby_id, playerId);
       // Replay applyMask on local actionContract so getPlayerHandWithSecret works later.
       // IMPORTANT: the contract requires P1 to act before P2. Always replay P1 first.
+      // Pass shuffle seeds so the local simulation's shuffle matches the on-chain transaction.
       const p1Secret = playerId === 1 ? player_secret : opponent_secret;
+      const p1Seed = playerId === 1 ? shuffle_seed : opponent_shuffle_seed;
       const p2Secret = playerId === 2 ? player_secret : opponent_secret;
+      const p2Seed = playerId === 2 ? shuffle_seed : opponent_shuffle_seed;
       const replayMasks = async () => {
         if (p1Secret) {
           console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player 1`);
-          await midnightApplyMask(lobby_id, 1, p1Secret).catch((err: Error) => {
+          await midnightApplyMask(lobby_id, 1, p1Secret, p1Seed).catch((err: Error) => {
             console.warn(`[API] Local applyMask P1 replay failed (non-critical):`, err?.message);
           });
         }
         if (p2Secret) {
           console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player 2`);
-          await midnightApplyMask(lobby_id, 2, p2Secret).catch((err: Error) => {
+          await midnightApplyMask(lobby_id, 2, p2Secret, p2Seed).catch((err: Error) => {
             console.warn(`[API] Local applyMask P2 replay failed (non-critical):`, err?.message);
           });
         }

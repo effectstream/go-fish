@@ -20,8 +20,13 @@ export const keys = {
  * This allows the batcher to use client-provided secrets instead of
  * the default hardcoded ones. Secrets are set before circuit execution
  * and cleared after.
+ *
+ * Reference-counted: clearPlayerSecrets only removes the entry when the
+ * refcount reaches zero, preventing concurrent queryPlayerHand calls from
+ * wiping secrets that submitBatch has already set for a circuit execution.
  */
 const dynamicSecrets = new Map<string, { secret: bigint; shuffleSeed: Uint8Array }>();
+const secretRefCount = new Map<string, number>();
 
 /**
  * Last shuffle seed provided to the shuffle_seed witness.
@@ -60,8 +65,10 @@ function deterministicWeights(seed: Uint8Array, count: number): number[] {
 }
 
 /**
- * Set player secrets for a specific game
- * Called by the batcher before executing a circuit call
+ * Set player secrets for a specific game.
+ * Increments a reference count so concurrent callers (submitBatch + queryPlayerHand)
+ * can each hold the secrets without one clearing what the other set.
+ * Called by the batcher before executing a circuit call.
  */
 export function setPlayerSecrets(
   gameIdHex: string,
@@ -70,17 +77,28 @@ export function setPlayerSecrets(
   shuffleSeed: Uint8Array
 ): void {
   const key = `${gameIdHex}-${playerId}`;
+  const prevCount = secretRefCount.get(key) ?? 0;
   dynamicSecrets.set(key, { secret, shuffleSeed });
-  console.log(`[Witnesses] Set dynamic secrets for ${key}`);
+  secretRefCount.set(key, prevCount + 1);
+  console.log(`[Witnesses] setPlayerSecrets: player=${playerId} refCount=${prevCount}->${prevCount + 1} secret=${secret}`);
 }
 
 /**
- * Clear player secrets after circuit execution
+ * Release player secrets after circuit execution.
+ * Decrements the reference count; only removes the entry when it reaches zero,
+ * so a concurrent setPlayerSecrets from submitBatch is not wiped by queryPlayerHand's cleanup.
  */
 export function clearPlayerSecrets(gameIdHex: string, playerId: 1 | 2): void {
   const key = `${gameIdHex}-${playerId}`;
-  dynamicSecrets.delete(key);
-  console.log(`[Witnesses] Cleared dynamic secrets for ${key}`);
+  const count = secretRefCount.get(key) ?? 0;
+  if (count <= 1) {
+    console.log(`[Witnesses] clearPlayerSecrets: player=${playerId} refCount=${count}->0 (deleting)`);
+    dynamicSecrets.delete(key);
+    secretRefCount.delete(key);
+  } else {
+    console.log(`[Witnesses] clearPlayerSecrets: player=${playerId} refCount=${count}->${count - 1} (keeping)`);
+    secretRefCount.set(key, count - 1);
+  }
 }
 
 /**
@@ -92,9 +110,13 @@ const getSecretKey = (gameIdHex: string | null, index: number) => {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
     if (dynamic) {
-      console.log(`[Witnesses] Using dynamic secret for ${key}`);
+      const refCount = secretRefCount.get(key) ?? 0;
+      console.log(`[Witnesses] player_secret_key: HIT player=${index} refCount=${refCount} secret=${dynamic.secret}`);
       return dynamic.secret;
     }
+    // Log all currently-set keys to help diagnose key mismatch
+    const allKeys = [...dynamicSecrets.keys()].join(", ") || "(empty)";
+    console.warn(`[Witnesses] player_secret_key: MISS for key="${key}" — current keys: ${allKeys}`);
   }
 
   // Fall back to static keys — this means the batcher did NOT receive a dynamic secret
@@ -119,7 +141,6 @@ const getShuffleSeed = (gameIdHex: string | null, index: number) => {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
     if (dynamic) {
-      console.log(`[Witnesses] Using dynamic shuffle seed for ${key}`);
       return dynamic.shuffleSeed;
     }
   }
@@ -330,18 +351,13 @@ export const witnesses = {
       throw new Error("Cannot invert zero");
     }
     if (x >= JUBJUB_SCALAR_FIELD_ORDER) {
-      console.error(`[Witnesses] getFieldInverse: scalar ${x} >= field order ${JUBJUB_SCALAR_FIELD_ORDER} — will produce invalid result`);
+      console.error(`[Witnesses] getFieldInverse: scalar ${x} >= field order — invalid`);
       throw new Error(`Scalar ${x} is >= Jubjub scalar field order`);
     }
     const inverse = modInverse_old(x, JUBJUB_SCALAR_FIELD_ORDER);
     const check = (x * inverse) % JUBJUB_SCALAR_FIELD_ORDER === 1n;
-    console.log(`[Witnesses] getFieldInverse: x=${x}`);
-    console.log(`[Witnesses] getFieldInverse: inv=${inverse}`);
-    console.log(`[Witnesses] getFieldInverse: x_hex=0x${x.toString(16).padStart(64, "0")}`);
-    console.log(`[Witnesses] getFieldInverse: inv_hex=0x${inverse.toString(16).padStart(64, "0")}`);
-    console.log(`[Witnesses] getFieldInverse: inverse_valid=${check}`);
     if (!check) {
-      console.error(`[Witnesses] getFieldInverse: INVERSE VERIFICATION FAILED for x=${x}`);
+      console.error(`[Witnesses] getFieldInverse: INVERSE VERIFICATION FAILED for x=0x${x.toString(16).padStart(64, "0")}`);
     }
     return [privateState, inverse];
   },
@@ -352,9 +368,7 @@ export const witnesses = {
   ): [PrivateState, Uint8Array] => {
     // Convert gameId to hex for dynamic lookup
     const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
-    console.log(`[Witnesses] shuffle_seed called: player=${playerIndex}, gameIdHex=${gameIdHex}`);
     const seed = getShuffleSeed(gameIdHex, Number(playerIndex));
-    console.log(`[Witnesses] shuffle_seed: player=${playerIndex}, seed_hex=${Array.from(seed).map(b => b.toString(16).padStart(2,"0")).join("")}`);
     // Capture the seed so get_sorted_deck_witness can generate deterministic weights.
     // The contract always calls shuffle_seed immediately before get_sorted_deck_witness
     // within the same shuffle_deck execution.
@@ -367,17 +381,15 @@ export const witnesses = {
     playerIndex: bigint,
   ): [PrivateState, bigint] => {
     const gameIdHex = "0x" + Array.from(gameId).map(b => b.toString(16).padStart(2, "0")).join("");
-    console.log(`[Witnesses] player_secret_key called: player=${playerIndex}, gameIdHex=${gameIdHex}`);
     const secret = getSecretKey(gameIdHex, Number(playerIndex));
     if (secret === 0n) {
-      console.error(`[Witnesses] player_secret_key: ZERO secret for player ${playerIndex} in game ${gameIdHex} — this will produce the identity point!`);
+      console.error(`[Witnesses] player_secret_key: ZERO secret for player ${playerIndex} in game ${gameIdHex} — identity point!`);
       throw new Error(`Zero secret key for player ${playerIndex} — invalid`);
     }
     if (secret >= JUBJUB_SCALAR_FIELD_ORDER) {
-      console.error(`[Witnesses] player_secret_key: secret ${secret} >= field order for player ${playerIndex}`);
+      console.error(`[Witnesses] player_secret_key: secret >= field order for player ${playerIndex}`);
       throw new Error(`Secret ${secret} >= Jubjub scalar field order for player ${playerIndex}`);
     }
-    console.log(`[Witnesses] player_secret_key: player=${playerIndex}, secret_hex=0x${secret.toString(16).padStart(64, "0")}`);
     return [privateState, secret];
   },
 };

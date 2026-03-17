@@ -9,6 +9,7 @@ import { main, suspend } from "effection";
 import { createNewBatcher, MidnightAdapter } from "@paimaexample/batcher";
 import { config, storage, BATCHER_DATA_DIR } from "./config.ts";
 import { effectstreaml2Adapter } from "./adapter-effectstreaml2.ts";
+import Fastify from "npm:fastify@^5.4.0";
 
 // Clear stale batcher data on startup to prevent processing old transactions
 // This is important because old transactions may reference games that no longer exist
@@ -40,6 +41,7 @@ batcher
 // Skip when using TypeScript contract (no Midnight infrastructure needed)
 // Use dynamic import to avoid eagerly connecting to Midnight infrastructure
 const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+let goFishMidnightAdapter: import("./adapter-midnight.ts").GoFishMidnightAdapter | null = null;
 if (!useTypescriptContract) {
   const midnightAdapters = await import("./adapter-midnight.ts");
   for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
@@ -50,9 +52,70 @@ if (!useTypescriptContract) {
       });
     }
   }
+  goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
 } else {
   console.log("📝 Skipping Midnight adapters (USE_TYPESCRIPT_CONTRACT=true)");
 }
+
+// Secondary HTTP server exposing hand-query endpoint (port 9997).
+// The primary batcher HTTP server (port config.port) is managed internally by
+// @paimaexample/batcher and does not allow custom routes, so we run a separate
+// Fastify instance for this read-only query endpoint.
+const QUERY_PORT = Number(Deno.env.get("BATCHER_QUERY_PORT") || "9997");
+const queryServer = Fastify({ logger: false });
+
+queryServer.get("/health", async (_req, reply) => {
+  reply.send({ ok: true });
+});
+
+/**
+ * POST /query-hand
+ * Body: { lobbyId, playerId, playerSecretHex, shuffleSeedHex, opponentSecretHex?, opponentShuffleSeedHex? }
+ * Response: { hand: Array<{rank: number, suit: number}> }
+ *
+ * Queries the player's current hand from the on-chain indexer state using the
+ * Midnight SDK (doesPlayerHaveSpecificCard circuit, local simulation only — no tx submitted).
+ */
+queryServer.post("/query-hand", async (req, reply) => {
+  const body = req.body as {
+    lobbyId: string;
+    playerId: 1 | 2;
+    playerSecretHex: string;
+    shuffleSeedHex: string;
+    opponentSecretHex?: string;
+    opponentShuffleSeedHex?: string;
+  };
+
+  if (!body || !body.lobbyId || !body.playerId || !body.playerSecretHex || !body.shuffleSeedHex) {
+    return reply.status(400).send({ error: "Missing required fields: lobbyId, playerId, playerSecretHex, shuffleSeedHex" });
+  }
+
+  if (!goFishMidnightAdapter) {
+    return reply.status(503).send({ error: "Midnight adapter not available (USE_TYPESCRIPT_CONTRACT=true or not initialized)" });
+  }
+
+  try {
+    const hand = await goFishMidnightAdapter.queryPlayerHand(
+      body.lobbyId,
+      body.playerId,
+      body.playerSecretHex,
+      body.shuffleSeedHex,
+      body.opponentSecretHex,
+      body.opponentShuffleSeedHex,
+    );
+    return reply.send({ hand });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[query-hand] Error:", msg);
+    return reply.status(500).send({ error: msg });
+  }
+});
+
+queryServer.listen({ port: QUERY_PORT, host: "0.0.0.0" }).then(() => {
+  console.log(`🔍 Query server listening on port ${QUERY_PORT} (POST /query-hand)`);
+}).catch(err => {
+  console.error("❌ Failed to start query server:", err);
+});
 
 // Startup banner via state transition
 batcher

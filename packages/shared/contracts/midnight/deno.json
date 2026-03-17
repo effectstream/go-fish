@@ -22,9 +22,9 @@
         "test": "deno run -A example.test.ts"
     },
     "imports": {
-        "@paimaexample/npm-midnight-indexer": "npm:@paimaexample/npm-midnight-indexer@0.7.2",
-        "@paimaexample/npm-midnight-node": "npm:@paimaexample/npm-midnight-node@0.7.2",
-        "@paimaexample/npm-midnight-proof-server": "npm:@paimaexample/npm-midnight-proof-server@0.7.2",
+        "@paimaexample/npm-midnight-indexer": "npm:@paimaexample/npm-midnight-indexer@0.8.4",
+        "@paimaexample/npm-midnight-node": "npm:@paimaexample/npm-midnight-node@0.8.4",
+        "@paimaexample/npm-midnight-proof-server": "npm:@paimaexample/npm-midnight-proof-server@0.8.4",
         "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v7@7.0.0",
         "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
         "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0",
