@@ -94,5 +94,37 @@
     "isGameOver": false,
     "lastAskedRank": 6,
     "lastAskingPlayer": 1
+  },
+  "lobby_22_1773757915223": {
+    "phase": "wait_response",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 4,
+    "lastAskingPlayer": 1
+  },
+  "lobby_10_1773856012585": {
+    "phase": "turn_start",
+    "currentTurn": 2,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 5,
+    "lastAskingPlayer": 1
   }
 }

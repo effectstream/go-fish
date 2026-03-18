@@ -9,6 +9,7 @@ import { LobbyListScreen } from './screens/LobbyListScreen';
 import { LobbyScreen } from './screens/LobbyScreen';
 import { GameScreen } from './screens/GameScreen';
 import { ResultsScreen } from './screens/ResultsScreen';
+import { LeaderboardPanel } from './screens/LeaderboardPanel';
 import { GoFishGameService } from './services/GoFishGameService';
 
 /** When true, the old DOM GameScreen is used instead of the Three.js scene. */
@@ -26,6 +27,7 @@ export class UIManager {
   private lobbyScreen: LobbyScreen;
   private gameScreen: GameScreen | null = null;
   private resultsScreen: ResultsScreen;
+  private leaderboardPanel: LeaderboardPanel;
 
   constructor(gameManager: GameManager) {
     this._gameManager = gameManager;
@@ -44,9 +46,38 @@ export class UIManager {
     this.lobbyListScreen = new LobbyListScreen(this.container);
     this.lobbyScreen = new LobbyScreen(this.container);
     this.resultsScreen = new ResultsScreen(this.container);
+    this.leaderboardPanel = new LeaderboardPanel();
 
     this.setupEventListeners();
+    this.setupLeaderboardButton();
     this.showScreen('wallet');
+  }
+
+  private setupLeaderboardButton(): void {
+    const btn = document.createElement('button');
+    btn.id = 'leaderboard-toggle-btn';
+    btn.textContent = '🏆';
+    btn.title = 'Global Leaderboard';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 8000;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 2px solid #ffd700;
+      background: rgba(26, 26, 46, 0.9);
+      color: #ffd700;
+      font-size: 1.4em;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      transition: transform 0.15s;
+    `;
+    btn.addEventListener('mouseenter', () => { btn.style.transform = 'scale(1.1)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.transform = 'scale(1.0)'; });
+    btn.addEventListener('click', () => this.leaderboardPanel.toggle());
+    document.body.appendChild(btn);
   }
 
   private setupEventListeners() {

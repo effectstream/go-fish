@@ -8,11 +8,13 @@ import type {
   MidnightProvider,
   WalletProvider,
 } from "@midnight-ntwrk/midnight-js-types";
-import {
-  submitInsertVerifierKeyTx,
-} from "@midnight-ntwrk/midnight-js-contracts";
 import { CompiledContract, ContractExecutable } from "@midnight-ntwrk/compact-js";
 import {
+  ImpureCircuitId,
+  VerifierKey,
+} from "@midnight-ntwrk/compact-js/effect/Contract";
+import {
+  asContractAddress,
   makeContractExecutableRuntime,
   exitResultOrError,
 } from "@midnight-ntwrk/midnight-js-types";
@@ -60,6 +62,13 @@ import type {
   TransactionId,
   ZswapSecretKeys,
 } from "@midnight-ntwrk/ledger-v7";
+// compact-js still returns maintenance updates backed by the older ledger wasm
+// runtime, so keep a narrow compatibility bridge here when building verifier-key
+// maintenance transactions.
+import {
+  Intent as LegacyIntent,
+  Transaction as LegacyTransaction,
+} from "npm:@midnight-ntwrk/ledger-v7@7.0.0";
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 
 // ============================================================================
@@ -140,7 +149,7 @@ function createTtl(): Date {
 function checkEnvVariables(): void {
   if (!Deno.env.get("MIDNIGHT_STORAGE_PASSWORD")) {
     // Set a default password for local development
-    Deno.env.set("MIDNIGHT_STORAGE_PASSWORD", "devpassword12345");
+    Deno.env.set("MIDNIGHT_STORAGE_PASSWORD", "D3vP@ssw0rd!xK9m");
     log.info("MIDNIGHT_STORAGE_PASSWORD not set, using default for local dev");
   }
 }
@@ -385,17 +394,13 @@ function configureProviders(
   );
   const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
   return {
-    // For deployment, we use full private state config because we may need to verify
-    // the deployed contract state. For batcher/transaction submission use cases,
-    // a minimal config with just walletProvider is sufficient and much faster:
-    //   levelPrivateStateProvider({ walletProvider })
-    // Omitting privateStateStoreName/midnightDbName avoids historical private state sync.
     privateStateProvider: levelPrivateStateProvider({
       midnightDbName: "midnight-level-db-deploy", // Use separate DB for deployment to avoid lock conflicts
       privateStateStoreName,
       signingKeyStoreName,
-      walletProvider: walletAndMidnightProvider, // Use wallet's encryption key for private state
-    } as any), // Type assertion: runtime supports walletProvider even though types don't reflect it yet
+      privateStoragePasswordProvider: () => Promise.resolve(Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") ?? "D3vP@ssw0rd!xK9m"),
+      accountId: unshieldedKeystore.getBech32Address().asString(),
+    }),
     publicDataProvider: indexerPublicDataProvider(
       networkUrls.indexer,
       networkUrls.indexerWS,
@@ -424,6 +429,99 @@ function createCompiledContract(
   compiled = (CompiledContract as any).withWitnesses(compiled, witnesses);
   compiled = (CompiledContract as any).withCompiledFileAssets(compiled, compiledAssetsPath);
   return compiled;
+}
+
+/**
+ * Local reimplementation of submitInsertVerifierKeyTx that bridges the ledger-v7
+ * WASM instance mismatch between compact-js (pinned at 7.0.0) and midnight-js-contracts
+ * (which uses 7.0.3). By building the tx with LegacyTransaction/LegacyIntent from
+ * 7.0.0, then round-tripping through serialize/deserialize, we get a Transaction
+ * instance compatible with the wallet's 7.0.3 WASM.
+ */
+async function submitInsertVerifierKeyTxLocal(
+  providers: ReturnType<typeof configureProviders>,
+  // deno-lint-ignore no-explicit-any
+  compiledContract: any,
+  contractAddress: string,
+  circuitId: string,
+  verifierKey: unknown,
+  walletResult: WalletResult,
+) {
+  const contractState = await providers.publicDataProvider.queryContractState(
+    contractAddress as any,
+  );
+  if (!contractState) {
+    throw new Error(
+      `No contract state found on chain for contract address '${contractAddress}'`,
+    );
+  }
+
+  const signingKey = await providers.privateStateProvider.getSigningKey(
+    contractAddress,
+  );
+  if (!signingKey) {
+    throw new Error(
+      `Signing key for contract address '${contractAddress}' not found`,
+    );
+  }
+
+  const contractExec = ContractExecutable.make(compiledContract);
+  const contractRuntime = makeContractExecutableRuntime(
+    providers.zkConfigProvider,
+    {
+      coinPublicKey: providers.walletProvider.getCoinPublicKey(),
+      signingKey,
+    },
+  );
+
+  const exitResult = await contractRuntime.runPromiseExit(
+    // deno-lint-ignore no-explicit-any
+    (contractExec as any).addOrReplaceContractOperation(
+      ImpureCircuitId(circuitId as any),
+      VerifierKey(verifierKey as Uint8Array),
+      {
+        address: asContractAddress(contractAddress),
+        contractState,
+      },
+    ),
+  );
+  // deno-lint-ignore no-explicit-any
+  const maintenanceResult = exitResultOrError(exitResult as any) as any;
+
+  // Build with the legacy (7.0.0) WASM that compact-js uses, then round-trip
+  // through serialize/deserialize to get a 7.0.3-compatible Transaction.
+  const legacyUnprovenTx = LegacyTransaction.fromParts(
+    getNetworkId(),
+    undefined,
+    undefined,
+    LegacyIntent.new(createTtl()).addMaintenanceUpdate(
+      maintenanceResult.public.maintenanceUpdate,
+    ),
+  );
+  const unprovenTx = Transaction.deserialize(
+    "signature",
+    "pre-proof",
+    "pre-binding",
+    legacyUnprovenTx.serialize(),
+  );
+
+  const recipe = await walletResult.wallet.balanceUnprovenTransaction(
+    unprovenTx as any,
+    {
+      shieldedSecretKeys: walletResult.walletZswapSecretKeys as any,
+      dustSecretKey: walletResult.walletDustSecretKey as any,
+    },
+    { ttl: createTtl() },
+  );
+
+  const signedRecipe = await walletResult.wallet.signRecipe(
+    recipe,
+    (payload) => walletResult.unshieldedKeystore.signData(payload),
+  );
+
+  const finalizedTx = await walletResult.wallet.finalizeRecipe(signedRecipe);
+  const txId = await walletResult.wallet.submitTransaction(finalizedTx);
+  return await providers.publicDataProvider.watchForTxData(txId);
 }
 
 async function deployWithLimitedVerifierKeys(
@@ -563,6 +661,9 @@ async function deployWithLimitedVerifierKeys(
 
   log.info("Deploy transaction finalized on-chain.");
 
+  // Scope the private state provider to this contract address (required in 3.2.0)
+  providers.privateStateProvider.setContractAddress(contractAddress);
+
   // Save private state and signing key
   if (config.privateStateId) {
     await providers.privateStateProvider.set(
@@ -595,12 +696,13 @@ async function deployWithLimitedVerifierKeys(
       let lastError: unknown;
       for (let attempt = 1; attempt <= VK_INSERT_MAX_RETRIES; attempt++) {
         try {
-          const submitResult = await submitInsertVerifierKeyTx(
-            providers as any,
+          const submitResult = await submitInsertVerifierKeyTxLocal(
+            providers,
             compiledContract,
             contractAddress,
-            circuitId as any,
-            verifierKey as any,
+            circuitId as string,
+            verifierKey,
+            walletResult,
           );
           if (submitResult.status !== SucceedEntirely) {
             throw new Error(

@@ -12,17 +12,18 @@
  * permanently storing them.
  */
 
-import { type DefaultBatcherInput, MidnightAdapter, type MidnightBatchPayload } from "@paimaexample/batcher";
+import { type BatchBuildingOptions, type BatchBuildingResult, type DefaultBatcherInput, MidnightAdapter, type MidnightBatchPayload } from "@paimaexample/batcher";
 import { readMidnightContract } from "@paimaexample/midnight-contracts/read-contract";
 import * as goFishContractInfo from "@go-fish/midnight-contract";
 import * as goFishContract from "@go-fish/midnight-contract/contract";
 import { setPlayerSecrets, clearPlayerSecrets } from "@go-fish/midnight-contract/witnesses";
 import { CryptoManager } from "@paimaexample/crypto";
 import { storage } from "./config.ts";
-import { createUnprovenCallTxFromInitialStates, getPublicStates } from "npm:@midnight-ntwrk/midnight-js-contracts@3.0.0";
-import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@3.0.0";
-import { parseCoinPublicKeyToHex } from "npm:@midnight-ntwrk/midnight-js-utils@3.0.0";
-import { getNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@3.0.0";
+import { createUnprovenCallTxFromInitialStates, getPublicStates } from "@midnight-ntwrk/midnight-js-contracts";
+import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
+import { parseCoinPublicKeyToHex } from "@midnight-ntwrk/midnight-js-utils";
+import { getNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import { CompiledContract } from "@midnight-ntwrk/compact-js";
 
 // Network configuration - use environment variables or defaults
 const isTestnet = Deno.env.get("EFFECTSTREAM_ENV") === "testnet";
@@ -107,6 +108,14 @@ function hexToBytes(hex: string): Uint8Array {
  */
 export class GoFishMidnightAdapter extends MidnightAdapter {
   /**
+   * Stash the raw batcher input from the most recent buildBatchData call so
+   * submitBatch can read playerSecret/shuffleSeed/opponentSecret from it.
+   * MidnightBatchBuilderLogic strips these custom fields from the payload — they
+   * only survive in the original DefaultBatcherInput.input JSON string.
+   */
+  private _pendingRawInput: CircuitCallWithSecrets | null = null;
+
+  /**
    * Fetch a stored player secret from the backend node.
    * Called when the circuit payload doesn't include the opponent's secret
    * (which happens for game-phase circuits like askForCard when the asking player's
@@ -173,49 +182,53 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
     const circuit = data?.payloads?.[0]?.circuit ?? "unknown";
     let secretInfo: { gameId: string; playerId: number } | null = null;
 
-    // Extract and set client-side secrets from the payload before circuit execution
-    if (data?.payloads?.[0]) {
-      const payload = data.payloads[0];
-      if (payload.playerSecret && payload.shuffleSeed) {
-        // Extract gameId and playerId from args
-        const args = payload.args;
-        if (Array.isArray(args) && args.length >= 2) {
-          const gameId = args[0] as string;
-          const playerId = Number(args[1]) as 1 | 2;
-          const secret = BigInt("0x" + payload.playerSecret);
-          const shuffleSeed = hexToBytes(payload.shuffleSeed);
+    // Extract and set client-side secrets before circuit execution.
+    // IMPORTANT: MidnightBatchBuilderLogic strips custom fields (playerSecret,
+    // shuffleSeed, etc.) from MidnightBatchPayload.payloads — read them from
+    // _pendingRawInput which was stashed in buildBatchData from the raw input JSON.
+    const rawInput = this._pendingRawInput;
+    this._pendingRawInput = null; // consume it
+    if (rawInput?.playerSecret && rawInput?.shuffleSeed) {
+      const args = data?.payloads?.[0]?.args;
+      if (Array.isArray(args) && args.length >= 2) {
+        const gameId = args[0] as string;
+        const playerId = Number(args[1]) as 1 | 2;
+        const secret = BigInt("0x" + rawInput.playerSecret);
+        const shuffleSeed = hexToBytes(rawInput.shuffleSeed);
 
-          setPlayerSecrets(gameId, playerId, secret, shuffleSeed);
-          secretInfo = { gameId, playerId };
-          console.log(`[GoFishMidnightAdapter] Set client secrets for ${circuit}: gameIdHex=${gameId} player=${playerId} secret=${secret}`);
+        setPlayerSecrets(gameId, playerId, secret, shuffleSeed);
+        secretInfo = { gameId, playerId };
+        console.log(`[GoFishMidnightAdapter] Set client secrets for ${circuit}: gameIdHex=${gameId} player=${playerId} secret=${secret}`);
 
-          const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+        const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
 
-          if (payload.opponentSecret && payload.opponentShuffleSeed) {
-            // Opponent secret provided directly in the payload — use it.
-            const opponentSecret = BigInt("0x" + payload.opponentSecret);
-            const opponentShuffleSeed = hexToBytes(payload.opponentShuffleSeed);
-            setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
-            console.log(`[GoFishMidnightAdapter] Set opponent secrets for ${circuit}: game ${gameId}, player ${opponentId}`);
+        if (rawInput.opponentSecret && rawInput.opponentShuffleSeed) {
+          // Opponent secret provided directly in the payload — use it.
+          const opponentSecret = BigInt("0x" + rawInput.opponentSecret);
+          const opponentShuffleSeed = hexToBytes(rawInput.opponentShuffleSeed);
+          setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
+          console.log(`[GoFishMidnightAdapter] Set opponent secrets for ${circuit}: game ${gameId}, player ${opponentId}`);
+          // Cache on rawInput for retry use
+          (rawInput as any)._cachedOpponentSecret = rawInput.opponentSecret;
+          (rawInput as any)._cachedOpponentShuffleSeed = rawInput.opponentShuffleSeed;
+        } else {
+          // Opponent secret not in payload (frontend doesn't have it — it's theirs to keep).
+          // Fall back to the backend node which stores both players' secrets after setup replay.
+          // This is needed for game-phase circuits (askForCard, respondToAsk, goFish,
+          // afterGoFish) that call player_secret_key for BOTH players unconditionally.
+          const lobbyId = this.hexToLobbyId(gameId);
+          console.log(`[GoFishMidnightAdapter] ${circuit}: no opponent secret in payload, fetching from backend for player ${opponentId} (lobby=${lobbyId})`);
+          const backendOpponent = await this.fetchSecretFromBackend(lobbyId, opponentId);
+          if (backendOpponent) {
+            const opponentSecret = BigInt("0x" + backendOpponent.secret);
+            setPlayerSecrets(gameId, opponentId, opponentSecret,
+              backendOpponent.shuffleSeed ? hexToBytes(backendOpponent.shuffleSeed) : new Uint8Array(32));
+            console.log(`[GoFishMidnightAdapter] Set backend-fetched opponent secret for ${circuit}: game ${gameId}, player ${opponentId}`);
+            // Cache on rawInput so retries re-use it without another backend round-trip
+            rawInput.opponentSecret = backendOpponent.secret;
+            if (backendOpponent.shuffleSeed) rawInput.opponentShuffleSeed = backendOpponent.shuffleSeed;
           } else {
-            // Opponent secret not in payload (frontend doesn't have it — it's theirs to keep).
-            // Fall back to the backend node which stores both players' secrets after setup replay.
-            // This is needed for game-phase circuits (askForCard, respondToAsk, goFish,
-            // afterGoFish) that call player_secret_key for BOTH players unconditionally.
-            const lobbyId = this.hexToLobbyId(gameId);
-            console.log(`[GoFishMidnightAdapter] ${circuit}: no opponent secret in payload, fetching from backend for player ${opponentId} (lobby=${lobbyId})`);
-            const backendOpponent = await this.fetchSecretFromBackend(lobbyId, opponentId);
-            if (backendOpponent) {
-              const opponentSecret = BigInt("0x" + backendOpponent.secret);
-              setPlayerSecrets(gameId, opponentId, opponentSecret,
-                backendOpponent.shuffleSeed ? hexToBytes(backendOpponent.shuffleSeed) : new Uint8Array(32));
-              console.log(`[GoFishMidnightAdapter] Set backend-fetched opponent secret for ${circuit}: game ${gameId}, player ${opponentId}`);
-              // Store on payload so retries re-use it without another backend round-trip
-              payload.opponentSecret = backendOpponent.secret;
-              if (backendOpponent.shuffleSeed) payload.opponentShuffleSeed = backendOpponent.shuffleSeed;
-            } else {
-              console.warn(`[GoFishMidnightAdapter] No opponent secret available for ${circuit} — proof may fail`);
-            }
+            console.warn(`[GoFishMidnightAdapter] No opponent secret available for ${circuit} — proof may fail`);
           }
         }
       }
@@ -282,7 +295,7 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
           // Notify the backend about successful setup circuit calls.
           // This is more reliable than relying solely on the frontend notification,
           // since the batcher is the one that actually confirmed the transaction.
-          await this.notifyBackendSetup(circuit, data);
+          await this.notifyBackendSetup(circuit, data, rawInput);
 
           return result;
         } catch (error) {
@@ -362,17 +375,17 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
                 `retrying in ${RETRY_DELAY_MS / 1000}s (indexer may be behind)...`
               );
             }
-            // Re-set secrets before retry since they were consumed by the failed attempt
-            if (secretInfo) {
-              const payload = data!.payloads[0];
-              const secret = BigInt("0x" + payload.playerSecret);
-              const shuffleSeed = hexToBytes(payload.shuffleSeed!);
+            // Re-set secrets before retry since they were consumed by the failed attempt.
+            // Read from rawInput (stashed in buildBatchData) — payload fields were stripped.
+            if (secretInfo && rawInput?.playerSecret && rawInput?.shuffleSeed) {
+              const secret = BigInt("0x" + rawInput.playerSecret);
+              const shuffleSeed = hexToBytes(rawInput.shuffleSeed);
               setPlayerSecrets(secretInfo.gameId, secretInfo.playerId as 1 | 2, secret, shuffleSeed);
               // Re-set opponent secrets too
-              if (payload.opponentSecret && payload.opponentShuffleSeed) {
+              if (rawInput.opponentSecret && rawInput.opponentShuffleSeed) {
                 const opponentId = (secretInfo.playerId === 1 ? 2 : 1) as 1 | 2;
-                const opponentSecret = BigInt("0x" + payload.opponentSecret);
-                const opponentShuffleSeed = hexToBytes(payload.opponentShuffleSeed);
+                const opponentSecret = BigInt("0x" + rawInput.opponentSecret);
+                const opponentShuffleSeed = hexToBytes(rawInput.opponentShuffleSeed);
                 setPlayerSecrets(secretInfo.gameId, opponentId, opponentSecret, opponentShuffleSeed);
               }
             }
@@ -391,14 +404,35 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
       // Always clear secrets after all attempts
       if (secretInfo) {
         this.clearSecrets(secretInfo.gameId, secretInfo.playerId);
-        // Also clear opponent secrets if they were set
-        const payload = data?.payloads?.[0];
-        if (payload?.opponentSecret) {
+        // Also clear opponent secrets if they were set (read from rawInput, not stripped payload)
+        if (rawInput?.opponentSecret) {
           const opponentId = (secretInfo.playerId === 1 ? 2 : 1) as 1 | 2;
           this.clearSecrets(secretInfo.gameId, opponentId);
         }
       }
     }
+  }
+
+  /**
+   * Override buildBatchData to always select exactly ONE input per batch,
+   * and stash the raw parsed input so submitBatch can read custom fields
+   * (playerSecret, shuffleSeed, opponentSecret, opponentShuffleSeed) that
+   * MidnightBatchBuilderLogic strips from MidnightBatchPayload.payloads.
+   */
+  override buildBatchData(
+    inputs: DefaultBatcherInput[],
+    options?: BatchBuildingOptions,
+  ): BatchBuildingResult<MidnightBatchPayload | null> | null {
+    if (inputs.length === 0) return null;
+    // Stash the raw parsed CircuitCall from the first input so submitBatch
+    // can read playerSecret/shuffleSeed even after the builder strips them.
+    try {
+      this._pendingRawInput = JSON.parse(inputs[0].input) as CircuitCallWithSecrets;
+    } catch {
+      this._pendingRawInput = null;
+    }
+    // Delegate to base implementation with only the first input
+    return super.buildBatchData([inputs[0]], options);
   }
 
   override async verifySignature(input: DefaultBatcherInput): Promise<boolean> {
@@ -475,7 +509,11 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
    * coordinate. More reliable than frontend-only notifications since the batcher
    * is the one that actually confirmed the transaction on-chain.
    */
-  private async notifyBackendSetup(circuit: string, data: MidnightBatchPayload | null): Promise<void> {
+  private async notifyBackendSetup(
+    circuit: string,
+    data: MidnightBatchPayload | null,
+    rawInput: CircuitCallWithSecrets | null,
+  ): Promise<void> {
     const actionMap: Record<string, string> = {
       "applyMask": "mask_applied",
       "dealCards": "dealt_complete",
@@ -497,11 +535,12 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
     // what was just written to the real Midnight chain.
     // Also forward opponent secrets — dealCards needs both players' secrets to reproduce
     // the same cardOwnership ledger as the real on-chain transaction.
+    // Read from rawInput — payload fields were stripped by MidnightBatchBuilderLogic.
     const body: Record<string, unknown> = { lobby_id: lobbyId, player_id: playerId, action };
-    if (payload.playerSecret) body.player_secret = payload.playerSecret;
-    if (payload.shuffleSeed) body.shuffle_seed = payload.shuffleSeed;
-    if (payload.opponentSecret) body.opponent_secret = payload.opponentSecret;
-    if (payload.opponentShuffleSeed) body.opponent_shuffle_seed = payload.opponentShuffleSeed;
+    if (rawInput?.playerSecret) body.player_secret = rawInput.playerSecret;
+    if (rawInput?.shuffleSeed) body.shuffle_seed = rawInput.shuffleSeed;
+    if (rawInput?.opponentSecret) body.opponent_secret = rawInput.opponentSecret;
+    if (rawInput?.opponentShuffleSeed) body.opponent_shuffle_seed = rawInput.opponentShuffleSeed;
 
     const backendUrl = Deno.env.get("BACKEND_URL") || "http://localhost:9996";
     try {
@@ -511,7 +550,7 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
         body: JSON.stringify(body),
       });
       if (response.ok) {
-        const secretSnippet = payload.playerSecret ? `secret=0x${payload.playerSecret.slice(0,16)}...` : 'no secret';
+        const secretSnippet = rawInput?.playerSecret ? `secret=0x${rawInput.playerSecret.slice(0,16)}...` : 'no secret';
         console.log(`[GoFishMidnightAdapter] Backend notified: ${action} for ${lobbyId} player ${playerId} (${secretSnippet})`);
       } else {
         console.warn(`[GoFishMidnightAdapter] Failed to notify backend: ${response.status}`);
@@ -577,15 +616,24 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
       throw new Error("[GoFishMidnightAdapter.queryPlayerHand] Adapter not initialized");
     }
 
-    // Access private fields from the base class at runtime (TS private is compile-time only)
-    const compiledContract = (this as any).compiledContract;
+    // Access private fields from the base class at runtime (TS private is compile-time only).
+    // The JSR adapter stores compiledContract locally inside initialize() and doesn't expose it
+    // as a field — build a fresh one from the stored contractClass/witnesses/zkConfigPath.
     const publicDataProvider = (this as any).publicDataProvider;
     const walletProvider = (this as any).walletProvider;
     const config = (this as any).config as typeof midnightAdapterConfig0;
 
-    if (!compiledContract || !publicDataProvider || !walletProvider) {
+    if (!publicDataProvider || !walletProvider) {
       throw new Error("[GoFishMidnightAdapter.queryPlayerHand] Required providers not initialized");
     }
+
+    const compiledContract = CompiledContract.make(
+      "go-fish-contract",
+      (this as any).contractClass,
+    ).pipe(
+      CompiledContract.withWitnesses((this as any).witnesses as never),
+      CompiledContract.withCompiledFileAssets(config.zkConfigPath),
+    );
 
     // Build gameId as Uint8Array (32 bytes, UTF-8 lobby string zero-padded)
     // AND as "0x"-prefixed hex (needed for setPlayerSecrets witness key format)

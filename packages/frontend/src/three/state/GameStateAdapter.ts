@@ -1,6 +1,7 @@
 import { MidnightService } from '../../services/MidnightService';
-import { queryHandFromBatcher } from '../../services/BatcherMidnightService';
+import { queryHandFromBatcher, registerMidnightAddress } from '../../services/BatcherMidnightService';
 import { PlayerKeyManager } from '../../services/PlayerKeyManager';
+import { getLaceAddress } from '../../laceWalletBridge';
 import type { Card } from '../../../../shared/data-types/src/go-fish-types';
 import { INDEX_TO_RANK, INDEX_TO_SUIT } from '../../../../shared/data-types/src/go-fish-types';
 
@@ -47,6 +48,7 @@ export class GameStateAdapter {
   private previousState: GameSceneState | null = null;
   private onChange: GameStateChangeHandler;
   private polling = false;
+  private midnightAddressRegistered = false;
 
   constructor(
     lobbyId: string,
@@ -60,6 +62,7 @@ export class GameStateAdapter {
 
   start(): void {
     if (this.pollIntervalId !== null) return;
+    this.midnightAddressRegistered = false;
     // Immediate first poll
     this.poll();
     this.pollIntervalId = window.setInterval(() => this.poll(), this.pollIntervalMs);
@@ -145,6 +148,16 @@ export class GameStateAdapter {
           } catch (fallbackErr) {
             console.warn('[GameStateAdapter] Backend hand fallback also failed:', fallbackErr);
           }
+        }
+      }
+
+      // Register Midnight shielded address once per session so leaderboard can track scores.
+      if (!this.midnightAddressRegistered && rawState.playerId) {
+        this.midnightAddressRegistered = true;
+        const midnightAddr = getLaceAddress();
+        if (midnightAddr) {
+          registerMidnightAddress(this.lobbyId, rawState.playerId as 1 | 2, midnightAddr)
+            .catch(err => console.warn('[GameStateAdapter] registerMidnightAddress failed:', err));
         }
       }
 

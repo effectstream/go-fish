@@ -305,6 +305,8 @@ export async function initializeBatcherProviders(): Promise<GoFishProviders> {
   return {
     privateStateProvider: levelPrivateStateProvider({
       privateStateStoreName: "go-fish-private-state",
+      privateStoragePasswordProvider: async () => "PAIMA_STORAGE_PASSWORD",
+      accountId: coinPublicKey,
     }),
     zkConfigProvider: new FetchZkConfigProvider(
       window.location.origin,

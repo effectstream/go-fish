@@ -75,10 +75,10 @@ const BATCHER_URL = import.meta.env.VITE_BATCHER_URL || "";
 // Proxied via /batcher-query prefix to avoid CORS (Vite dev proxy or nginx).
 const BATCHER_QUERY_URL = import.meta.env.VITE_BATCHER_QUERY_URL || "";
 const MIDNIGHT_TARGET = "go-fish"; // Target name matching batcher's adapter registration
-// Using "wait-receipt" to ensure transactions are confirmed before proceeding.
-// The frontend has a 2-minute timeout and will retry if needed.
-// This prevents the race condition where frontend proceeds before on-chain tx completes.
-const CONFIRMATION_LEVEL = "wait-receipt";
+// Using "no-wait" so the batcher queues the circuit call and returns immediately.
+// Midnight circuit proving takes 60–120s, far beyond the batcher's 60s timeout.
+// The frontend polls game state and doesn't need a synchronous on-chain receipt.
+const CONFIRMATION_LEVEL = "no-wait";
 
 // Simple in-memory wallet for signing requests
 // In production, this would use a proper EVM wallet
@@ -290,6 +290,35 @@ export async function registerSecret(lobbyId: string, playerId: 1 | 2): Promise<
     }
   } catch (err) {
     console.warn(`[BatcherMidnight] registerSecret failed:`, err);
+  }
+}
+
+/**
+ * Register the player's Midnight shielded address with the backend so scores
+ * can be attributed to them at game end.
+ */
+export async function registerMidnightAddress(
+  lobbyId: string,
+  playerId: 1 | 2,
+  midnightAddress: string,
+): Promise<void> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/midnight/register_address`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lobby_id: lobbyId,
+        player_id: playerId,
+        midnight_address: midnightAddress,
+      }),
+    });
+    if (response.ok) {
+      console.log(`[BatcherMidnight] registerMidnightAddress: registered for lobby=${lobbyId} player=${playerId}`);
+    } else {
+      console.warn(`[BatcherMidnight] registerMidnightAddress: backend returned ${response.status}`);
+    }
+  } catch (err) {
+    console.warn('[BatcherMidnight] registerMidnightAddress failed:', err);
   }
 }
 

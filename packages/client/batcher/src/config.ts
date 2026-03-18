@@ -11,12 +11,16 @@ export const config: BatcherConfig<DefaultBatcherInput> = {
   pollingIntervalMs: batchIntervalMs,
   enableHttpServer: true,
   namespace: "", // Empty for now - namespace affects signature verification
-  // "wait-receipt" waits only for on-chain confirmation, not EffectStream sync.
-  // "wait-effectstream-processed" times out because the parallelMidnight chain
-  // sync events don't fire reliably within the timeout window, causing dealCards
-  // and other circuit submissions to be reported as failed even though the tx
-  // confirmed on-chain — which breaks notify_setup and askForCard card ownership.
-  confirmationLevel: "wait-receipt",
+  // Per-adapter confirmation levels:
+  //   effectstreaml2: "wait-receipt" — EVM confirmations are fast (<5s), safe to wait.
+  //   go-fish (Midnight): "no-wait" — Midnight circuit proving takes 60–120s, far beyond
+  //     the 60s batcher timeout. The frontend polls for state anyway so it doesn't need
+  //     a synchronous receipt. Using "wait-receipt" here causes "Receipt confirmation
+  //     timeout" errors that spam the log and don't affect correctness.
+  confirmationLevel: {
+    effectstreaml2: "wait-receipt",
+    "go-fish": "no-wait",
+  },
   enableEventSystem: false,
   port,
 };

@@ -141,9 +141,9 @@ export function createWalletConfiguration(
 export function buildShieldedWallet(
   config: DefaultV1Configuration,
   seed: Uint8Array,
-): ReturnType<ReturnType<typeof ShieldedWallet>["startWithShieldedSeed"]> {
+): ReturnType<ReturnType<typeof ShieldedWallet>["startWithSeed"]> {
   const shieldedBuilder = ShieldedWallet(config);
-  return shieldedBuilder.startWithShieldedSeed(seed);
+  return shieldedBuilder.startWithSeed(seed);
 }
 
 export function buildDustWallet(
@@ -198,27 +198,22 @@ export async function buildWalletFacade(
 
   const walletConfig = createWalletConfiguration(networkUrls, networkId);
 
-  const shieldedWallet = buildShieldedWallet(walletConfig, shieldedSeed);
-  const dustWallet = buildDustWallet(walletConfig, dustSeed);
-  const unshieldedWallet = buildUnshieldedWallet(
-    networkUrls,
-    unshieldedSeed,
-    networkId,
-  );
-
   const unshieldedKeystore = createKeystore(unshieldedSeed, networkId);
   const unshieldedAddress = unshieldedKeystore.getBech32Address().asString();
 
-  const wallet = new WalletFacade(
-    shieldedWallet as any,
-    unshieldedWallet as any,
-    dustWallet,
-  );
+  const wallet = await WalletFacade.init({
+    configuration: walletConfig,
+    shielded: (config) => buildShieldedWallet(config, shieldedSeed) as any,
+    dust: (config) => buildDustWallet(config, dustSeed) as any,
+    unshielded: () => buildUnshieldedWallet(networkUrls, unshieldedSeed, networkId) as any,
+  });
 
   const zswapSecretKeys = ZswapSecretKeys.fromSeed(shieldedSeed);
   const walletZswapSecretKeys = ZswapSecretKeys.fromSeed(shieldedSeed);
   const dustSecretKey = DustSecretKey.fromSeed(dustSeed);
   const walletDustSecretKey = DustSecretKey.fromSeed(dustSeed);
+
+  const dustWallet = wallet.dust;
 
   await wallet.start(walletZswapSecretKeys, walletDustSecretKey);
 

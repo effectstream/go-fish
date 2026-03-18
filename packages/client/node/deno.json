@@ -14,7 +14,10 @@
     "dev:quiet": "sh scripts/start.dev.quiet.sh",
     "testnet": "EFFECTSTREAM_ENV=testnet NODE_ENV=development deno run -A --unstable-raw-imports scripts/start.testnet.ts",
 
-    "midnight:setup": "EFFECTSTREAM_ENV=dev deno run -A --unstable-raw-imports scripts/setup-midnight.ts"
+    "midnight:setup": "EFFECTSTREAM_ENV=dev deno run -A --unstable-raw-imports scripts/setup-midnight.ts",
+
+    "leaderboard:seed": "deno run -A --unstable-raw-imports scripts/seed-leaderboard.ts",
+    "leaderboard:seed:clear": "deno run -A --unstable-raw-imports scripts/seed-leaderboard.ts --clear"
   },
   "imports": {
     // Local packages
@@ -22,26 +25,27 @@
     "@go-fish/data-types": "../../shared/data-types/src/mod.ts",
 
     // Paima packages
-    "@paimaexample/concise": "jsr:@paimaexample/concise@0.8.4",
-    "@paimaexample/config": "jsr:@paimaexample/config@0.8.4",
-    "@paimaexample/log": "jsr:@paimaexample/log@0.8.4",
-    "@paimaexample/orchestrator": "jsr:@paimaexample/orchestrator@0.8.4",
-    "@paimaexample/runtime": "jsr:@paimaexample/runtime@0.8.4",
-    "@paimaexample/tui": "jsr:@paimaexample/tui@0.8.4",
-    "@paimaexample/utils": "jsr:@paimaexample/utils@0.8.4",
-    "@paimaexample/sm": "jsr:@paimaexample/sm@0.8.4",
-    "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.8.4",
-    "@paimaexample/db": "jsr:@paimaexample/db@0.8.4",
+    "@paimaexample/concise": "jsr:@paimaexample/concise@0.9.0",
+    "@paimaexample/config": "jsr:@paimaexample/config@0.9.0",
+    "@paimaexample/log": "jsr:@paimaexample/log@0.9.0",
+    "@paimaexample/orchestrator": "jsr:@paimaexample/orchestrator@0.9.0",
+    "@paimaexample/runtime": "jsr:@paimaexample/runtime@0.9.0",
+    "@paimaexample/tui": "jsr:@paimaexample/tui@0.9.0",
+    "@paimaexample/utils": "jsr:@paimaexample/utils@0.9.0",
+    "@paimaexample/sm": "jsr:@paimaexample/sm@0.9.0",
+    "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.9.0",
+    "@paimaexample/db": "jsr:@paimaexample/db@0.9.0",
     "fastify": "npm:fastify@^5.4.0",
     "pg": "npm:pg@^8.14.0",
     "@sinclair/typebox": "npm:@sinclair/typebox@^0.34.30",
     "effection": "npm:effection@^3.5.0",
-    "@paimaexample/explorer": "npm:@paimaexample/explorer@0.8.3",
+    "@paimaexample/explorer": "npm:@paimaexample/explorer@0.9.0",
     "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0",
     "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
-    "@midnight-ntwrk/wallet-sdk-address-format": "npm:@midnight-ntwrk/wallet-sdk-address-format@3.0.0",
-    "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v7@7.0.0",
-    "@midnight-ntwrk/ledger-v7": "npm:@midnight-ntwrk/ledger-v7@7.0.0",
+    "@midnight-ntwrk/wallet-sdk-address-format": "npm:@midnight-ntwrk/wallet-sdk-address-format@3.0.1",
+    "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v7@7.0.3",
+    "@midnight-ntwrk/ledger-v7": "npm:@midnight-ntwrk/ledger-v7@7.0.3",
+    "@midnight-ntwrk/ledger-v8": "npm:@midnight-ntwrk/ledger-v8@8.0.2",
     "@midnight-ntwrk/zswap": "npm:@midnight-ntwrk/zswap@4.0.0",
     "@types/node": "npm:@types/node@^20.0.0"
   }

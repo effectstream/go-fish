@@ -343,7 +343,8 @@ async function initializeProviders(
   return {
     privateStateProvider: levelPrivateStateProvider({
       privateStoragePasswordProvider: async () => "PAIMA_STORAGE_PASSWORD",
-    } as any),
+      accountId: shieldedCoinPublicKey,
+    }),
     zkConfigProvider: new FetchZkConfigProvider(
       zkConfigPath,
       fetch.bind(window),

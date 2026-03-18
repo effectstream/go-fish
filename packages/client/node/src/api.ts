@@ -31,6 +31,7 @@ import {
   getStoredShuffleSeed,
   storePlayerSecret,
 } from "./midnight-actions.ts";
+import { calculateAndPersistScores } from "./leaderboard.ts";
 
 // Database connection pool - set by apiRouter from the runtime-provided connection
 let dbPool: Pool | null = null;
@@ -62,6 +63,10 @@ interface GameLogState {
 }
 
 const gameLogStorage = new Map<string, GameLogState>();
+
+// Tracks lobbies where leaderboard scores have already been persisted.
+// Prevents double-counting when multiple game_state polls see phase="finished".
+const leaderboardProcessed = new Set<string>();
 
 /**
  * Get or initialize game log state
@@ -168,6 +173,17 @@ function updateGameLog(
                      midnightState.scores[1] > midnightState.scores[0] ? player2Name : 'Tie';
       state.logs.push(`Game Over! ${winner === 'Tie' ? "It's a tie!" : `${winner} wins!`}`);
       state.logs.push(`Final scores: ${player1Name}: ${midnightState.scores[0]}, ${player2Name}: ${midnightState.scores[1]}`);
+
+      // Fire-and-forget leaderboard scoring (deduplicated — only runs once per game)
+      if (dbPool && !leaderboardProcessed.has(lobbyId)) {
+        leaderboardProcessed.add(lobbyId);
+        const winnerPlayerId = midnightState.scores[0] > midnightState.scores[1] ? 1
+                             : midnightState.scores[1] > midnightState.scores[0] ? 2 : 0;
+        if (winnerPlayerId !== 0) {
+          calculateAndPersistScores(lobbyId, winnerPlayerId as 1 | 2, Date.now(), dbPool)
+            .catch(err => console.error('[leaderboard] Score persistence failed:', err));
+        }
+      }
     }
   }
 
@@ -248,6 +264,44 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   server.get("/api/health", async (request, reply) => {
     return { status: "ok", timestamp: Date.now() };
   });
+
+  /**
+   * Global leaderboard — top players by total points across all games
+   */
+  server.get<{ Querystring: { limit?: string; offset?: string } }>(
+    "/api/leaderboard",
+    async (request, reply) => {
+      if (!dbPool) {
+        return reply.code(503).send({ error: 'Database not ready' });
+      }
+      const limit = Math.min(Number(request.query.limit ?? 50), 100);
+      const offset = Number(request.query.offset ?? 0);
+      try {
+        const result = await dbPool.query<{
+          midnight_address: string;
+          total_points: string;
+          games_played: number;
+          games_won: number;
+        }>(
+          `SELECT midnight_address, total_points, games_played, games_won
+           FROM go_fish_leaderboard
+           ORDER BY total_points DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        );
+        return result.rows.map(r => ({
+          midnight_address: r.midnight_address,
+          total_points: Number(r.total_points),
+          games_played: r.games_played,
+          games_won: r.games_won,
+        }));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[API] /api/leaderboard error:', message);
+        return reply.code(500).send({ error: message });
+      }
+    }
+  );
 
   /**
    * Config endpoint - tells frontend which mode we're running in
@@ -857,6 +911,54 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     storePlayerSecret(lobby_id, playerId, player_secret, shuffle_seed);
 
     console.log(`[API] register_secret: stored secret for lobby=${lobby_id} player=${playerId}`);
+    return { success: true };
+  });
+
+  // Register a player's Midnight shielded address for leaderboard attribution.
+  // Called by the frontend on game start so scores can be persisted at game end.
+  server.post("/api/midnight/register_address", async (request, reply) => {
+    const { lobby_id, player_id, midnight_address } = request.body as {
+      lobby_id: string;
+      player_id: number;
+      midnight_address: string;
+    };
+
+    if (!lobby_id || !player_id || !midnight_address) {
+      return reply.code(400).send({ error: 'Missing required fields' });
+    }
+
+    const playerId = parsePlayerId(player_id);
+    if (!playerId) {
+      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    }
+
+    if (!isValidLobbyId(lobby_id)) {
+      return reply.code(400).send({ error: 'Invalid lobby_id format' });
+    }
+
+    // Midnight shielded addresses are hex strings, 64–200 chars
+    if (!/^[0-9a-fA-F]{64,200}$/.test(midnight_address)) {
+      return reply.code(400).send({ error: 'Invalid midnight_address format' });
+    }
+
+    const db = dbPool!;
+
+    // Determine which account_id corresponds to this player (by join order)
+    const playersResult = await db.query<{ account_id: number }>(
+      `SELECT account_id FROM lobby_players WHERE lobby_id = $1 ORDER BY joined_at ASC`,
+      [lobby_id]
+    );
+    const target = playersResult.rows[playerId - 1]; // player 1 = index 0
+    if (!target) {
+      return reply.code(404).send({ error: 'Player not found in lobby' });
+    }
+
+    await db.query(
+      `UPDATE lobby_players SET midnight_address = $1 WHERE lobby_id = $2 AND account_id = $3`,
+      [midnight_address, lobby_id, target.account_id]
+    );
+
+    console.log(`[API] register_address: lobby=${lobby_id} player=${playerId} addr=${midnight_address.slice(0, 16)}…`);
     return { success: true };
   });
 

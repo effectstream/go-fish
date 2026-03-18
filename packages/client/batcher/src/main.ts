@@ -47,8 +47,10 @@ if (!useTypescriptContract) {
   for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
     if (adapter instanceof MidnightAdapter) {
       batcher.addBlockchainAdapter(contract, adapter, {
-        criteriaType: "time",
-        timeWindowMs: 50, // Very short window to process transactions quickly
+        criteriaType: "size",
+        maxBatchSize: 1, // Each Midnight circuit call is its own batch — the JSR adapter
+                         // only executes the first invocation per submitBatch() call, so
+                         // grouping multiple inputs drops all but the first.
       });
     }
   }
