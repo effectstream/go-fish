@@ -126,5 +126,69 @@
     "isGameOver": false,
     "lastAskedRank": 5,
     "lastAskingPlayer": 1
+  },
+  "lobby_3_1773857286675": {
+    "phase": "turn_start",
+    "currentTurn": 2,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 6,
+    "lastAskingPlayer": 1
+  },
+  "lobby_13_1773862412269": {
+    "phase": "wait_draw",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 0,
+    "lastAskingPlayer": 1
+  },
+  "lobby_14_1773864280525": {
+    "phase": "turn_start",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 1,
+    "lastAskingPlayer": 1
+  },
+  "lobby_9_1773923699366": {
+    "phase": "turn_start",
+    "currentTurn": 1,
+    "scores": [
+      0,
+      0
+    ],
+    "handSizes": [
+      7,
+      7
+    ],
+    "deckCount": 38,
+    "isGameOver": false,
+    "lastAskedRank": 4,
+    "lastAskingPlayer": 1
   }
 }

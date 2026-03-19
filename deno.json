@@ -23,7 +23,9 @@
     "midnight:faucet": "deno task --filter @go-fish/midnight-contracts midnight-faucet:start",
 
     "leaderboard:seed": "deno task --filter @go-fish/node leaderboard:seed",
-    "leaderboard:seed:clear": "deno task --filter @go-fish/node leaderboard:seed:clear"
+    "leaderboard:seed:clear": "deno task --filter @go-fish/node leaderboard:seed:clear",
+
+    "test": "deno task --filter @go-fish/node test"
   },
   "imports": {
     "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.9.0",

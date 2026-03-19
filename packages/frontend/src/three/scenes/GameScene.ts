@@ -57,6 +57,14 @@ export class GameScene {
   private askInProgress = false;
   private respondInProgress = false;
 
+  /**
+   * When the asking player receives cards from the opponent, the on-chain indexer
+   * may lag — the phase flips to turn_start before queryHandFromBatcher reflects
+   * the transferred cards. This tracks the minimum hand size we expect before
+   * re-enabling card selection. Set in performAskForCard when cardCount > 0.
+   */
+  private expectedMinHandSize: number = 0;
+
   constructor(app: ThreeApp) {
     this.app = app;
     this.animationQueue = new AnimationQueue();
@@ -74,6 +82,7 @@ export class GameScene {
     this.drawInProgress = false;
     this.askInProgress = false;
     this.respondInProgress = false;
+    this.expectedMinHandSize = 0;
 
     this.hud.show();
     this.hud.hideWaitingBanner();
@@ -187,8 +196,18 @@ export class GameScene {
 
     const isMyTurn = state.currentTurn === state.playerId;
 
-    // Set card interactivity: only allow hover animation when player can select a card
-    const canSelectCard = state.phase === 'turn_start' && isMyTurn;
+    // Set card interactivity: only allow hover animation when player can select a card.
+    // Also wait until the hand has caught up with any cards transferred from the opponent
+    // (the batcher indexer may lag behind the phase transition by several seconds).
+    const handIsReady = this.expectedMinHandSize === 0 || state.myHand.length >= this.expectedMinHandSize;
+    if (handIsReady && this.expectedMinHandSize > 0) {
+      // Hand has caught up — clear the guard so future turns aren't blocked.
+      this.expectedMinHandSize = 0;
+    }
+    // Also require the hand to be non-empty: even in turn_start the indexer may not have
+    // synced cards to this player yet (dealing phase lag). Don't let the player interact
+    // before their cards appear.
+    const canSelectCard = state.phase === 'turn_start' && isMyTurn && handIsReady && state.myHand.length > 0;
     this.app.setCardsInteractive(canSelectCard);
 
     // Pulse the deck glow during draw phase when it's our turn and deck has cards
@@ -251,6 +270,7 @@ export class GameScene {
       gameLog: state.gameLog,
       isGameOver: state.isGameOver,
       respondInProgress: this.respondInProgress,
+      askInProgress: this.askInProgress,
     });
 
     // Wire action buttons
@@ -652,10 +672,26 @@ export class GameScene {
     // the state polling won't reflect wait_response until after it lands on-chain.
     this.app.setCardsInteractive(false);
     try {
+      const handBefore = this.adapter?.currentState?.myHand.length ?? 0;
       const result = await MidnightService.askForCard(this.lobbyId, this.playerId as 1 | 2, rankIndex);
       if (result.success) {
-        // Keep the waiting banner visible — it will be cleared once the opponent responds
-        // and the phase transitions away from wait_response (handled in onGameStateChange).
+        // Wait for the opponent to respond (phase leaves wait_response).
+        // This tells us whether a transfer happened (wait_transfer) or go fish (wait_draw).
+        const stateAfterResponse = await this.adapter?.pollUntilPhase(
+          'wait_response',
+          ['wait_transfer', 'wait_draw'],
+        );
+
+        if (stateAfterResponse?.phase === 'wait_transfer') {
+          // Opponent has cards — a transfer circuit is running.
+          // The batcher indexer will lag behind the phase transition to turn_start,
+          // so guard card selection until the hand grows by at least 1.
+          this.expectedMinHandSize = handBefore + 1;
+          console.log(`[GameScene] askForCard: transfer in progress, expecting hand ≥ ${this.expectedMinHandSize}`);
+        }
+
+        // Clear the waiting banner — opponent has responded
+        this.hud.hideWaitingBanner();
         this.adapter?.forcePoll();
       } else {
         this.hud.hideWaitingBanner();
@@ -682,11 +718,26 @@ export class GameScene {
       const result = await MidnightService.respondToAsk(this.lobbyId, this.playerId as 1 | 2);
       if (result.success) {
         if (result.hasCards) {
+          this.hud.showNotification('Responding...', `Transferring ${result.cardCount} card(s) — waiting for chain...`, 30000);
+        } else {
+          this.hud.showNotification('Responding...', 'Go Fish! — waiting for chain...', 30000);
+        }
+
+        // Wait for the chain to leave wait_response before declaring success.
+        // When the respondToAsk circuit executes:
+        //   hasCards=true  → phase becomes wait_transfer
+        //   hasCards=false → phase becomes wait_draw
+        await this.adapter?.pollUntilPhase(
+          'wait_response',
+          ['wait_transfer', 'wait_draw'],
+        );
+
+        if (result.hasCards) {
           this.hud.showNotification('Cards Given', `You gave ${result.cardCount} card(s)`, 5000);
         } else {
           this.hud.showNotification('Go Fish!', 'You don\'t have that card', 5000);
         }
-        this.adapter?.forcePoll();
+        await this.adapter?.forcePoll();
       } else {
         this.hud.showNotification('Error', result.errorMessage ?? 'Response failed', 5000);
       }
@@ -705,8 +756,11 @@ export class GameScene {
       this.hud.showNotification('Drawing...', 'Go Fish! Drawing from deck...', 5000);
       soundManager.playGoFish();
 
-      // Get hand before drawing
+      // Capture state before the draw so we can detect the new card afterward.
+      // Also capture the asked rank — needed to determine drewRequestedCard once
+      // the chain confirms.
       const handBefore = this.adapter?.currentState?.myHand ?? [];
+      const lastAskedRank = this.adapter?.currentState?.lastAskedRank ?? null;
 
       const result = await MidnightService.goFish(this.lobbyId, this.playerId as 1 | 2);
       if (!result.success) {
@@ -714,19 +768,31 @@ export class GameScene {
         return;
       }
 
-      // Poll to get updated hand
-      await this.adapter?.forcePoll();
-
-      const handAfter = this.adapter?.currentState?.myHand ?? [];
-
-      // Find new card
-      const newCard = handAfter.find(
-        c => !handBefore.some(b => b.rank === c.rank && b.suit === c.suit)
+      // Wait for the chain to advance to wait_draw_check, which confirms the
+      // goFish circuit has been executed and the drawn card is now on-chain.
+      // Only then is the player's updated hand available via the batcher query.
+      this.hud.showNotification('Drawing...', 'Waiting for chain confirmation...', 30000);
+      const stateAfterDraw = await this.adapter?.pollUntilPhase(
+        'wait_draw',
+        ['wait_draw_check'],
       );
 
-      // Determine if drawn card matches asked rank
-      // (In the real game, this is tracked by contract state)
-      const drewRequestedCard = false; // Simplified — the contract determines this
+      const handAfter = stateAfterDraw?.myHand ?? this.adapter?.currentState?.myHand ?? [];
+
+      // Find the newly drawn card by comparing the hand before and after.
+      const newCard = handAfter.find(
+        c => !handBefore.some(b => b.rank === c.rank && b.suit === c.suit),
+      );
+
+      // Determine whether the drawn card matches the rank that was asked for.
+      // lastAskedRank is the numeric rank index from on-chain state (0–6).
+      // Card.rank is a string like 'A','2','3',...,'7'; RANK_NAMES maps index→string.
+      let drewRequestedCard = false;
+      if (newCard && lastAskedRank !== null) {
+        const askedRankName = RANK_NAMES[lastAskedRank];
+        drewRequestedCard = newCard.rank === askedRankName;
+        console.log(`[GameScene] goFish: drew ${newCard.rank}, asked for ${askedRankName} → drewRequestedCard=${drewRequestedCard}`);
+      }
 
       await MidnightService.afterGoFish(
         this.lobbyId,
@@ -735,7 +801,8 @@ export class GameScene {
       );
 
       if (newCard) {
-        this.hud.showNotification('Drew Card', `${newCard.rank} of ${newCard.suit}`, 5000);
+        const turnMsg = drewRequestedCard ? ' — another turn!' : '';
+        this.hud.showNotification('Drew Card', `${newCard.rank} of ${newCard.suit}${turnMsg}`, 5000);
 
         // Animate the drawn card from deck to hand
         this.animationQueue.enqueue(async () => {
@@ -754,7 +821,8 @@ export class GameScene {
         });
       }
 
-      this.adapter?.forcePoll();
+      // Final poll to sync UI with the post-afterGoFish chain state.
+      await this.adapter?.forcePoll();
     } catch (err) {
       console.error('[GameScene] goFish error:', err);
       this.hud.showNotification('Error', 'Failed to draw', 5000);

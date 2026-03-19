@@ -18,6 +18,8 @@ export interface GameSceneState {
   opponentName: string;
   playerName: string;
   gameLog: string[];
+  /** Last rank asked on-chain (numeric index 0–6). null when no ask in progress. */
+  lastAskedRank: number | null;
 }
 
 export type GameStateChangeHandler = (
@@ -78,6 +80,38 @@ export class GameStateAdapter {
   /** Force an immediate poll (e.g., after an action). */
   async forcePoll(): Promise<void> {
     await this.poll();
+  }
+
+  /**
+   * Poll repeatedly until the on-chain phase matches one of the target phases
+   * (or is no longer `currentPhase`), then return the updated state.
+   *
+   * This is used by action handlers that submit batcher transactions and need
+   * to wait for the chain to confirm before proceeding to the next step.
+   *
+   * @param currentPhase  The phase we expect to be leaving (e.g. 'wait_draw')
+   * @param targetPhases  Phases we consider "done" (e.g. ['wait_draw_check'])
+   * @param timeoutMs     Give up after this many ms (default: 120 s)
+   * @param intervalMs    How often to poll (default: 2 s)
+   */
+  async pollUntilPhase(
+    currentPhase: string,
+    targetPhases: string[],
+    timeoutMs = 120_000,
+    intervalMs = 2_000,
+  ): Promise<GameSceneState | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await this.forcePoll();
+      const state = this.previousState;
+      if (state && (targetPhases.includes(state.phase) || state.phase !== currentPhase)) {
+        return state;
+      }
+      // Wait before next poll
+      await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
+    }
+    console.warn(`[GameStateAdapter] pollUntilPhase: timed out waiting to leave '${currentPhase}'`);
+    return this.previousState;
   }
 
   private async poll(): Promise<void> {
@@ -161,9 +195,11 @@ export class GameStateAdapter {
         }
       }
 
+      // players is ordered by join order: index 0 = player 1, index 1 = player 2.
+      // rawState.playerId is the positional ID (1 or 2), not the DB account ID.
       const players = rawState.players || [];
-      const myPlayer = players.find((p: any) => p.accountId === rawState.playerId);
-      const opponentPlayer = players.find((p: any) => p.accountId !== rawState.playerId);
+      const myPlayer = players[rawState.playerId - 1];
+      const opponentPlayer = players[rawState.playerId === 1 ? 1 : 0];
 
       const current: GameSceneState = {
         phase: rawState.phase ?? 'dealing',
@@ -178,6 +214,7 @@ export class GameStateAdapter {
         playerName: myPlayer?.name ?? `Player ${rawState.playerId}`,
         opponentName: opponentPlayer?.name ?? 'Opponent',
         gameLog: rawState.gameLog ?? [],
+        lastAskedRank: (rawState.lastAskedRank as number | null | undefined) ?? null,
       };
 
       const changes = this.detectChanges(current, this.previousState);

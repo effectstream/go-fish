@@ -106,31 +106,9 @@ async function notifyBackendSetupComplete(
   }
 }
 
-/**
- * Notify the backend about a game action
- * This updates the local state tracking for game coordination
- */
-async function notifyBackendGameAction(
-  lobbyId: string,
-  playerId: 1 | 2,
-  action: "ask_for_card" | "respond_to_ask" | "go_fish" | "after_go_fish",
-  data?: { rank?: number; hasCards?: boolean; cardCount?: number; drewRequestedCard?: boolean }
-): Promise<void> {
-  try {
-    const response = await fetch(`${BACKEND_API_URL}/api/midnight/notify_game_action`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lobby_id: lobbyId, player_id: playerId, action, ...data }),
-    });
-    if (!response.ok) {
-      console.warn(`[MidnightOnChain] Failed to notify backend game action: ${response.status}`);
-    } else {
-      console.log(`[MidnightOnChain] Backend notified: ${action} for player ${playerId}`);
-    }
-  } catch (error) {
-    console.warn(`[MidnightOnChain] Could not notify backend game action:`, error);
-  }
-}
+// notifyBackendGameAction removed: game phase is now sourced from the real Midnight
+// indexer via the batcher query server. The backend no longer maintains an optimistic
+// local simulation for game phase — it queries the chain on every /game_state request.
 
 // Service state
 let contractAddressRaw: string | null = null;  // 32-byte address for indexer queries
@@ -868,10 +846,6 @@ export async function onChainAskForCard(
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using batcher service for askForCard...");
     const result = await BatcherMidnightService.askForCard(lobbyId, playerId, rank);
-    if (result.success) {
-      // Notify backend to update game state
-      await notifyBackendGameAction(lobbyId, playerId, "ask_for_card", { rank });
-    }
     return { success: result.success, errorMessage: result.error };
   }
 
@@ -901,17 +875,33 @@ export async function onChainRespondToAsk(
   // In batcher mode, use the batcher service
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using batcher service for respondToAsk...");
-    const result = await BatcherMidnightService.respondToAsk(lobbyId, playerId);
-    if (result.success) {
-      // Notify backend to update game state
-      // Note: hasCards/cardCount would ideally come from the result, but batcher mode doesn't return them
-      await notifyBackendGameAction(lobbyId, playerId, "respond_to_ask", {
-        hasCards: result.hasCards,
-        cardCount: result.cardCount
-      });
+
+    // Determine hasCards BEFORE queuing the circuit by checking the on-chain hand.
+    // The batcher queues asynchronously so the circuit result is not available synchronously.
+    let hasCards = false;
+    let cardCount = 0;
+    try {
+      // Fetch the last asked rank from backend (on-chain state, no wallet needed)
+      const rankResp = await fetch(`${BACKEND_API_URL}/api/midnight/last_asked_rank?lobby_id=${encodeURIComponent(lobbyId)}`);
+      if (rankResp.ok) {
+        const { lastAskedRank } = await rankResp.json() as { lastAskedRank: number | null };
+        if (lastAskedRank !== null) {
+          // Query the responding player's current hand from the batcher's on-chain indexer
+          const hand = await BatcherMidnightService.queryHandFromBatcher(lobbyId, playerId);
+          if (hand !== null) {
+            const matchingCards = hand.filter(c => c.rank === lastAskedRank);
+            hasCards = matchingCards.length > 0;
+            cardCount = matchingCards.length;
+            console.log(`[MidnightOnChain] respondToAsk pre-check: lastAskedRank=${lastAskedRank} hand=${hand.length} cards, matching=${cardCount}`);
+          }
+        }
+      }
+    } catch (preCheckErr) {
+      console.warn("[MidnightOnChain] respondToAsk pre-check failed — defaulting hasCards=false:", preCheckErr);
     }
-    // Note: hasCards/cardCount come from on-chain state, not tx result in batcher mode
-    return { success: result.success, hasCards: false, cardCount: 0, errorMessage: result.error };
+
+    const result = await BatcherMidnightService.respondToAsk(lobbyId, playerId);
+    return { success: result.success, hasCards, cardCount, errorMessage: result.error };
   }
 
   if (!isOnChainReady()) {
@@ -943,10 +933,6 @@ export async function onChainGoFish(
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using batcher service for goFish...");
     const result = await BatcherMidnightService.goFish(lobbyId, playerId);
-    if (result.success) {
-      // Notify backend to update game state
-      await notifyBackendGameAction(lobbyId, playerId, "go_fish");
-    }
     return { success: result.success, errorMessage: result.error };
   }
 
@@ -978,10 +964,6 @@ export async function onChainAfterGoFish(
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using batcher service for afterGoFish...");
     const result = await BatcherMidnightService.afterGoFish(lobbyId, playerId, drewRequestedCard);
-    if (result.success) {
-      // Notify backend to update game state
-      await notifyBackendGameAction(lobbyId, playerId, "after_go_fish", { drewRequestedCard });
-    }
     return { success: result.success, errorMessage: result.error };
   }
 

@@ -162,6 +162,27 @@ export async function tryInitializeOnChain(): Promise<boolean> {
 // ============================================================================
 
 /**
+ * Returns true if write operations should go to MidnightOnChainService.
+ * This covers both Lace wallet mode (isOnChainModeActive) and batcher mode
+ * (isBatcherModeEnabled), since MidnightOnChainService handles both paths
+ * internally via its batcherModeActive flag.
+ *
+ * When batcher mode is enabled but the service hasn't been initialized yet,
+ * this triggers a lazy initialization so batcherModeActive is set before
+ * any action method is called.
+ */
+async function shouldUseOnChainAsync(): Promise<boolean> {
+  if (isOnChainModeActive()) return true;
+  if (!isBatcherModeEnabled()) return false;
+  // Batcher mode: ensure the on-chain service is initialized so that
+  // batcherModeActive is set to true inside MidnightOnChainService.
+  if (!onChainInitialized) {
+    await tryInitializeOnChain();
+  }
+  return true;
+}
+
+/**
  * Apply mask action (setup phase)
  * playerSecretHex: hex-encoded player secret (no 0x prefix) from PlayerKeyManager.
  * Passing it here ensures the backend uses the same secret for setup and hand queries.
@@ -172,7 +193,7 @@ export async function applyMask(
   playerSecretHex?: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
   // In production mode with on-chain ready, use on-chain service
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] applyMask via on-chain");
     return MidnightOnChainService.applyMask(lobbyId, playerId);
   }
@@ -198,7 +219,7 @@ export async function dealCards(
   playerSecretHex?: string,
   shuffleSeedHex?: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] dealCards via on-chain");
     return MidnightOnChainService.dealCards(lobbyId, playerId);
   }
@@ -220,7 +241,7 @@ export async function askForCard(
   playerId: 1 | 2,
   rank: number
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] askForCard via on-chain");
     return MidnightOnChainService.askForCard(lobbyId, playerId, rank);
   }
@@ -236,7 +257,7 @@ export async function respondToAsk(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; hasCards: boolean; cardCount: number; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] respondToAsk via on-chain");
     return MidnightOnChainService.respondToAsk(lobbyId, playerId);
   }
@@ -263,7 +284,7 @@ export async function goFish(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] goFish via on-chain");
     return MidnightOnChainService.goFish(lobbyId, playerId);
   }
@@ -280,7 +301,7 @@ export async function afterGoFish(
   playerId: 1 | 2,
   drewRequestedCard: boolean
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] afterGoFish via on-chain");
     return MidnightOnChainService.afterGoFish(lobbyId, playerId, drewRequestedCard);
   }
@@ -301,7 +322,7 @@ export async function claimTimeoutWin(
   lobbyId: string,
   claimingPlayerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] claimTimeoutWin via on-chain");
     return MidnightOnChainService.claimTimeoutWin(lobbyId, claimingPlayerId);
   }
@@ -317,7 +338,7 @@ export async function skipDrawDeckEmpty(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  if (isOnChainModeActive()) {
+  if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] skipDrawDeckEmpty via on-chain");
     return MidnightOnChainService.skipDrawDeckEmpty(lobbyId, playerId);
   }

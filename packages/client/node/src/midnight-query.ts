@@ -17,7 +17,6 @@ import {
 import {
   queryOnChainSetupStatus,
   queryOnChainGameState,
-  queryOnChainGamePhase,
   queryGameExists,
   initializeOnChainService,
   isOnChainServiceAvailable,
@@ -157,11 +156,16 @@ function lobbyIdToGameId(lobbyId: string): Uint8Array {
  * In batcher mode, queries the Midnight indexer directly.
  */
 export async function queryGamePhase(lobbyId: string): Promise<number | null> {
-  // In batcher mode, query the on-chain state via indexer
+  // In batcher mode, derive phase from the authoritative on-chain state
   if (USE_BATCHER_MODE) {
     try {
-      const phase = await queryOnChainGamePhase(lobbyId);
-      console.log(`[MidnightQuery] On-chain queryGamePhase(${lobbyId}): ${phase}`);
+      const state = await queryOnChainGameState(lobbyId);
+      const phaseMap: Record<string, number> = {
+        "dealing": 0, "turn_start": 1, "wait_response": 2, "wait_transfer": 3,
+        "wait_draw": 4, "wait_draw_check": 5, "finished": 6,
+      };
+      const phase = phaseMap[state.phase] ?? 0;
+      console.log(`[MidnightQuery] On-chain queryGamePhase(${lobbyId}): ${phase} (${state.phase})`);
       return phase;
     } catch (error) {
       console.error('[MidnightQuery] On-chain queryGamePhase failed:', error);

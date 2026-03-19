@@ -457,9 +457,16 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
 
     const lastRank = go_fish_getLastAskedRank(gid);
 
+    // EC-MUL GUARD BUG FIX: call countCardsOfRank unconditionally so the std_ecMul ops inside
+    // it are never guarded in the compiled ZKIR. If countCardsOfRank were inside the
+    // `if (drewRequestedCard)` branch, the inactive branch (drewRequestedCard == false) would
+    // feed (0, 0) into ec_mul, causing the proof server to panic with
+    // "Point should be part of the subgroup". Calling it here unconditionally forces the
+    // Compact compiler to emit unguarded public_input ops for all three ec_mul base points.
+    const currentCount = countCardsOfRank(gid, playerId, lastRank);
+
     if (disclose(drewRequestedCard)) {
-        // Verify delta
-        const currentCount = countCardsOfRank(gid, playerId, lastRank);
+        // Verify delta using the pre-computed count
         const prevCount = go_fish_getPreDrawRankCount(gid);
         assert(currentCount == (prevCount + 1 as Uint<8>), "Cheating: You did not draw the requested card");
 

@@ -78,6 +78,41 @@ queryServer.get("/health", async (_req, reply) => {
  * Queries the player's current hand from the on-chain indexer state using the
  * Midnight SDK (doesPlayerHaveSpecificCard circuit, local simulation only — no tx submitted).
  */
+/**
+ * POST /query-game-state
+ * Body: { lobbyId: string }
+ * Response: { phase, currentTurn, scores, handSizes, deckCount, isGameOver, lastAskedRank, lastAskingPlayer }
+ *         | { exists: false }
+ *
+ * Queries the real on-chain game state by running public impure circuits against the
+ * Midnight indexer. No player secrets are required — all fields are public ledger reads.
+ * This is the authoritative source of truth for game phase; do NOT use the backend's
+ * optimistic gameStateMap for phase tracking.
+ */
+queryServer.post("/query-game-state", async (req, reply) => {
+  const body = req.body as { lobbyId: string };
+
+  if (!body || !body.lobbyId) {
+    return reply.status(400).send({ error: "Missing required field: lobbyId" });
+  }
+
+  if (!goFishMidnightAdapter) {
+    return reply.status(503).send({ error: "Midnight adapter not available (USE_TYPESCRIPT_CONTRACT=true or not initialized)" });
+  }
+
+  try {
+    const state = await goFishMidnightAdapter.queryGameState(body.lobbyId);
+    if (state === null) {
+      return reply.send({ exists: false });
+    }
+    return reply.send({ exists: true, ...state });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[query-game-state] Error:", msg);
+    return reply.status(500).send({ error: msg });
+  }
+});
+
 queryServer.post("/query-hand", async (req, reply) => {
   const body = req.body as {
     lobbyId: string;

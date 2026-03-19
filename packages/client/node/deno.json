@@ -17,7 +17,10 @@
     "midnight:setup": "EFFECTSTREAM_ENV=dev deno run -A --unstable-raw-imports scripts/setup-midnight.ts",
 
     "leaderboard:seed": "deno run -A --unstable-raw-imports scripts/seed-leaderboard.ts",
-    "leaderboard:seed:clear": "deno run -A --unstable-raw-imports scripts/seed-leaderboard.ts --clear"
+    "leaderboard:seed:clear": "deno run -A --unstable-raw-imports scripts/seed-leaderboard.ts --clear",
+
+    "test": "deno test -A --no-check --unstable-raw-imports src/api.test.ts",
+    "test:watch": "deno test -A --no-check --unstable-raw-imports --watch src/api.test.ts"
   },
   "imports": {
     // Local packages

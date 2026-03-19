@@ -260,6 +260,25 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
 
     refreshNowArg();
 
+    // Force ensureFunds() in the base MidnightAdapter to re-sync the wallet
+    // before every circuit call.
+    //
+    // Root cause of MalformedFeeCalculation (Midnight node Custom error 168):
+    //   ensureFunds() short-circuits immediately when hasFunds=true AND
+    //   lastFundingBalances.dustBalance > 0 — even if the dust UTXO it knew
+    //   about was already spent by the previous circuit (e.g. respondToAsk).
+    //   balanceFinalizedTransaction() then tries to build a fee tx using that
+    //   spent UTXO, which the node rejects as MalformedFeeCalculation.
+    //
+    // Fix: reset hasFunds=false so ensureFunds() goes through the full
+    //   syncAndWaitForFunds() path, which queries the wallet's current state
+    //   and picks up the fresh UTXO produced by the previous circuit's output.
+    //   The external waitForDustFunds() we called here previously was a no-op
+    //   because ensureFunds() ignores it — it only re-checks dust when
+    //   lastFundingBalances.dustBalance === 0n, which is never the case here.
+    (this as any).hasFunds = false;
+    console.log(`[GoFishMidnightAdapter] ${circuit}: reset hasFunds=false to force wallet re-sync before submission`);
+
     // Retry logic for WASM "unreachable" errors, which typically mean the
     // Midnight indexer hasn't synced the latest state yet (e.g., the circuit
     // asserts both masks are applied but the indexer is a few blocks behind).
@@ -326,6 +345,14 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
           // which happens when the indexer hasn't yet confirmed the preceding transaction
           // (e.g. both applyMask transactions must be on-chain before dealCards /check passes).
           const isProofServer500 = errMsg.includes("code=\"500\"") || errMsg.includes("code=500");
+          // Custom error 168 = transaction TTL expired on the Midnight Substrate node.
+          // The `now` timestamp in the circuit args (blockTimeLt(now + 6)) was stale by the
+          // time the signed tx reached the node. refreshNowArg() already updates `now` before
+          // each retry, so re-submitting with a fresh timestamp will succeed.
+          const isTtlExpired = errMsg.includes("Custom error: 168") ||
+            errMsg.includes("SubmissionError") ||
+            errMsg.includes("Transaction submission error") ||
+            errMsg.includes("Transaction submission failed");
           // "failed assert" from createUnprovenCallTxFromInitialStates means the local WASM simulation
           // read stale indexer state. For setup-dependent circuits (dealCards, askForCard), the
           // preceding transaction (e.g. opponent's dealCards) may not yet be indexed.
@@ -345,7 +372,7 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
             errMsg.includes("Can only ask for cards at turn start") ||
             errMsg.includes("Cannot ask for a rank you don't have");
           const isStaleAssert = errMsg.includes("failed assert") && !isPermanentAssert;
-          const isRetryable = isUnreachable || isProofServer500 || isStaleAssert;
+          const isRetryable = isUnreachable || isProofServer500 || isStaleAssert || isTtlExpired;
 
           if (isPermanentAssert) {
             console.error(`[GoFishMidnightAdapter] ${circuit} permanent assert ("${errMsg.slice(0, 120)}") — purging batcher queue to prevent stale replay`);
@@ -360,7 +387,8 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
 
           if (isRetryable && attempt < MAX_RETRIES) {
             const elapsed = Math.round((Date.now() - startTime) / 1000);
-            const reason = isProofServer500 ? "proof server 500 (on-chain state not yet confirmed)" :
+            const reason = isTtlExpired ? "TTL expired (Custom error 168 — now timestamp stale, refreshing)" :
+              isProofServer500 ? "proof server 500 (on-chain state not yet confirmed)" :
               isStaleAssert ? "failed assert (indexer state likely stale — opponent tx not yet indexed)" :
               "WASM unreachable";
             try {
@@ -390,6 +418,9 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
               }
             }
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            // Reset hasFunds so ensureFunds() re-syncs the wallet on the next attempt,
+            // picking up fresh dust UTXOs rather than reusing the spent one.
+            (this as any).hasFunds = false;
             // Refresh `now` after the sleep so it's fresh for the next attempt
             refreshNowArg();
             continue;
@@ -573,6 +604,158 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
     let end = bytes.length;
     while (end > 0 && bytes[end - 1] === 0) end--;
     return new TextDecoder().decode(bytes.slice(0, end));
+  }
+
+  /**
+   * Query public game state from the real Midnight indexer.
+   *
+   * Runs the public impure circuits (getGamePhase, getCurrentTurn, getScores, etc.)
+   * against the indexer's current ledger state using createUnprovenCallTxFromInitialStates.
+   * No secrets or proofs are needed — these are all public reads.
+   *
+   * This is the authoritative source of truth for game phase. The backend must call this
+   * instead of maintaining an optimistic local simulation.
+   *
+   * @param lobbyId  The game lobby ID (UTF-8 string, padded to 32 bytes internally)
+   * @returns        Full game state from the real chain, or null if the game doesn't exist yet
+   */
+  async queryGameState(lobbyId: string): Promise<{
+    phase: number;
+    currentTurn: number;
+    scores: [number, number];
+    handSizes: [number, number];
+    deckCount: number;
+    isGameOver: boolean;
+    lastAskedRank: number | null;
+    lastAskingPlayer: number | null;
+  } | null> {
+    // Ensure the adapter is initialized (wallet, indexer connection)
+    if ((this as any).initializationPromise) {
+      await (this as any).initializationPromise;
+    }
+    if (!(this as any).isInitialized) {
+      throw new Error("[GoFishMidnightAdapter.queryGameState] Adapter not initialized");
+    }
+
+    const publicDataProvider = (this as any).publicDataProvider;
+    const walletProvider = (this as any).walletProvider;
+    const config = (this as any).config as typeof midnightAdapterConfig0;
+
+    if (!publicDataProvider || !walletProvider) {
+      throw new Error("[GoFishMidnightAdapter.queryGameState] Required providers not initialized");
+    }
+
+    // Use dummy witnesses — no secrets needed for public circuit reads.
+    // The only witnesses that could be invoked are player_secret_key and shuffle_seed
+    // (for circuits that branch on private state), but all circuits called here are
+    // pure public reads that never invoke those witnesses.
+    const dummyWitnesses = {
+      getFieldInverse: () => { throw new Error("getFieldInverse should not be called in queryGameState"); },
+      player_secret_key: () => { throw new Error("player_secret_key should not be called in queryGameState"); },
+      shuffle_seed: () => { throw new Error("shuffle_seed should not be called in queryGameState"); },
+      get_sorted_deck_witness: () => { throw new Error("get_sorted_deck_witness should not be called in queryGameState"); },
+    };
+
+    const compiledContract = CompiledContract.make(
+      "go-fish-contract",
+      (this as any).contractClass,
+    ).pipe(
+      CompiledContract.withWitnesses(dummyWitnesses as never),
+      CompiledContract.withCompiledFileAssets(config.zkConfigPath),
+    );
+
+    // Build gameId as Uint8Array (32 bytes, UTF-8 lobby string zero-padded)
+    const encoder = new TextEncoder();
+    const lobbyBytes = encoder.encode(lobbyId);
+    const gameIdBytes = new Uint8Array(32);
+    gameIdBytes.set(lobbyBytes.slice(0, 32));
+
+    const zkConfigProvider = new NodeZkConfigProvider(config.zkConfigPath);
+
+    // Fetch contract public state once, then reuse for all circuit calls.
+    const { contractState, zswapChainState } = await (getPublicStates as any)(
+      publicDataProvider,
+      contractAddress0,
+    );
+
+    const coinPublicKey = parseCoinPublicKeyToHex(walletProvider.getCoinPublicKey(), getNetworkId());
+    const walletEncKey = walletProvider.getEncryptionPublicKey();
+
+    /**
+     * Run a single public impure circuit against the cached indexer state.
+     * Returns the raw circuit result, or null on error.
+     */
+    const runCircuit = async (circuitId: string, extraArgs: unknown[] = []): Promise<unknown> => {
+      try {
+        const callTxData = await (createUnprovenCallTxFromInitialStates as any)(
+          zkConfigProvider,
+          {
+            compiledContract,
+            circuitId,
+            contractAddress: contractAddress0,
+            coinPublicKey,
+            initialContractState: contractState,
+            initialZswapChainState: zswapChainState,
+            args: [gameIdBytes, ...extraArgs],
+          },
+          walletEncKey,
+        );
+        return callTxData?.private?.result ?? null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // "Game does not exist" / null cell are expected before the game is set up
+        if (msg.includes("Game does not exist") || msg.includes("expected a cell, received null")) {
+          return null;
+        }
+        console.warn(`[GoFishMidnightAdapter.queryGameState] ${circuitId} error: ${msg}`);
+        return null;
+      }
+    };
+
+    // Run all public query circuits in parallel against the same indexer snapshot
+    const [
+      phase,
+      currentTurn,
+      scores,
+      handSizes,
+      deckSize,
+      topCardIndex,
+      isGameOver,
+      lastAskedRankRaw,
+      lastAskingPlayerRaw,
+    ] = await Promise.all([
+      runCircuit("getGamePhase"),
+      runCircuit("getCurrentTurn"),
+      runCircuit("getScores"),
+      runCircuit("getHandSizes"),
+      runCircuit("get_deck_size"),
+      runCircuit("get_top_card_index"),
+      runCircuit("isGameOver"),
+      runCircuit("getLastAskedRank"),
+      runCircuit("getLastAskingPlayer"),
+    ]);
+
+    // If phase is null the game doesn't exist on-chain yet
+    if (phase === null) return null;
+
+    const [score1, score2] = (scores as [bigint, bigint] | null) ?? [0n, 0n];
+    const [hand1, hand2] = (handSizes as [bigint, bigint] | null) ?? [7n, 7n];
+    const deckRemaining = Number(deckSize as bigint ?? 38n) - Number(topCardIndex as bigint ?? 0n);
+
+    // lastAskedRank = 255 means "none pending"
+    const lastAskedRankNum = Number(lastAskedRankRaw as bigint ?? 255n);
+    const lastAskingPlayerNum = Number(lastAskingPlayerRaw as bigint ?? 0n);
+
+    return {
+      phase: Number(phase as number),
+      currentTurn: Number(currentTurn as bigint ?? 1n),
+      scores: [Number(score1), Number(score2)],
+      handSizes: [Number(hand1), Number(hand2)],
+      deckCount: Math.max(0, deckRemaining),
+      isGameOver: Boolean(isGameOver),
+      lastAskedRank: lastAskedRankNum < 255 ? lastAskedRankNum : null,
+      lastAskingPlayer: lastAskingPlayerNum > 0 ? lastAskingPlayerNum : null,
+    };
   }
 
   /**

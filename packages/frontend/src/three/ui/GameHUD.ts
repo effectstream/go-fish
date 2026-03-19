@@ -14,6 +14,7 @@ export interface HUDState {
   gameLog: string[];
   isGameOver: boolean;
   respondInProgress?: boolean;
+  askInProgress?: boolean;
 }
 
 /**
@@ -187,6 +188,23 @@ export class GameHUD {
 
     if (state.phase === 'dealing') {
       this.turnBar.innerHTML = '<span style="color: #88ccff;">Setting Up Game...</span>';
+      return;
+    }
+
+    // Indexer lag: phase may flip to turn_start before cards arrive in the player's hand.
+    // Keep showing "Setting Up" until the local hand is non-empty so the player doesn't
+    // see "Click a card to ask" with zero cards visible.
+    if (state.phase === 'turn_start' && state.myHandSize === 0) {
+      this.turnBar.innerHTML = '<span style="color: #88ccff;">Setting Up Game...</span>';
+      return;
+    }
+
+    // While our ask is in flight (batcher queued, waiting for on-chain confirmation),
+    // keep showing "Waiting for response" even if the chain state still reports turn_start.
+    // This prevents the brief flicker back to "Click a card to ask" between submission
+    // and the phase advancing to wait_response on-chain.
+    if (state.askInProgress && state.isMyTurn) {
+      this.turnBar.innerHTML = '<span style="color: #ffaa00;">Your Turn</span><span style="opacity: 0.6; margin-left: 12px;">Waiting for opponent\'s response...</span>';
       return;
     }
 

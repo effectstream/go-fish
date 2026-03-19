@@ -13,7 +13,6 @@ import {
 import {
   markMaskApplied,
   markDealtComplete,
-  updateGameState,
   isValidLobbyId,
 } from "./midnight-onchain.ts";
 import {
@@ -608,6 +607,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       handSizes: midnightState.handSizes,
       deckCount: midnightState.deckCount,
       isGameOver: midnightState.isGameOver,
+      lastAskedRank: midnightState.lastAskedRank ?? null,
+      lastAskingPlayer: midnightState.lastAskingPlayer ?? null,
 
       // Player-specific private state (TODO: query from Midnight)
       // Frontend will decrypt using player's secret key
@@ -622,6 +623,17 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   /**
    * Midnight Actions API - Backend proxy for Midnight contract calls
    */
+
+  // Get the last asked rank for a lobby (public game state — no wallet required).
+  // Used by the frontend in batcher mode to determine hasCards for respondToAsk.
+  server.get("/api/midnight/last_asked_rank", async (request, reply) => {
+    const { lobby_id } = request.query as { lobby_id: string };
+    if (!lobby_id || !isValidLobbyId(lobby_id)) {
+      return reply.code(400).send({ error: 'Missing or invalid lobby_id' });
+    }
+    const midnightState = await getMidnightGameState(lobby_id);
+    return { lastAskedRank: midnightState.lastAskedRank ?? null };
+  });
 
   // Get player's decrypted hand
   server.get("/api/midnight/player_hand", async (request, reply) => {
@@ -1053,94 +1065,233 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     return { success: true };
   });
 
-  // Notify game action complete (called by frontend after batcher transaction succeeds)
-  server.post("/api/midnight/notify_game_action", async (request, reply) => {
-    const { lobby_id, player_id, action, rank, hasCards, cardCount, drewRequestedCard } = request.body as {
-      lobby_id: string;
-      player_id: number;
-      action: "ask_for_card" | "respond_to_ask" | "go_fish" | "after_go_fish";
-      rank?: number;
-      hasCards?: boolean;
-      cardCount?: number;
-      drewRequestedCard?: boolean;
+  // ============================================================================
+  // PRC-6: Midnight dApp Integration API
+  // https://github.com/effectstream/midnight-game-api-spec
+  //
+  // Three required endpoints for the Midnight Platform aggregator:
+  //   GET /metrics              — app metadata, achievement definitions, channel list
+  //   GET /metrics/:channel     — ranked entries for a specific metric channel
+  //   GET /metrics/users/:address — per-user identity + optional channel stats
+  //
+  // Go Fish exposes a single channel: "leaderboard" (total_points, DESC).
+  // Identity delegation (Session → Main Wallet) is not yet implemented;
+  // midnight_address is treated as both session and main wallet.
+  // ============================================================================
+
+  const PRC6_APP_NAME = "Go Fish";
+  const PRC6_APP_DESCRIPTION =
+    "Privacy-preserving Go Fish card game on the Midnight blockchain. " +
+    "Players hold and trade cards in a ZK-proven mental poker deck.";
+
+  /** The single channel Go Fish exposes to the Platform. */
+  const PRC6_CHANNELS = [
+    {
+      id: "leaderboard",
+      name: "Leaderboard",
+      description: "Total points earned across all games. Win = 100 pts, loss = 10 pts.",
+      scoreUnit: "Points",
+      sortOrder: "DESC",
+      type: "cumulative",
+    },
+  ] as const;
+
+  /** No achievements are defined yet — array is empty but shape is spec-compliant. */
+  const PRC6_ACHIEVEMENTS: unknown[] = [];
+
+  /**
+   * GET /metrics
+   * Returns app display metadata, achievement definitions, and the channel list.
+   * Used by the Midnight Platform to render the app profile.
+   */
+  server.get("/metrics", async (_request, _reply) => {
+    return {
+      name: PRC6_APP_NAME,
+      description: PRC6_APP_DESCRIPTION,
+      achievements: PRC6_ACHIEVEMENTS,
+      channels: PRC6_CHANNELS,
+    };
+  });
+
+  /**
+   * GET /metrics/:channel
+   * Returns ranked entries for the specified channel with optional pagination and
+   * date-range filtering (ignored for snapshot channels; leaderboard is cumulative).
+   *
+   * PRC-6 §2 — Channel Rankings
+   */
+  server.get<{
+    Params: { channel: string };
+    Querystring: {
+      limit?: string;
+      offset?: string;
+      startDate?: string;
+      endDate?: string;
+      minAchievements?: string;
+    };
+  }>("/metrics/:channel", async (request, reply) => {
+    const { channel } = request.params;
+
+    // Only "leaderboard" is supported
+    if (channel !== "leaderboard") {
+      return reply.code(404).send({ error: `Channel '${channel}' not found.` });
+    }
+
+    if (!dbPool) {
+      return reply.code(503).send({ error: "Database not ready" });
+    }
+
+    const limit = Math.min(Number(request.query.limit ?? 50), 1000);
+    const offset = Math.max(Number(request.query.offset ?? 0), 0);
+
+    // Compute default date window (now − 1 year → now) for the envelope
+    const now = new Date();
+    const oneYearAgo = new Date(now);
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const appliedStart = request.query.startDate ?? oneYearAgo.toISOString();
+    const appliedEnd = request.query.endDate ?? now.toISOString();
+
+    try {
+      // Fetch total counts/score for the envelope fields
+      const totalsResult = await dbPool.query<{
+        total_players: string;
+        total_score: string;
+      }>(
+        `SELECT COUNT(*) AS total_players, COALESCE(SUM(total_points), 0) AS total_score
+         FROM go_fish_leaderboard`
+      );
+
+      const totalPlayers = Number(totalsResult.rows[0]?.total_players ?? 0);
+      const totalScore = Number(totalsResult.rows[0]?.total_score ?? 0);
+
+      // Fetch paginated entries ordered by score descending
+      const entriesResult = await dbPool.query<{
+        midnight_address: string;
+        total_points: string;
+        games_played: number;
+      }>(
+        `SELECT midnight_address, total_points, games_played
+         FROM go_fish_leaderboard
+         ORDER BY total_points DESC
+         LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      );
+
+      const entries = entriesResult.rows.map((row, idx) => ({
+        rank: offset + idx + 1,
+        address: row.midnight_address,
+        displayName: null,
+        score: Number(row.total_points),
+      }));
+
+      return {
+        channel,
+        startDate: appliedStart,
+        endDate: appliedEnd,
+        totalPlayers,
+        totalScore,
+        entries,
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[API] /metrics/:channel error:", message);
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  /**
+   * GET /metrics/users/:address
+   * Returns identity and optionally per-channel stats for a wallet address.
+   * Accepts both Session and Main Wallet addresses (currently they are identical —
+   * Go Fish uses midnight_address as a stable identifier with no delegation layer).
+   *
+   * PRC-6 §3 — User Profile
+   */
+  server.get<{
+    Params: { address: string };
+    Querystring: {
+      channel?: string | string[];
+      startDate?: string;
+      endDate?: string;
+    };
+  }>("/metrics/users/:address", async (request, reply) => {
+    const { address } = request.params;
+
+    if (!dbPool) {
+      return reply.code(503).send({ error: "Database not ready" });
+    }
+
+    // Look up this address in the leaderboard
+    const userResult = await dbPool.query<{
+      midnight_address: string;
+      total_points: string;
+      games_played: number;
+      games_won: number;
+    }>(
+      `SELECT midnight_address, total_points, games_played, games_won
+       FROM go_fish_leaderboard
+       WHERE midnight_address = $1`,
+      [address]
+    );
+
+    if (userResult.rows.length === 0) {
+      return reply.code(404).send({ error: `Address '${address}' not found.` });
+    }
+
+    const user = userResult.rows[0];
+
+    // Identity: Go Fish has no Session→Main delegation yet; delegatedFrom is empty.
+    const identity = {
+      address: user.midnight_address,
+      delegatedFrom: [] as string[],
     };
 
-    if (!lobby_id || !player_id || !action) {
-      return reply.code(400).send({ error: 'Missing required fields' });
+    // Normalise the channel query param (single string or array)
+    const rawChannels = request.query.channel;
+    const requestedChannels: string[] = !rawChannels
+      ? []
+      : Array.isArray(rawChannels)
+      ? rawChannels
+      : [rawChannels];
+
+    // No channel params → identity + achievements only
+    if (requestedChannels.length === 0) {
+      return { identity, achievements: [] };
     }
 
-    const playerId = parsePlayerId(player_id);
-    if (!playerId) {
-      return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
+    // Compute default date window
+    const now = new Date();
+    const oneYearAgo = new Date(now);
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const appliedStart = request.query.startDate ?? oneYearAgo.toISOString();
+    const appliedEnd = request.query.endDate ?? now.toISOString();
+
+    const channels: Record<string, unknown> = {};
+
+    for (const channelId of requestedChannels) {
+      if (channelId !== "leaderboard") continue; // skip unknown channels
+
+      // Compute dynamic rank
+      const rankResult = await dbPool.query<{ rank: string }>(
+        `SELECT COUNT(*) + 1 AS rank
+         FROM go_fish_leaderboard
+         WHERE total_points > $1`,
+        [user.total_points]
+      );
+      const rank = Number(rankResult.rows[0]?.rank ?? 1);
+
+      channels[channelId] = {
+        startDate: appliedStart,
+        endDate: appliedEnd,
+        stats: {
+          score: Number(user.total_points),
+          rank,
+          matchesPlayed: user.games_played,
+        },
+      };
     }
 
-    const opponentId = playerId === 1 ? 2 : 1;
-
-    // Update game state based on action
-    switch (action) {
-      case "ask_for_card":
-        // After asking, it's the opponent's turn to respond
-        // Phase changes to "wait_response" (frontend expects this name)
-        updateGameState(lobby_id, {
-          phase: "wait_response",
-          lastAskedRank: rank ?? null,
-          lastAskingPlayer: playerId,
-        });
-        console.log(`[API] Game action: ${playerId} asked for rank ${rank} in lobby ${lobby_id}`);
-        break;
-
-      case "respond_to_ask":
-        // After responding, check if cards were given
-        // If no cards (Go Fish), phase changes to "wait_draw"
-        // If cards given, turn goes back to asking player, phase = "turn_start"
-        if (hasCards && cardCount && cardCount > 0) {
-          // Cards transferred, asking player gets another turn
-          updateGameState(lobby_id, {
-            phase: "turn_start",
-            // currentTurn stays the same (asking player)
-          });
-          console.log(`[API] Game action: ${playerId} gave ${cardCount} cards in lobby ${lobby_id}`);
-        } else {
-          // No cards - Go Fish (asking player must draw)
-          updateGameState(lobby_id, {
-            phase: "wait_draw",  // Frontend expects "wait_draw" for Go Fish
-          });
-          console.log(`[API] Game action: ${playerId} said Go Fish in lobby ${lobby_id}`);
-        }
-        break;
-
-      case "go_fish":
-        // After drawing from deck, check if it matches
-        updateGameState(lobby_id, {
-          phase: "wait_draw_check",  // Frontend expects "wait_draw_check"
-        });
-        console.log(`[API] Game action: ${playerId} drew from deck in lobby ${lobby_id}`);
-        break;
-
-      case "after_go_fish":
-        // After completing go fish, check if drew requested card
-        if (drewRequestedCard) {
-          // Drew requested card, get another turn
-          updateGameState(lobby_id, {
-            phase: "turn_start",
-            // currentTurn stays the same
-          });
-          console.log(`[API] Game action: ${playerId} drew requested card, gets another turn`);
-        } else {
-          // Didn't draw requested card, turn switches
-          updateGameState(lobby_id, {
-            phase: "turn_start",
-            currentTurn: opponentId,
-          });
-          console.log(`[API] Game action: Turn switches to player ${opponentId} in lobby ${lobby_id}`);
-        }
-        break;
-
-      default:
-        return reply.code(400).send({ error: 'Invalid action' });
-    }
-
-    return { success: true };
+    return { identity, achievements: [], channels };
   });
 
   console.log("✓ Game API routes registered");

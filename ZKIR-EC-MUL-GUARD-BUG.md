@@ -152,6 +152,7 @@ call `ec_mul` once outside any branch.
 | `countCardsOfRank` | `if (playerId==1) { ec_mul } else if (playerId==2) { ec_mul }` | Both secrets fetched unconditionally; ternary selects secret; one `ec_mul` |
 | `checkAndScoreBook` | Same nested `if/else` with `ec_mul` on each player branch | Same fix |
 | `doesPlayerHaveSpecificCard` | Same `if/else` structure | Same fix |
+| `afterGoFish` | `countCardsOfRank` called inside `if (drewRequestedCard)` — ec_muls guarded when drewRequestedCard=false | Moved `countCardsOfRank` call unconditionally before the `if/else`; result used inside the branch |
 
 ---
 
