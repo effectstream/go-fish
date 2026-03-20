@@ -36,6 +36,7 @@ import {
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
+import { createWasmProofProvider } from "../proving/wasm-proof-provider";
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { assertIsContractAddress, fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
 import type {
@@ -71,12 +72,21 @@ type PrivateState = Record<string, never>;
 // The proxy translates SDK v2.0.0 queries to indexer v3 format
 const BASE_URL_MIDNIGHT_INDEXER = import.meta.env.VITE_INDEXER_HTTP_URL?.replace(/\/api\/.*$/, '') || "http://127.0.0.1:8089";
 const BASE_WS_MIDNIGHT_INDEXER = import.meta.env.VITE_INDEXER_WS_URL?.replace(/\/api\/.*$/, '') || "ws://127.0.0.1:8089";
-const BASE_URL_PROOF_SERVER = "http://127.0.0.1:6300";
+// When VITE_PROOF_SERVER_URL is set, proving is delegated to that HTTP server.
+// When unset (default), proofs run locally in the browser via WASM — the recommended
+// production mode since the Lace wallet does not ship with a built-in proof server.
+const PROOF_SERVER_URL: string | undefined = import.meta.env.VITE_PROOF_SERVER_URL || undefined;
 // Using /api/v1/graphql - the proxy handles translation to v3 if needed
 const BASE_URL_MIDNIGHT_INDEXER_API = import.meta.env.VITE_INDEXER_HTTP_URL || `${BASE_URL_MIDNIGHT_INDEXER}/api/v1/graphql`;
 const BASE_URL_MIDNIGHT_INDEXER_WS = import.meta.env.VITE_INDEXER_WS_URL || `${BASE_WS_MIDNIGHT_INDEXER}/api/v1/graphql/ws`;
 
 const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
+
+console.log(
+  PROOF_SERVER_URL
+    ? `[MidnightOnChain] Proof mode: HTTP server (${PROOF_SERVER_URL})`
+    : "[MidnightOnChain] Proof mode: WASM in-browser (default)"
+);
 
 // Backend API URL for notifying state changes
 const BACKEND_API_URL = "http://localhost:9996";
@@ -105,10 +115,6 @@ async function notifyBackendSetupComplete(
     console.warn(`[MidnightOnChain] Could not notify backend:`, error);
   }
 }
-
-// notifyBackendGameAction removed: game phase is now sourced from the real Midnight
-// indexer via the batcher query server. The backend no longer maintains an optimistic
-// local simulation for game phase — it queries the chain on every /game_state request.
 
 // Service state
 let contractAddressRaw: string | null = null;  // 32-byte address for indexer queries
@@ -212,13 +218,8 @@ async function loadContractAddress(): Promise<{ raw: string; normalized: string 
  */
 async function loadContractModule(): Promise<boolean> {
   try {
-    // Try to load the contract from the shared module
-    // This path would need to be adjusted based on how the contract is bundled
-    // Contract is a namespace that contains the Contract class
     const contractModule = await import("../../../shared/contracts/midnight/go-fish-contract/src/_index.ts");
-
     const { Contract: ContractNamespace, witnesses } = contractModule;
-    // ContractNamespace.Contract is the actual class constructor
     goFishContractInstance = new ContractNamespace.Contract(witnesses);
 
     console.log("[MidnightOnChain] Loaded contract module successfully");
@@ -317,17 +318,29 @@ async function initializeProviders(
   );
 
   const zkConfigPath = window.location.origin;
+  const zkConfigProvider = new FetchZkConfigProvider(zkConfigPath, fetch.bind(window));
+
+  // Select proof provider based on VITE_PROOF_SERVER_URL:
+  //   - Unset (default/production): WASM in-browser proving via wallet-sdk-prover-client.
+  //     No external proof server required. Recommended since Lace does not ship one.
+  //   - Set: delegate to the specified HTTP proof server (dev/fallback).
+  const proofProvider = PROOF_SERVER_URL
+    ? httpClientProofProvider(PROOF_SERVER_URL, zkConfigProvider)
+    : createWasmProofProvider(zkConfigProvider);
+
+  console.log(
+    PROOF_SERVER_URL
+      ? `[MidnightOnChain] Using HTTP proof server: ${PROOF_SERVER_URL}`
+      : "[MidnightOnChain] Using WASM in-browser proving"
+  );
 
   return {
     privateStateProvider: levelPrivateStateProvider({
       privateStoragePasswordProvider: async () => "PAIMA_STORAGE_PASSWORD",
       accountId: shieldedCoinPublicKey,
     }),
-    zkConfigProvider: new FetchZkConfigProvider(
-      zkConfigPath,
-      fetch.bind(window),
-    ),
-    proofProvider: httpClientProofProvider(BASE_URL_PROOF_SERVER),
+    zkConfigProvider,
+    proofProvider,
     publicDataProvider: indexerPublicDataProvider(
       BASE_URL_MIDNIGHT_INDEXER_API,
       BASE_URL_MIDNIGHT_INDEXER_WS,
@@ -425,8 +438,7 @@ async function joinContract(
     throw new Error("Contract module not loaded");
   }
 
-  console.log(`[MidnightOnChain] Attempting to find deployed contract at: ${rawAddress}`);
-  console.log(`[MidnightOnChain] Normalized address for SDK: ${normalizedAddress}`);
+  console.log(`[MidnightOnChain] Attempting to find deployed contract at: ${rawAddress} (normalized: ${normalizedAddress})`);
 
   // Pre-flight check - verify indexer is accessible
   const indexerOk = await checkIndexerConnectivity();
@@ -438,8 +450,7 @@ async function joinContract(
   // This avoids issues with findDeployedContract hanging when it can't find
   // the original deploy transaction (indexer returns ContractUpdate instead of ContractDeploy)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Batcher mode active - deploying fresh contract...");
-    console.log("[MidnightOnChain] (Dev mode: chain resets each time, so we deploy fresh)");
+    console.log("[MidnightOnChain] Batcher mode active - deploying fresh contract (chain resets each time in dev)");
     try {
       const deployedGoFishContract = await deployContract(provs, {
         compiledContract: goFishContractInstance,
@@ -449,7 +460,6 @@ async function joinContract(
 
       const newAddress = deployedGoFishContract.deployTxData.public.contractAddress;
       console.log(`[MidnightOnChain] Contract deployed successfully at address: ${newAddress}`);
-      console.log("[MidnightOnChain] Contract deployment complete!");
 
       return deployedGoFishContract as DeployedGoFishContract;
     } catch (deployError) {

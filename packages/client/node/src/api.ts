@@ -564,7 +564,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
     // Determine player IDs (host = player1, first joiner = player2)
     const currentPlayerId = players.findIndex((p: any) => p.account_id === accountId) + 1;
-    console.log(`[API] game_state: wallet=${wallet}, accountId=${accountId}, playerId=${currentPlayerId}, players=${JSON.stringify(players.map((p: any) => ({ id: p.account_id, addr: p.wallet_address })))}`);
+    console.log(`[API] game_state: wallet=${wallet}, playerId=${currentPlayerId}, player_count=${players.length}`);
 
     if (currentPlayerId === 0) {
       return reply.code(403).send({ error: 'Player not in this game' });
@@ -610,10 +610,9 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       lastAskedRank: midnightState.lastAskedRank ?? null,
       lastAskingPlayer: midnightState.lastAskingPlayer ?? null,
 
-      // Player-specific private state (TODO: query from Midnight)
-      // Frontend will decrypt using player's secret key
-      myHand: [], // TODO: Query player's semi-masked cards from contract
-      myBooks: [], // TODO: Calculate from player's completed books
+      // Frontend queries the player's hand directly from the Midnight indexer
+      myHand: [],
+      myBooks: [],
 
       // Dynamic game log - persisted across state changes
       gameLog: updateGameLog(lobby_id, midnightState, players),
@@ -1020,17 +1019,12 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       const p2Secret = playerId === 2 ? player_secret : opponent_secret;
       const p2Seed = playerId === 2 ? shuffle_seed : opponent_shuffle_seed;
       const replayMasks = async () => {
-        if (p1Secret) {
-          console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player 1`);
-          await midnightApplyMask(lobby_id, 1, p1Secret, p1Seed).catch((err: Error) => {
-            console.warn(`[API] Local applyMask P1 replay failed (non-critical):`, err?.message);
-          });
-        }
-        if (p2Secret) {
-          console.log(`[API] Replaying applyMask locally for lobby ${lobby_id} player 2`);
-          await midnightApplyMask(lobby_id, 2, p2Secret, p2Seed).catch((err: Error) => {
-            console.warn(`[API] Local applyMask P2 replay failed (non-critical):`, err?.message);
-          });
+        for (const [pid, sec, seed] of [[1, p1Secret, p1Seed], [2, p2Secret, p2Seed]] as const) {
+          if (sec) {
+            await midnightApplyMask(lobby_id, pid, sec, seed).catch((err: Error) => {
+              console.warn(`[API] Local applyMask P${pid} replay failed (non-critical):`, err?.message);
+            });
+          }
         }
       };
       replayMasks().catch(() => {});
@@ -1045,17 +1039,12 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       const p2Secret = playerId === 2 ? player_secret : opponent_secret;
       const p2Seed = playerId === 2 ? shuffle_seed : opponent_shuffle_seed;
       const replayDeals = async () => {
-        if (p1Secret) {
-          console.log(`[API] Replaying dealCards locally for lobby ${lobby_id} player 1`);
-          await midnightDealCards(lobby_id, 1, p1Secret, p1Seed).catch((err: Error) => {
-            console.warn(`[API] Local dealCards P1 replay failed (non-critical):`, err?.message);
-          });
-        }
-        if (p2Secret) {
-          console.log(`[API] Replaying dealCards locally for lobby ${lobby_id} player 2`);
-          await midnightDealCards(lobby_id, 2, p2Secret, p2Seed).catch((err: Error) => {
-            console.warn(`[API] Local dealCards P2 replay failed (non-critical):`, err?.message);
-          });
+        for (const [pid, sec, seed] of [[1, p1Secret, p1Seed], [2, p2Secret, p2Seed]] as const) {
+          if (sec) {
+            await midnightDealCards(lobby_id, pid, sec, seed).catch((err: Error) => {
+              console.warn(`[API] Local dealCards P${pid} replay failed (non-critical):`, err?.message);
+            });
+          }
         }
       };
       replayDeals().catch(() => {});

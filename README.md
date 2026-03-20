@@ -149,6 +149,7 @@ These are set in a `.env` file in `packages/frontend/` or passed inline when run
 | `VITE_INDEXER_WS_URL` | `ws://127.0.0.1:8089/api/v1/graphql/ws` | Midnight indexer WebSocket endpoint. |
 | `VITE_PAIMA_L2_CONTRACT_ADDRESS` | `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512` | Paima L2 contract address on the EVM chain. |
 | `VITE_EVM_RPC_URL` | `http://localhost:8545` | EVM JSON-RPC endpoint (Hardhat by default). |
+| `VITE_PROOF_SERVER_URL` | _(unset)_ | URL of an external Midnight proof server (e.g. `http://localhost:6300`). When set, the frontend delegates ZK proof generation to this HTTP server instead of running proofs locally in the browser via WASM. Leave unset (the default) for in-browser WASM proving, which requires no separate proof server — the recommended mode for production since the Lace wallet does not ship with a built-in proof server. |
 
 ### Example: Using with External Hardhat
 

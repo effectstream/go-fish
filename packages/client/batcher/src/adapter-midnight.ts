@@ -140,11 +140,7 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
         const response = await fetch(url);
         if (response.ok) {
           const data = await response.json() as { secret: string; shuffleSeed: string | null };
-          if (attempt > 1) {
-            console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId} (attempt ${attempt})`);
-          } else {
-            console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId}`);
-          }
+          console.log(`[GoFishMidnightAdapter] Fetched opponent secret from backend for ${lobbyId} player ${playerId}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
           return data;
         }
         console.warn(`[GoFishMidnightAdapter] Backend returned ${response.status} for player_secret lookup (lobby=${lobbyId} player=${playerId}, attempt ${attempt}/${MAX_FETCH_ATTEMPTS})`);
@@ -208,9 +204,6 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
           const opponentShuffleSeed = hexToBytes(rawInput.opponentShuffleSeed);
           setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
           console.log(`[GoFishMidnightAdapter] Set opponent secrets for ${circuit}: game ${gameId}, player ${opponentId}`);
-          // Cache on rawInput for retry use
-          (rawInput as any)._cachedOpponentSecret = rawInput.opponentSecret;
-          (rawInput as any)._cachedOpponentShuffleSeed = rawInput.opponentShuffleSeed;
         } else {
           // Opponent secret not in payload (frontend doesn't have it — it's theirs to keep).
           // Fall back to the backend node which stores both players' secrets after setup replay.
@@ -260,24 +253,47 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
 
     refreshNowArg();
 
-    // Force ensureFunds() in the base MidnightAdapter to re-sync the wallet
-    // before every circuit call.
+    // Fix for MalformedFeeCalculation (Midnight node Custom error 168):
     //
-    // Root cause of MalformedFeeCalculation (Midnight node Custom error 168):
-    //   ensureFunds() short-circuits immediately when hasFunds=true AND
-    //   lastFundingBalances.dustBalance > 0 — even if the dust UTXO it knew
-    //   about was already spent by the previous circuit (e.g. respondToAsk).
-    //   balanceFinalizedTransaction() then tries to build a fee tx using that
-    //   spent UTXO, which the node rejects as MalformedFeeCalculation.
+    // Root cause: after the previous circuit (e.g. respondToAsk) spends the dust UTXO,
+    // the wallet's RxJS BehaviorSubject caches the pre-spend balance. waitForDustFunds()
+    // and syncAndWaitForFunds() both return the stale non-zero value immediately because
+    // the observable's isCompleteWithin(0n) filter stays true — the wallet doesn't flip
+    // itself to "syncing" just because a coin was spent. balanceFinalizedTransaction()
+    // then tries to use the already-spent UTXO → node rejects with error 168.
     //
-    // Fix: reset hasFunds=false so ensureFunds() goes through the full
-    //   syncAndWaitForFunds() path, which queries the wallet's current state
-    //   and picks up the fresh UTXO produced by the previous circuit's output.
-    //   The external waitForDustFunds() we called here previously was a no-op
-    //   because ensureFunds() ignores it — it only re-checks dust when
-    //   lastFundingBalances.dustBalance === 0n, which is never the case here.
+    // Fix: wait for the indexer to advance by at least one block from the block that
+    // contained the previous circuit's transaction. Once the block is indexed, the
+    // wallet re-syncs and the spend is reflected in the observable state. Then force
+    // ensureFunds() to run the full cold path so it stores the fresh dust balance.
+    try {
+      const blockBefore = await this.getBlockNumber();
+      console.log(`[GoFishMidnightAdapter] ${circuit}: pre-dust-fix block=${blockBefore}, waiting for indexer to advance...`);
+      // Poll until block advances or 90s timeout
+      const dustFixStart = Date.now();
+      let advanced = false;
+      while (Date.now() - dustFixStart < 90_000) {
+        await new Promise(resolve => setTimeout(resolve, 3_000));
+        try {
+          const blockNow = await this.getBlockNumber();
+          if (blockNow > blockBefore) {
+            console.log(`[GoFishMidnightAdapter] ${circuit}: indexer advanced to block ${blockNow}, proceeding`);
+            advanced = true;
+            break;
+          }
+        } catch { /* ignore polling errors */ }
+      }
+      if (!advanced) {
+        console.warn(`[GoFishMidnightAdapter] ${circuit}: block did not advance within 90s — proceeding anyway`);
+      }
+    } catch (err) {
+      // getBlockNumber not available or failed — fall back to a fixed delay of one block (~6s)
+      console.warn(`[GoFishMidnightAdapter] ${circuit}: block polling unavailable, sleeping 8s for dust UTXO refresh`);
+      await new Promise(resolve => setTimeout(resolve, 8_000));
+    }
+    // Force ensureFunds() inside super.submitBatch() to run the full cold path
+    // (syncAndWaitForFunds) so it reads the now-fresh dust balance from the wallet.
     (this as any).hasFunds = false;
-    console.log(`[GoFishMidnightAdapter] ${circuit}: reset hasFunds=false to force wallet re-sync before submission`);
 
     // Retry logic for WASM "unreachable" errors, which typically mean the
     // Midnight indexer hasn't synced the latest state yet (e.g., the circuit
@@ -418,8 +434,8 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
               }
             }
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-            // Reset hasFunds so ensureFunds() re-syncs the wallet on the next attempt,
-            // picking up fresh dust UTXOs rather than reusing the spent one.
+            // After the 15s sleep, the block containing the previous attempt has been indexed.
+            // Force ensureFunds() to run the full cold path so it reads fresh dust balance.
             (this as any).hasFunds = false;
             // Refresh `now` after the sleep so it's fresh for the next attempt
             refreshNowArg();
@@ -483,55 +499,6 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
       signature!
     );
     return isValid && super.verifySignature(input);
-  }
-
-  /**
-   * Pre-process input to extract and set client-side secrets
-   * Called before the base adapter processes the circuit call
-   */
-  extractAndSetSecrets(inputJson: string): { gameId: string; playerId: number } | null {
-    try {
-      const circuitCall = JSON.parse(inputJson) as CircuitCallWithSecrets;
-
-      // Check if secrets are included
-      if (!circuitCall.playerSecret || !circuitCall.shuffleSeed) {
-        console.log("[GoFishMidnightAdapter] No client secrets in circuit call, using defaults");
-        return null;
-      }
-
-      // Extract gameId and playerId from circuit args
-      // Most circuits have format: [gameId, playerId, ...]
-      const args = circuitCall.args;
-      if (!Array.isArray(args) || args.length < 2) {
-        console.log("[GoFishMidnightAdapter] Cannot extract gameId/playerId from args");
-        return null;
-      }
-
-      const gameId = args[0] as string; // Already hex-encoded
-      const playerId = Number(args[1]) as 1 | 2;
-
-      // Convert secrets from hex
-      const secret = BigInt("0x" + circuitCall.playerSecret);
-      const shuffleSeed = hexToBytes(circuitCall.shuffleSeed);
-
-      // Set dynamic secrets for this circuit execution
-      setPlayerSecrets(gameId, playerId, secret, shuffleSeed);
-      console.log(`[GoFishMidnightAdapter] Set client secrets for game ${gameId}, player ${playerId}`);
-
-      // Also set opponent secrets when provided
-      if (circuitCall.opponentSecret && circuitCall.opponentShuffleSeed) {
-        const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
-        const opponentSecret = BigInt("0x" + circuitCall.opponentSecret);
-        const opponentShuffleSeed = hexToBytes(circuitCall.opponentShuffleSeed);
-        setPlayerSecrets(gameId, opponentId, opponentSecret, opponentShuffleSeed);
-        console.log(`[GoFishMidnightAdapter] Set opponent secrets for game ${gameId}, player ${opponentId}`);
-      }
-
-      return { gameId, playerId };
-    } catch (error) {
-      console.error("[GoFishMidnightAdapter] Error extracting secrets:", error);
-      return null;
-    }
   }
 
   /**
