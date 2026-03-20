@@ -20,6 +20,7 @@ export const config: BatcherConfig<DefaultBatcherInput> = {
   confirmationLevel: {
     effectstreaml2: "wait-receipt",
     "go-fish": "no-wait",
+    midnight_balancing: "no-wait",
   },
   enableEventSystem: false,
   port,

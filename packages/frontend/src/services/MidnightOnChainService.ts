@@ -16,6 +16,7 @@
 import { getConnectedAPI, isLaceConnected } from "../laceWalletBridge";
 import { isBatcherModeEnabled } from "../proving/batcher-providers";
 import * as BatcherMidnightService from "./BatcherMidnightService";
+import * as GoFishContractService from "./GoFishContractService";
 
 // Import Midnight SDK packages (v3 with ledger-v7)
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
@@ -540,8 +541,9 @@ export async function initializeOnChainService(): Promise<boolean> {
   batcherModeActive = isBatcherModeEnabled();
 
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Batcher mode enabled - using BatcherMidnightService");
-    console.log("[MidnightOnChain] No Lace wallet required - transactions go through Paima batcher");
+    console.log("[MidnightOnChain] Batcher mode enabled - using GoFishContractService (WASM proving)");
+    console.log("[MidnightOnChain] No Lace wallet required - proven txs delegated to midnight_balancing batcher");
+    await GoFishContractService.initializeMidnight();
     isInitialized = true;
     return true;
   }
@@ -713,21 +715,22 @@ export async function initializeStaticDeck(): Promise<{ success: boolean; errorM
     return { success: true };
   }
 
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for init_deck...");
-    const result = await BatcherMidnightService.initDeck();
-    if (result.success) {
+    console.log("[MidnightOnChain] Using GoFishContractService for init_deck (WASM proving)...");
+    try {
+      await GoFishContractService.callInitDeck();
       staticDeckInitialized = true;
       return { success: true };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (msg.includes("already") || msg.includes("Static deck")) {
+        console.log("[MidnightOnChain] Static deck was already initialized");
+        staticDeckInitialized = true;
+        return { success: true };
+      }
+      return { success: false, errorMessage: msg };
     }
-    // Check if already initialized (treat as success)
-    if (result.error?.includes("already") || result.error?.includes("Static deck")) {
-      console.log("[MidnightOnChain] Static deck was already initialized");
-      staticDeckInitialized = true;
-      return { success: true };
-    }
-    return { success: false, errorMessage: result.error };
   }
 
   if (!isOnChainReady()) {
@@ -761,7 +764,7 @@ export async function onChainApplyMask(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
     // Ensure static deck is initialized before any game operation
     if (!staticDeckInitialized) {
@@ -771,13 +774,14 @@ export async function onChainApplyMask(
         return { success: false, errorMessage: `Failed to initialize static deck: ${initResult.errorMessage}` };
       }
     }
-    console.log("[MidnightOnChain] Using batcher service for applyMask...");
-    const result = await BatcherMidnightService.applyMask(lobbyId, playerId);
-    if (result.success) {
-      // Notify backend that mask was applied so it can track state
+    console.log("[MidnightOnChain] Using GoFishContractService for applyMask (WASM proving)...");
+    try {
+      await GoFishContractService.callApplyMask(lobbyId, playerId);
       await notifyBackendSetupComplete(lobbyId, playerId, "mask_applied");
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
     }
-    return { success: result.success, errorMessage: result.error };
   }
 
   if (!isOnChainReady()) {
@@ -811,15 +815,16 @@ export async function onChainDealCards(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for dealCards...");
-    const result = await BatcherMidnightService.dealCards(lobbyId, playerId);
-    if (result.success) {
-      // Notify backend that dealing is complete so it can track state
+    console.log("[MidnightOnChain] Using GoFishContractService for dealCards (WASM proving)...");
+    try {
+      await GoFishContractService.callDealCards(lobbyId, playerId);
       await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
     }
-    return { success: result.success, errorMessage: result.error };
   }
 
   if (!isOnChainReady()) {
@@ -845,11 +850,15 @@ export async function onChainAskForCard(
   playerId: 1 | 2,
   rank: number
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for askForCard...");
-    const result = await BatcherMidnightService.askForCard(lobbyId, playerId, rank);
-    return { success: result.success, errorMessage: result.error };
+    console.log("[MidnightOnChain] Using GoFishContractService for askForCard (WASM proving)...");
+    try {
+      await GoFishContractService.callAskForCard(lobbyId, playerId, rank);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
   }
 
   if (!isOnChainReady()) {
@@ -875,9 +884,9 @@ export async function onChainRespondToAsk(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; hasCards: boolean; cardCount: number; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for respondToAsk...");
+    console.log("[MidnightOnChain] Using GoFishContractService for respondToAsk (WASM proving)...");
 
     // Determine hasCards BEFORE queuing the circuit by checking the on-chain hand.
     // The batcher queues asynchronously so the circuit result is not available synchronously.
@@ -903,8 +912,12 @@ export async function onChainRespondToAsk(
       console.warn("[MidnightOnChain] respondToAsk pre-check failed — defaulting hasCards=false:", preCheckErr);
     }
 
-    const result = await BatcherMidnightService.respondToAsk(lobbyId, playerId);
-    return { success: result.success, hasCards, cardCount, errorMessage: result.error };
+    try {
+      await GoFishContractService.callRespondToAsk(lobbyId, playerId);
+      return { success: true, hasCards, cardCount };
+    } catch (err: any) {
+      return { success: false, hasCards, cardCount, errorMessage: err?.message || String(err) };
+    }
   }
 
   if (!isOnChainReady()) {
@@ -932,11 +945,15 @@ export async function onChainGoFish(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for goFish...");
-    const result = await BatcherMidnightService.goFish(lobbyId, playerId);
-    return { success: result.success, errorMessage: result.error };
+    console.log("[MidnightOnChain] Using GoFishContractService for goFish (WASM proving)...");
+    try {
+      await GoFishContractService.callGoFish(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
   }
 
   if (!isOnChainReady()) {
@@ -963,11 +980,15 @@ export async function onChainAfterGoFish(
   playerId: 1 | 2,
   drewRequestedCard: boolean
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for afterGoFish...");
-    const result = await BatcherMidnightService.afterGoFish(lobbyId, playerId, drewRequestedCard);
-    return { success: result.success, errorMessage: result.error };
+    console.log("[MidnightOnChain] Using GoFishContractService for afterGoFish (WASM proving)...");
+    try {
+      await GoFishContractService.callAfterGoFish(lobbyId, playerId, drewRequestedCard);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
   }
 
   if (!isOnChainReady()) {
@@ -993,11 +1014,15 @@ export async function onChainSkipDrawDeckEmpty(
   lobbyId: string,
   playerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use the batcher service
+  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for switchTurn...");
-    const result = await BatcherMidnightService.switchTurn(lobbyId, playerId);
-    return { success: result.success, errorMessage: result.error };
+    console.log("[MidnightOnChain] Using GoFishContractService for switchTurn (WASM proving)...");
+    try {
+      await GoFishContractService.callSwitchTurn(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
   }
 
   if (!isOnChainReady()) {
@@ -1025,9 +1050,13 @@ export async function onChainClaimTimeoutWin(
   claimingPlayerId: 1 | 2
 ): Promise<{ success: boolean; errorMessage?: string }> {
   if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using batcher service for claimTimeoutWin...");
-    const result = await BatcherMidnightService.claimTimeoutWin(lobbyId, claimingPlayerId);
-    return { success: result.success, errorMessage: result.error };
+    console.log("[MidnightOnChain] Using GoFishContractService for claimTimeoutWin (WASM proving)...");
+    try {
+      await GoFishContractService.callClaimTimeoutWin(lobbyId, claimingPlayerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
   }
 
   if (!isOnChainReady()) {

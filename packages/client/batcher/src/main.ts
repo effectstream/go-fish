@@ -40,9 +40,11 @@ batcher
 // The MidnightAdapter handles the actual circuit invocation
 // Skip when using TypeScript contract (no Midnight infrastructure needed)
 // Use dynamic import to avoid eagerly connecting to Midnight infrastructure
+const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
 const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
 let goFishMidnightAdapter: import("./adapter-midnight.ts").GoFishMidnightAdapter | null = null;
-if (!useTypescriptContract) {
+
+if (!useTypescriptContract && !skipMidnightInfra) {
   const midnightAdapters = await import("./adapter-midnight.ts");
   for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
     if (adapter instanceof MidnightAdapter) {
@@ -56,7 +58,23 @@ if (!useTypescriptContract) {
   }
   goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
 } else {
-  console.log("📝 Skipping Midnight adapters (USE_TYPESCRIPT_CONTRACT=true)");
+  console.log("📝 Skipping legacy Midnight circuit adapter");
+}
+
+// midnight_balancing: handles pre-proven unbound transactions from the browser WASM prover.
+// Always registered (unless SKIP_MIDNIGHT_INFRA=true) — does not need a contract address,
+// only dust-wallet credentials and indexer/node URLs.
+if (!skipMidnightInfra) {
+  try {
+    const { goFishBalancingAdapter } = await import("./adapter-midnight-balancing.ts");
+    batcher.addBlockchainAdapter("midnight_balancing", goFishBalancingAdapter, {
+      criteriaType: "time",
+      timeWindowMs: 500,
+    });
+    console.log("⚡ midnight_balancing adapter registered (browser WASM proving)");
+  } catch (err) {
+    console.error("❌ Failed to register midnight_balancing adapter:", err);
+  }
 }
 
 // Secondary HTTP server exposing hand-query endpoint (port 9997).
