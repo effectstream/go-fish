@@ -6,17 +6,85 @@ import { viteStaticCopy } from 'vite-plugin-static-copy';
 import glsl from 'vite-plugin-glsl';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const managedDir = path.resolve(
+  __dirname,
+  '../shared/contracts/midnight/go-fish-contract/src/managed',
+);
+const publicDir = path.resolve(__dirname, 'public');
+const cryptoShimPath = path.resolve(__dirname, 'src/shims/crypto.ts');
+const levelShimPath = path.resolve(__dirname, 'src/shims/level.ts');
+
+/**
+ * Serves compiled ZK contract artifacts (keys + zkir) and BLS prover params from
+ * the shared managed directory and public/midnight-prover during dev/preview.
+ *
+ * Prevents SPA fallback from serving index.html for missing binary assets, which
+ * would cause @paima/midnight-wasm-prover to panic with "capacity overflow".
+ */
+function artifactMiddleware(req: any, res: any, next: any) {
+  const url: string = (req.url ?? '').split('?')[0];
+  let filePath: string | null = null;
+  let rootDir: string | null = null;
+
+  if (url.startsWith('/keys/')) {
+    rootDir = path.resolve(managedDir, 'keys');
+    filePath = path.resolve(rootDir, url.slice('/keys/'.length));
+  } else if (url.startsWith('/zkir/')) {
+    rootDir = path.resolve(managedDir, 'zkir');
+    filePath = path.resolve(rootDir, url.slice('/zkir/'.length));
+  } else if (url.startsWith('/midnight-prover/')) {
+    rootDir = path.resolve(publicDir, 'midnight-prover');
+    filePath = path.resolve(rootDir, url.slice('/midnight-prover/'.length));
+  }
+
+  if (!filePath || !rootDir) {
+    next();
+    return;
+  }
+
+  const rel = path.relative(rootDir, filePath);
+  if (rel.startsWith('..') || rel === '') {
+    res.statusCode = 400;
+    res.end('Invalid ZK artifact path');
+    return;
+  }
+
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    fs.createReadStream(filePath).pipe(res);
+    return;
+  }
+
+  res.statusCode = 404;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.end(`ZK artifact not found: ${url}`);
+}
+
+function serveContractArtifacts() {
+  return {
+    name: 'serve-contract-artifacts',
+    configureServer(server: any) {
+      server.middlewares.use(artifactMiddleware);
+    },
+    configurePreviewServer(server: any) {
+      server.middlewares.use(artifactMiddleware);
+    },
+  };
+}
 
 export default defineConfig({
   plugins: [
     wasm(),
     topLevelAwait(),
     glsl(),
+    // Serve ZK keys/zkir and BLS params as binary files (prevents SPA fallback HTML)
+    serveContractArtifacts(),
     nodePolyfills({
-      // Include all node polyfills needed by Midnight SDK
       include: [
         'buffer',
         'process',
@@ -28,89 +96,63 @@ export default defineConfig({
         'util',
         'events',
       ],
-      // Provide global polyfills
       globals: {
         Buffer: true,
         global: true,
         process: true,
       },
     }),
-    // Copy zkConfig files (keys, zkir) for FetchZkConfigProvider
+    // Copy zkConfig files (keys, zkir) for FetchZkConfigProvider and BLS params for production builds
     viteStaticCopy({
       targets: [
         {
-          // Copy verifier/prover keys
           src: normalizePath(
             path.resolve(
               __dirname,
-              '..',
-              'shared',
-              'contracts',
-              'midnight',
-              'go-fish-contract',
-              'src',
-              'managed',
-              'keys',
-              '*',
+              '../shared/contracts/midnight/go-fish-contract/src/managed/keys/*',
             ),
           ),
           dest: 'keys',
         },
         {
-          // Copy zkir files
           src: normalizePath(
             path.resolve(
               __dirname,
-              '..',
-              'shared',
-              'contracts',
-              'midnight',
-              'go-fish-contract',
-              'src',
-              'managed',
-              'zkir',
-              '*',
+              '../shared/contracts/midnight/go-fish-contract/src/managed/zkir/*',
             ),
           ),
           dest: 'zkir',
         },
         {
-          // Copy contract address file
           src: normalizePath(
             path.resolve(
               __dirname,
-              '..',
-              'shared',
-              'contracts',
-              'midnight',
-              'go-fish-contract.undeployed.json',
+              '../shared/contracts/midnight/go-fish-contract.undeployed.json',
             ),
           ),
           dest: 'contract_address',
         },
         {
-          // Copy @paima/midnight-vm-bindings WASM file for web worker
+          // BLS trusted-setup params for @paima/midnight-wasm-prover
+          src: normalizePath(
+            path.resolve(__dirname, 'public/midnight-prover/*'),
+          ),
+          dest: 'midnight-prover',
+        },
+        {
           src: normalizePath(
             path.resolve(
               __dirname,
-              'node_modules',
-              '@paima',
-              'midnight-vm-bindings',
-              '*.wasm',
+              'node_modules/@paima/midnight-vm-bindings/*.wasm',
             ),
           ),
           dest: 'wasm',
         },
         {
-          // Copy worker helper JS files from midnight-vm-bindings
           src: normalizePath(
             path.resolve(
               __dirname,
-              'node_modules',
-              '@paima',
-              'midnight-vm-bindings',
-              'snippets',
-              '**/*',
+              'node_modules/@paima/midnight-vm-bindings/snippets/**/*',
             ),
           ),
           dest: 'wasm/snippets',
@@ -125,12 +167,10 @@ export default defineConfig({
     fs: {
       strict: false,
     },
-    // Required headers for SharedArrayBuffer (multi-threaded WASM)
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
-    // Proxy API requests to the backend to avoid CORS issues
     proxy: {
       '/api': {
         target: 'http://localhost:9996',
@@ -152,12 +192,10 @@ export default defineConfig({
         target: 'http://localhost:9996',
         changeOrigin: true,
       },
-      // Proxy batcher requests to avoid CORS issues
       '/send-input': {
         target: 'http://localhost:3336',
         changeOrigin: true,
       },
-      // Proxy batcher hand-query endpoint (secondary server on port 9997)
       '/batcher-query': {
         target: 'http://localhost:9997',
         changeOrigin: true,
@@ -166,7 +204,6 @@ export default defineConfig({
     },
   },
   preview: {
-    // Required headers for SharedArrayBuffer in preview mode
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -180,13 +217,11 @@ export default defineConfig({
       ignoreDynamicRequires: true,
     },
     rollupOptions: {
-      // Ensure WebSocket is treated correctly
       external: [],
     },
   },
   optimizeDeps: {
     include: [
-      // CommonJS modules that need pre-bundling for ESM compatibility
       'object-inspect',
       'side-channel',
       'call-bind',
@@ -194,24 +229,30 @@ export default defineConfig({
       'has-symbols',
       'has-proto',
       'function-bind',
-      // Include fp-ts and rxjs for Midnight SDK
       'fp-ts',
       'fp-ts/function',
       'rxjs',
-      // Include isomorphic-ws for proper bundling
       'isomorphic-ws',
+      '@midnight-ntwrk/midnight-js-contracts',
+      'inherits',
+      'debug',
+      'ms',
+      'readable-stream',
+      'string_decoder',
+      'util-deprecate',
+      'core-util-is',
     ],
     exclude: [
-      // Midnight runtime packages that use WASM - must be excluded from pre-bundling
+      '@paima/midnight-wasm-prover',
       '@midnight-ntwrk/onchain-runtime',
       '@midnight-ntwrk/compact-runtime',
       '@midnight-ntwrk/ledger',
-      // WASM bindings with nested worker pattern - must be excluded to preserve import.meta.url
+      '@midnight-ntwrk/ledger-v8',
+      '@midnight-ntwrk/midnight-js-level-private-state-provider',
       '@paima/midnight-vm-bindings',
     ],
     esbuildOptions: {
       target: 'esnext',
-      // Define global for Node.js modules
       define: {
         global: 'globalThis',
       },
@@ -219,17 +260,23 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      // Map isomorphic-ws to native WebSocket in browser
+      crypto: cryptoShimPath,
+      'node:crypto': cryptoShimPath,
+      level: levelShimPath,
       'isomorphic-ws': 'ws',
-      // Shim compact-runtime to provide compatibility between v0.11.0 and midnight-js v2.0.0
-      // midnight-js v2.0.0 expects `constructorContext` but v0.11.0 exports `createConstructorContext`
       '@midnight-ntwrk/compact-runtime': path.resolve(__dirname, 'src/midnight-shim.ts'),
-      // Force consistent version of onchain-runtime
       '@midnight-ntwrk/onchain-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v2'),
       '@midnight-ntwrk/onchain-runtime-v2': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v2'),
     },
+    dedupe: [
+      '@midnight-ntwrk/compact-js',
+      '@midnight-ntwrk/ledger-v8',
+      '@midnight-ntwrk/onchain-runtime-v3',
+      '@midnight-ntwrk/onchain-runtime',
+      '@midnight-ntwrk/compact-runtime',
+      '@midnight-ntwrk/midnight-js-contracts',
+    ],
   },
-  // Handle WASM files from Midnight runtime
   assetsInclude: ['**/*.wasm'],
   worker: {
     format: 'es',
@@ -245,7 +292,6 @@ export default defineConfig({
     },
   },
   define: {
-    // Define global for compatibility
     global: 'globalThis',
   },
 });

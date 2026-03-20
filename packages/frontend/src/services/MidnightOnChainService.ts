@@ -36,7 +36,7 @@ import {
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
-import { createWasmProofProvider } from "../proving/wasm-proof-provider";
+import { getBrowserProofProvider } from "./midnightBrowserProofProvider";
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { assertIsContractAddress, fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
 import type {
@@ -317,22 +317,15 @@ async function initializeProviders(
     shieldedEncryptionPublicKey,
   );
 
-  const zkConfigPath = window.location.origin;
-  const zkConfigProvider = new FetchZkConfigProvider(zkConfigPath, fetch.bind(window));
+  const zkConfigProvider = new FetchZkConfigProvider(window.location.origin, fetch.bind(window));
 
   // Select proof provider based on VITE_PROOF_SERVER_URL:
-  //   - Unset (default/production): WASM in-browser proving via wallet-sdk-prover-client.
-  //     No external proof server required. Recommended since Lace does not ship one.
+  //   - Unset (default/production): WASM in-browser proving via @paima/midnight-wasm-prover.
+  //     Runs in a Web Worker — no external proof server required.
   //   - Set: delegate to the specified HTTP proof server (dev/fallback).
   const proofProvider = PROOF_SERVER_URL
     ? httpClientProofProvider(PROOF_SERVER_URL, zkConfigProvider)
-    : createWasmProofProvider(zkConfigProvider);
-
-  console.log(
-    PROOF_SERVER_URL
-      ? `[MidnightOnChain] Using HTTP proof server: ${PROOF_SERVER_URL}`
-      : "[MidnightOnChain] Using WASM in-browser proving"
-  );
+    : getBrowserProofProvider();
 
   return {
     privateStateProvider: levelPrivateStateProvider({
