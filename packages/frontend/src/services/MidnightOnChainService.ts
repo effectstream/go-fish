@@ -101,6 +101,7 @@ async function notifyBackendSetupComplete(
   playerId: 1 | 2,
   action: "mask_applied" | "dealt_complete"
 ): Promise<void> {
+  console.log(`[MidnightOnChain] Notifying backend: ${action} player=${playerId} lobby=${lobbyId}`);
   try {
     const response = await fetch(`${BACKEND_API_URL}/api/midnight/notify_setup`, {
       method: "POST",
@@ -110,7 +111,7 @@ async function notifyBackendSetupComplete(
     if (!response.ok) {
       console.warn(`[MidnightOnChain] Failed to notify backend: ${response.status}`);
     } else {
-      console.log(`[MidnightOnChain] Backend notified: ${action} for player ${playerId}`);
+      console.log(`[MidnightOnChain] Backend notified OK: ${action} player=${playerId}`);
     }
   } catch (error) {
     console.warn(`[MidnightOnChain] Could not notify backend:`, error);
@@ -780,7 +781,24 @@ export async function onChainApplyMask(
       await notifyBackendSetupComplete(lobbyId, playerId, "mask_applied");
       return { success: true };
     } catch (err: any) {
-      return { success: false, errorMessage: err?.message || String(err) };
+      const msg: string = err?.message || String(err);
+      // The SDK can wrap the delegation sentinel in a higher-level error (e.g.
+      // "EffectStream processing validation failed", "Timeout", etc.) after the
+      // tx has already been posted to the batcher.  Notify the backend so that
+      // setupStateMap is updated and the opponent can proceed.
+      const isDelegated = msg.includes("GoFish: delegated") ||
+        msg.includes("EffectStream") || msg.includes("Timeout") ||
+        msg.includes("timed out") || msg.includes("NetworkError");
+      // "Already applied" means a previous tx was already accepted on-chain —
+      // still notify the backend so setupStateMap reflects the real on-chain state.
+      const isAlreadyApplied = msg.includes("already applied") ||
+        msg.includes("Player has already applied");
+      if (isDelegated || isAlreadyApplied) {
+        console.log("[MidnightOnChain] applyMask threw after delegation or already-applied — notifying backend anyway");
+        await notifyBackendSetupComplete(lobbyId, playerId, "mask_applied");
+        return { success: true };
+      }
+      return { success: false, errorMessage: msg };
     }
   }
 
@@ -823,7 +841,19 @@ export async function onChainDealCards(
       await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
       return { success: true };
     } catch (err: any) {
-      return { success: false, errorMessage: err?.message || String(err) };
+      const msg: string = err?.message || String(err);
+      const isDelegated = msg.includes("GoFish: delegated") ||
+        msg.includes("EffectStream") || msg.includes("Timeout") ||
+        msg.includes("timed out") || msg.includes("NetworkError");
+      // "Already dealt" means a previous tx was already accepted on-chain — notify anyway.
+      const isAlreadyDealt = msg.includes("already dealt") ||
+        msg.includes("Player has already dealt");
+      if (isDelegated || isAlreadyDealt) {
+        console.log("[MidnightOnChain] dealCards threw after delegation or already-dealt — notifying backend anyway");
+        await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
+        return { success: true };
+      }
+      return { success: false, errorMessage: msg };
     }
   }
 

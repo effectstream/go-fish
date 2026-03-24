@@ -690,6 +690,10 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
       isGameOver,
       lastAskedRankRaw,
       lastAskingPlayerRaw,
+      maskP1Raw,
+      maskP2Raw,
+      dealtP1Raw,
+      dealtP2Raw,
     ] = await Promise.all([
       runCircuit("getGamePhase"),
       runCircuit("getCurrentTurn"),
@@ -700,6 +704,10 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
       runCircuit("isGameOver"),
       runCircuit("getLastAskedRank"),
       runCircuit("getLastAskingPlayer"),
+      runCircuit("hasMaskApplied", [1n]),
+      runCircuit("hasMaskApplied", [2n]),
+      runCircuit("hasDealt", [1n]),
+      runCircuit("hasDealt", [2n]),
     ]);
 
     // If phase is null the game doesn't exist on-chain yet
@@ -722,6 +730,8 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
       isGameOver: Boolean(isGameOver),
       lastAskedRank: lastAskedRankNum < 255 ? lastAskedRankNum : null,
       lastAskingPlayer: lastAskingPlayerNum > 0 ? lastAskingPlayerNum : null,
+      maskApplied: [Boolean(maskP1Raw), Boolean(maskP2Raw)] as [boolean, boolean],
+      hasDealt: [Boolean(dealtP1Raw), Boolean(dealtP2Raw)] as [boolean, boolean],
     };
   }
 

@@ -315,11 +315,11 @@ export class LobbyListScreen {
       const lobbyResult = await getLobbyState(lobbyId);
       if (lobbyResult.success && lobbyResult.lobby?.players) {
         const myAddress = getWalletAddress()?.toLowerCase();
-        const existingAddresses = lobbyResult.lobby.players.map(
-          (p: any) => p.wallet_address
-        );
-        const hasCollision = existingAddresses.some(
-          (addr: string) => addr.toLowerCase() === myAddress
+        const existingAddresses = (lobbyResult.lobby.players as any[])
+          .map((p) => p.wallet_address as string | null)
+          .filter((a): a is string => a != null);
+        const hasCollision = myAddress != null && existingAddresses.some(
+          (addr) => addr.toLowerCase() === myAddress
         );
 
         if (hasCollision) {

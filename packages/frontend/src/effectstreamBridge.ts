@@ -59,20 +59,24 @@ const HARDHAT_ACCOUNTS = [
   "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6", // Account #9
 ];
 
-// Local storage key for which Hardhat account to use
+// Session storage key for which Hardhat account to use.
+// Uses sessionStorage (per-tab) rather than localStorage (shared across tabs)
+// so that two browser tabs independently pick different Hardhat accounts,
+// preventing both players from ending up with the same wallet address.
 const LOCAL_WALLET_INDEX_KEY = "go-fish-local-wallet-index";
 
 /**
- * Get or assign a Hardhat account index for this browser session.
- * Uses a random index from 1-9, stored in localStorage for persistence.
+ * Get or assign a Hardhat account index for this browser tab.
+ * Uses a random index from 1-9, stored in sessionStorage for per-tab persistence.
+ * Each tab independently picks its own account so two tabs never collide.
  */
 function getOrAssignAccountIndex(): number {
-  let indexStr = localStorage.getItem(LOCAL_WALLET_INDEX_KEY);
+  let indexStr = sessionStorage.getItem(LOCAL_WALLET_INDEX_KEY);
 
   if (!indexStr) {
     // Assign a random account index (1-9, keeping 0 for other purposes)
     const index = Math.floor(Math.random() * 9) + 1;
-    localStorage.setItem(LOCAL_WALLET_INDEX_KEY, String(index));
+    sessionStorage.setItem(LOCAL_WALLET_INDEX_KEY, String(index));
     console.log('[EffectstreamBridge] Assigned Hardhat account #' + index);
     return index;
   }
@@ -99,7 +103,7 @@ export async function switchAccount(avoidAddresses: string[]): Promise<boolean> 
 
     if (!avoidLower.includes(candidateAddress)) {
       console.log(`[EffectstreamBridge] Switching from account #${currentIndex} to #${candidate} to avoid collision`);
-      localStorage.setItem(LOCAL_WALLET_INDEX_KEY, String(candidate));
+      sessionStorage.setItem(LOCAL_WALLET_INDEX_KEY, String(candidate));
 
       // Reset wallet so it gets re-initialized with the new account
       wallet = null;

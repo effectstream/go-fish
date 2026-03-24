@@ -8,6 +8,10 @@
  *
  * This adapter only adds dust fees (balanceUnboundTransaction) and submits —
  * it never calls the proof server.
+ *
+ * Important: we deserialize using ledger-v7 (same version used by WalletFacade internally)
+ * to avoid a WASM instance mismatch. The browser WASM prover serializes in a wire-compatible
+ * format so ledger-v7's Transaction.deserialize can consume the bytes directly.
  */
 
 import type {
@@ -21,11 +25,11 @@ import {
   syncAndWaitForFunds,
   waitForDustFunds,
   type NetworkUrls as MidnightNetworkUrls,
-} from "jsr:@paimaexample/midnight-contracts@^0.8.4/wallet-info";
-import type { WalletResult } from "jsr:@paimaexample/midnight-contracts@^0.8.4/types";
-import { setNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@3.2.0";
-import { Transaction } from "npm:@midnight-ntwrk/ledger-v8@8.0.2";
-import { hexStringToUint8Array } from "jsr:@paimaexample/utils@^0.8.4";
+} from "@paimaexample/midnight-contracts/wallet-info";
+import type { WalletResult } from "@paimaexample/midnight-contracts/types";
+import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import { Transaction } from "@midnight-ntwrk/ledger-v7";
+import { hexStringToUint8Array } from "@paimaexample/utils";
 
 type BlockchainHash = string;
 interface BlockchainTransactionReceipt {
@@ -50,8 +54,12 @@ const indexer =
 const indexerWS =
   Deno.env.get("INDEXER_WS_URL") || "ws://localhost:8088/api/v3/graphql/ws";
 const node = Deno.env.get("NODE_URL") || "http://localhost:9944";
+// Proof server is optional for the balancing adapter — it only handles
+// balancing of already-proven unbound transactions and never calls the
+// proof server itself. Only pass the URL if explicitly configured so that
+// buildWalletFacade doesn't attempt to connect to it during wallet init.
 const proofServer =
-  Deno.env.get("PROOF_SERVER_URL") || "http://localhost:6300";
+  Deno.env.get("PROOF_SERVER_URL") || "";
 
 // ---------------------------------------------------------------------------
 // Batch payload type
@@ -165,7 +173,8 @@ export class GoFishBalancingAdapter
 
     console.log(`⚡ [balancing] balancing circuit=${data.circuitId} txStage=${data.txStage}`);
 
-    // Deserialize the pre-proven unbound transaction (ledger-v8 format from browser WASM prover)
+    // Deserialize using ledger-v7 (same WASM instance as WalletFacade) to avoid assertClass mismatch.
+    // The browser prover serializes in a wire-compatible format that ledger-v7 can consume directly.
     const txBytes = hexStringToUint8Array(data.tx);
     const unboundTx = Transaction.deserialize(
       "signature",
@@ -198,30 +207,18 @@ export class GoFishBalancingAdapter
 
   async waitForTransactionReceipt(
     hash: BlockchainHash,
-    timeout: number = 300_000,
+    _timeout: number = 300_000,
   ): Promise<BlockchainTransactionReceipt> {
-    const startTime = Date.now();
-    const normalizedHash = hash.toLowerCase().replace(/^0x/, "").slice(-64).padStart(64, "0");
-
-    while (Date.now() - startTime < timeout) {
-      try {
-        const res = await fetch(indexer, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: `query ($hash: String!) { transactions(offset: { hash: $hash }) { hash block { height } } }`,
-            variables: { hash: normalizedHash },
-          }),
-        });
-        const json = await res.json();
-        const txs = json?.data?.transactions;
-        if (txs && txs.length > 0 && txs[0].block?.height !== undefined) {
-          return { hash, blockNumber: BigInt(txs[0].block.height), status: 1 };
-        }
-      } catch { /* retry */ }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    throw new Error(`[balancing] tx confirmation timeout after ${timeout}ms: ${hash}`);
+    // Midnight circuit proving/confirmation takes 60–300s, well beyond the batcher's
+    // internal 60s processBatchForTarget timeout. Returning immediately here removes the
+    // input from the batcher queue as soon as submitTransaction succeeds, preventing
+    // duplicate submission on the next polling cycle (Custom error: 193).
+    //
+    // The transaction was already submitted to the network — it will confirm independently.
+    // We use the current block height as a best-effort blockNumber (0 is also acceptable).
+    const currentBlock = await this.getBlockNumber().catch(() => 0n);
+    console.log(`⚡ [balancing] waitForTransactionReceipt: tx=${hash.slice(0, 16)}… accepted (no-wait), block≈${currentBlock}`);
+    return { hash, blockNumber: currentBlock, status: 1 };
   }
 
   getAccountAddress(): string {

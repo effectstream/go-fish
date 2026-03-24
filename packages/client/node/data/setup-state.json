@@ -322,5 +322,61 @@
   "lobby_57_1774031966710:1": {
     "hasMaskApplied": true,
     "hasDealt": true
+  },
+  "lobby_6_1774291232389:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_6_1774291232389:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_5_1774292285204:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_5_1774292285204:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_198_1774298292678:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_11_1774301107619:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_11_1774301107619:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "LOBBY_ID_HERE:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_667_1774304629983:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_667_1774304629983:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_11_1774358844928:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_11_1774358844928:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_6_1774376680705:1": {
+    "hasMaskApplied": true,
+    "hasDealt": false
+  },
+  "lobby_6_1774376680705:2": {
+    "hasMaskApplied": true,
+    "hasDealt": false
   }
 }

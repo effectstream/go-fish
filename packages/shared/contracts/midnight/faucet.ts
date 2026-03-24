@@ -132,7 +132,9 @@ export function createWalletConfiguration(
       indexerHttpUrl: networkUrls.indexer,
       indexerWsUrl: networkUrls.indexerWS,
     },
-    provingServerUrl: new URL(networkUrls.proofServer),
+    // provingServerUrl is optional (Partial<DefaultProvingConfiguration>).
+    // Omit it when not configured so the wallet doesn't attempt to connect.
+    ...(networkUrls.proofServer ? { provingServerUrl: new URL(networkUrls.proofServer) } : {}),
     relayURL: new URL(networkUrls.node.replace("http", "ws")),
     networkId: networkId,
   };

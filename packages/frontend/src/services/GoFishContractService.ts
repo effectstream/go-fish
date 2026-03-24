@@ -237,15 +237,21 @@ async function callDelegated(
   circuitId: string,
   callFn: () => Promise<any>,
 ): Promise<void> {
+  let delegated = false;
+
   provider.__delegatedBalanceHook = async (tx: any) => {
     const serializedTx = toHex((tx as any).serialize());
     await postToBatcher(serializedTx, circuitId);
+    delegated = true;  // posted successfully — any subsequent SDK throw is safe to suppress
   };
 
   try {
     await callFn();
   } catch (error) {
-    if (isDelegationError(error)) return;
+    // Suppress if: (a) the sentinel propagated through the SDK, or (b) we already
+    // posted to the batcher and the SDK threw after balanceTx returned (e.g.,
+    // EffectStream validation error, submitTx unreachable, etc.)
+    if (isDelegationError(error) || delegated) return;
     throw error;
   } finally {
     delete provider.__delegatedBalanceHook;
@@ -256,23 +262,28 @@ async function callDelegated(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function lobbyIdToGameIdHex(lobbyId: string): string {
+function lobbyIdToGameId(lobbyId: string): Uint8Array {
   const enc = new TextEncoder().encode(lobbyId);
   const b = new Uint8Array(32);
   b.set(enc.slice(0, 32));
-  return "0x" + Array.from(b).map(x => x.toString(16).padStart(2, "0")).join("");
+  return b;
+}
+
+function gameIdToHex(gameId: Uint8Array): string {
+  return "0x" + Array.from(gameId).map(x => x.toString(16).padStart(2, "0")).join("");
 }
 
 /** Set secrets for both players before a circuit call. Clears in finally. */
 function withSecrets<T>(
   lobbyId: string,
   primaryId: 1 | 2,
-  fn: (gameIdHex: string) => Promise<T>,
+  fn: (gameId: Uint8Array) => Promise<T>,
 ): Promise<T> {
-  const gameIdHex = lobbyIdToGameIdHex(lobbyId);
+  const gameId = lobbyIdToGameId(lobbyId);
+  const gameIdHex = gameIdToHex(gameId);
   const oppId = primaryId === 1 ? 2 : 1;
 
-  // Set primary player secrets
+  // Set primary player secrets (uses hex key to match witness lookup)
   const secret = PlayerKeyManager.getPlayerSecret(lobbyId, primaryId);
   const seed = PlayerKeyManager.getShuffleSeed(lobbyId, primaryId);
   setPlayerSecrets(gameIdHex, primaryId, secret, seed);
@@ -284,7 +295,7 @@ function withSecrets<T>(
     setPlayerSecrets(gameIdHex, oppId, oppSecret, oppSeed);
   }
 
-  return fn(gameIdHex).finally(() => {
+  return fn(gameId).finally(() => {
     clearPlayerSecrets(gameIdHex, primaryId);
     if (PlayerKeyManager.hasExistingKeys(lobbyId, oppId)) {
       clearPlayerSecrets(gameIdHex, oppId);
@@ -312,9 +323,9 @@ export async function callApplyMask(lobbyId: string, playerId: 1 | 2): Promise<v
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
 
-  await withSecrets(lobbyId, playerId, async (gameIdHex) => {
+  await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "applyMask", () =>
-      contract.callTx.applyMask(gameIdHex, BigInt(playerId))
+      contract.callTx.applyMask(gameId, BigInt(playerId))
     );
   });
 }
@@ -323,9 +334,9 @@ export async function callDealCards(lobbyId: string, playerId: 1 | 2): Promise<v
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
 
-  await withSecrets(lobbyId, playerId, async (gameIdHex) => {
+  await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "dealCards", () =>
-      contract.callTx.dealCards(gameIdHex, BigInt(playerId))
+      contract.callTx.dealCards(gameId, BigInt(playerId))
     );
   });
 }
@@ -339,9 +350,9 @@ export async function callAskForCard(
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  await withSecrets(lobbyId, playerId, async (gameIdHex) => {
+  await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "askForCard", () =>
-      contract.callTx.askForCard(gameIdHex, BigInt(playerId), BigInt(rank), now)
+      contract.callTx.askForCard(gameId, BigInt(playerId), BigInt(rank), now)
     );
   });
 }
@@ -351,9 +362,9 @@ export async function callRespondToAsk(lobbyId: string, playerId: 1 | 2): Promis
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  await withSecrets(lobbyId, playerId, async (gameIdHex) => {
+  await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "respondToAsk", () =>
-      contract.callTx.respondToAsk(gameIdHex, BigInt(playerId), now)
+      contract.callTx.respondToAsk(gameId, BigInt(playerId), now)
     );
   });
 }
@@ -363,9 +374,9 @@ export async function callGoFish(lobbyId: string, playerId: 1 | 2): Promise<void
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  await withSecrets(lobbyId, playerId, async (gameIdHex) => {
+  await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "goFish", () =>
-      contract.callTx.goFish(gameIdHex, BigInt(playerId), now)
+      contract.callTx.goFish(gameId, BigInt(playerId), now)
     );
   });
 }
@@ -379,9 +390,9 @@ export async function callAfterGoFish(
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  await withSecrets(lobbyId, playerId, async (gameIdHex) => {
+  await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "afterGoFish", () =>
-      contract.callTx.afterGoFish(gameIdHex, BigInt(playerId), drewRequestedCard, now)
+      contract.callTx.afterGoFish(gameId, BigInt(playerId), drewRequestedCard, now)
     );
   });
 }
@@ -389,19 +400,19 @@ export async function callAfterGoFish(
 export async function callSwitchTurn(lobbyId: string, playerId: 1 | 2): Promise<void> {
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
-  const gameIdHex = lobbyIdToGameIdHex(lobbyId);
+  const gameId = lobbyIdToGameId(lobbyId);
 
   await callDelegated(provider, "switchTurn", () =>
-    contract.callTx.switchTurn(gameIdHex, BigInt(playerId))
+    contract.callTx.switchTurn(gameId, BigInt(playerId))
   );
 }
 
 export async function callClaimTimeoutWin(lobbyId: string, playerId: 1 | 2): Promise<void> {
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
-  const gameIdHex = lobbyIdToGameIdHex(lobbyId);
+  const gameId = lobbyIdToGameId(lobbyId);
 
   await callDelegated(provider, "claimTimeoutWin", () =>
-    contract.callTx.claimTimeoutWin(gameIdHex, BigInt(playerId))
+    contract.callTx.claimTimeoutWin(gameId, BigInt(playerId))
   );
 }

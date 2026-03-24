@@ -57,14 +57,27 @@ if (!useTypescriptContract && !skipMidnightInfra) {
     }
   }
   goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
+} else if (!useTypescriptContract && skipMidnightInfra) {
+  // SKIP_MIDNIGHT_INFRA=true means the local node/indexer/proof-server were started
+  // externally (or on testnet).  We still need the query adapter so /query-game-state
+  // can read on-chain state.  We do NOT register it as a batcher target — the
+  // balancing adapter handles actual tx submission in this mode.
+  try {
+    const midnightAdapters = await import("./adapter-midnight.ts");
+    goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
+    console.log("🔍 Midnight query adapter initialized (SKIP_MIDNIGHT_INFRA mode)");
+  } catch (err) {
+    console.warn("⚠️ Could not initialize Midnight query adapter:", err);
+  }
 } else {
   console.log("📝 Skipping legacy Midnight circuit adapter");
 }
 
 // midnight_balancing: handles pre-proven unbound transactions from the browser WASM prover.
-// Always registered (unless SKIP_MIDNIGHT_INFRA=true) — does not need a contract address,
-// only dust-wallet credentials and indexer/node URLs.
-if (!skipMidnightInfra) {
+// Registered whenever batcher mode is active — SKIP_MIDNIGHT_INFRA only skips launching
+// the local Midnight node/indexer/proof-server, not the balancing adapter itself, which
+// connects to an already-running (possibly external) Midnight network.
+if (!useTypescriptContract) {
   try {
     const { goFishBalancingAdapter } = await import("./adapter-midnight-balancing.ts");
     batcher.addBlockchainAdapter("midnight_balancing", goFishBalancingAdapter, {

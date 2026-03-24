@@ -14,6 +14,7 @@ import {
   markMaskApplied,
   markDealtComplete,
   isValidLobbyId,
+  queryOnChainSetupStatuses,
 } from "./midnight-onchain.ts";
 import {
   getPlayerHand as getMidnightPlayerHand,
@@ -851,13 +852,47 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(400).send({ error: 'Invalid player_id (must be 1 or 2)' });
     }
 
-    const hasMaskApplied = await queryHasMaskApplied(lobby_id, playerId);
-    const hasDealt = await queryHasDealt(lobby_id, playerId);
+    let hasMaskApplied = await queryHasMaskApplied(lobby_id, playerId);
+    let hasDealt = await queryHasDealt(lobby_id, playerId);
 
     // Also check opponent's status for coordination
     const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
-    const opponentHasMaskApplied = await queryHasMaskApplied(lobby_id, opponentId);
-    const opponentHasDealt = await queryHasDealt(lobby_id, opponentId);
+    let opponentHasMaskApplied = await queryHasMaskApplied(lobby_id, opponentId);
+    let opponentHasDealt = await queryHasDealt(lobby_id, opponentId);
+
+    // If any status is false, cross-check against the real on-chain state via the batcher query.
+    // This handles the case where notify_setup was missed (e.g. silent fetch failure in browser).
+    if (!hasMaskApplied || !opponentHasMaskApplied || !hasDealt || !opponentHasDealt) {
+      const onChainSetup = await queryOnChainSetupStatuses(lobby_id);
+      if (onChainSetup) {
+        const [p1Mask, p2Mask] = onChainSetup.maskApplied;
+        const [p1Dealt, p2Dealt] = onChainSetup.hasDealt;
+
+        // Back-populate setupStateMap for any player whose on-chain state is ahead of local map
+        if (p1Mask && !await queryHasMaskApplied(lobby_id, 1)) {
+          markMaskApplied(lobby_id, 1);
+          console.log(`[API] setup_status: back-populated maskApplied for lobby=${lobby_id} player=1 from on-chain`);
+        }
+        if (p2Mask && !await queryHasMaskApplied(lobby_id, 2)) {
+          markMaskApplied(lobby_id, 2);
+          console.log(`[API] setup_status: back-populated maskApplied for lobby=${lobby_id} player=2 from on-chain`);
+        }
+        if (p1Dealt && !await queryHasDealt(lobby_id, 1)) {
+          markDealtComplete(lobby_id, 1);
+          console.log(`[API] setup_status: back-populated hasDealt for lobby=${lobby_id} player=1 from on-chain`);
+        }
+        if (p2Dealt && !await queryHasDealt(lobby_id, 2)) {
+          markDealtComplete(lobby_id, 2);
+          console.log(`[API] setup_status: back-populated hasDealt for lobby=${lobby_id} player=2 from on-chain`);
+        }
+
+        // Re-read from map after potential updates
+        hasMaskApplied = await queryHasMaskApplied(lobby_id, playerId);
+        hasDealt = await queryHasDealt(lobby_id, playerId);
+        opponentHasMaskApplied = await queryHasMaskApplied(lobby_id, opponentId);
+        opponentHasDealt = await queryHasDealt(lobby_id, opponentId);
+      }
+    }
 
     return {
       hasMaskApplied,

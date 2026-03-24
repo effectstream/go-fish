@@ -320,6 +320,37 @@ export async function queryOnChainGameState(lobbyId: string): Promise<GameState>
 }
 
 /**
+ * Query mask/deal status directly from the batcher's on-chain state.
+ * Returns null if the game doesn't exist on-chain yet or the query fails.
+ * Used by setup_status endpoint to detect states missed by notify_setup.
+ */
+export async function queryOnChainSetupStatuses(lobbyId: string): Promise<{
+  maskApplied: [boolean, boolean];
+  hasDealt: [boolean, boolean];
+} | null> {
+  try {
+    const response = await fetch(`${BATCHER_QUERY_URL}/query-game-state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lobbyId }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as {
+      exists: boolean;
+      maskApplied?: [boolean, boolean];
+      hasDealt?: [boolean, boolean];
+    };
+    if (!data.exists || !data.maskApplied) return null;
+    return {
+      maskApplied: data.maskApplied,
+      hasDealt: data.hasDealt ?? [false, false],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Check if the on-chain service is available
  */
 export function isOnChainServiceAvailable(): boolean {
