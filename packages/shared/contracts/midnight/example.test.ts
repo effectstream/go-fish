@@ -261,15 +261,16 @@ class GoFishSimulator {
 // LOGGING HELPERS
 // ============================================
 
-const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-const SUIT_NAMES = ['♠', '♥', '♦', '♣'];
+// Contract uses 7 ranks × 3 suits = 21 cards. Card index = rank + (suit * 7)
+const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7'];
+const SUIT_NAMES = ['♠', '♥', '♦'];
 
 function getCardRank(cardValue: bigint): number {
-	return Number(cardValue) % 13;
+	return Number(cardValue) % 7;
 }
 
 function getCardSuit(cardValue: bigint): number {
-	return Math.floor(Number(cardValue) / 13);
+	return Math.floor(Number(cardValue) / 7);
 }
 
 function formatCard(cardValue: bigint): string {
@@ -358,6 +359,18 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	const gameId = sim.gameId;
 	
 	// ============================================
+	// SETUP: init_deck (one-time static deck initialization)
+	// ============================================
+	logSection('SETUP: init_deck (initialize static deck)');
+	try {
+		const r = provableCircuits.init_deck(sim.circuitContext);
+		sim.circuitContext = r.context;
+		log('  ✅ Static deck initialized');
+	} catch (e) {
+		log(`  ❌ init_deck failed: ${e}`);
+	}
+
+	// ============================================
 	// TEST 1: applyMask (Player 1) - This creates the game
 	// ============================================
 	logSection('TEST 1: applyMask (Player 1) - creates game');
@@ -377,10 +390,10 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		const r = circuits.get_deck_size(sim.circuitContext, gameId);
 		sim.circuitContext = r.context;
 		const deckSize = Number(r.result);
-		if (deckSize === 52) {
+		if (deckSize === 21) {
 			recordTest('get_deck_size', true, null, `deck has ${deckSize} cards`);
 		} else {
-			recordTest('get_deck_size', false, `Expected 52, got ${deckSize}`);
+			recordTest('get_deck_size', false, `Expected 21, got ${deckSize}`);
 		}
 	} catch (e) {
 		recordTest('get_deck_size', false, e);
@@ -519,7 +532,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	}
 	
 	// ============================================
-	// TEST 11: dealCards (deals 7 cards to each player)
+	// TEST 11: dealCards (deals 4 cards to each player)
 	// ============================================
 	logSection('TEST 11: dealCards');
 	try {
@@ -536,8 +549,8 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		logInfo(`After dealCards: P1=${p1Size} cards, P2=${p2Size} cards`);
 		
-		if (p1Size === 7 && p2Size === 7) {
-			recordTest('dealCards', true, null, '7 cards dealt to each player');
+		if (p1Size === 4 && p2Size === 4) {
+			recordTest('dealCards', true, null, '4 cards dealt to each player');
 		} else {
 			recordTest('dealCards', true, null, `P1=${p1Size}, P2=${p2Size} (hand tracking may be shared)`);
 		}
@@ -553,11 +566,11 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		const r = circuits.get_top_card_index(sim.circuitContext, gameId);
 		sim.circuitContext = r.context;
 		const topIndex = Number(r.result);
-		// After dealing 14 cards (7 each), top index should be 14
-		if (topIndex === 14) {
+		// After dealing 8 cards (4 each), top index should be 8
+		if (topIndex === 8) {
 			recordTest('get_top_card_index (after deal)', true, null, `top card index = ${topIndex}`);
 		} else {
-			recordTest('get_top_card_index (after deal)', true, null, `top card index = ${topIndex} (expected 14)`);
+			recordTest('get_top_card_index (after deal)', true, null, `top card index = ${topIndex} (expected 8)`);
 		}
 	} catch (e) {
 		recordTest('get_top_card_index (after deal)', false, e);
@@ -607,7 +620,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		const p2Size = Number(sizes[1]);
 		logInfo(`Hand sizes: P1=${p1Size}, P2=${p2Size}`);
 		
-		if (p1Size === 7 && p2Size === 7) {
+		if (p1Size === 4 && p2Size === 4) {
 			recordTest('getHandSizes (after deal)', true, null, `hand sizes = [${p1Size}, ${p2Size}]`);
 		} else {
 			// Hand modules may share state
@@ -623,7 +636,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	logSection('TEST 16: Discover player hands');
 	try {
 		// Check all 52 cards to find what each player has
-		for (let cardIdx = 0; cardIdx < 52; cardIdx++) {
+		for (let cardIdx = 0; cardIdx < 21; cardIdx++) {
 			const r1 = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId, BigInt(1), BigInt(cardIdx));
 			sim.circuitContext = r1.context;
 			if (r1.result === true) {
@@ -641,10 +654,10 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		logInfo(`P2 hand (${sim.player2Hand.length}): ${sim.player2Hand.map(c => formatCard(c)).join(', ')}`);
 		
 		const totalCards = sim.player1Hand.length + sim.player2Hand.length;
-		if (totalCards === 14) {
+		if (totalCards === 8) {
 			recordTest('Discover player hands', true, null, `found ${totalCards} cards total`);
 		} else {
-			recordTest('Discover player hands', true, null, `found ${totalCards} cards (expected 14)`);
+			recordTest('Discover player hands', true, null, `found ${totalCards} cards (expected 8)`);
 		}
 	} catch (e) {
 		recordTest('Discover player hands', false, e);
@@ -708,10 +721,10 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			const knownRank = getCardRank(sim.player1Hand[0]!);
 			const localCount = sim.player1Hand.filter(c => getCardRank(c) === knownRank).length;
 			
-			// Count using doesPlayerHaveSpecificCard for each suit
+			// Count using doesPlayerHaveSpecificCard for each suit (3 suits)
 			let contractCount = 0;
-			for (let suit = 0; suit < 4; suit++) {
-				const cardIdx = knownRank + (suit * 13);
+			for (let suit = 0; suit < 3; suit++) {
+				const cardIdx = knownRank + (suit * 7);
 				const r = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId, BigInt(1), BigInt(cardIdx));
 				sim.circuitContext = r.context;
 				if (r.result === true) contractCount++;
@@ -805,10 +818,10 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			const knownRank = getCardRank(sim.player2Hand[0]!);
 			const localCount = sim.player2Hand.filter(c => getCardRank(c) === knownRank).length;
 			
-			// Count using doesPlayerHaveSpecificCard for each suit
+			// Count using doesPlayerHaveSpecificCard for each suit (3 suits)
 			let contractCount = 0;
-			for (let suit = 0; suit < 4; suit++) {
-				const cardIdx = knownRank + (suit * 13);
+			for (let suit = 0; suit < 3; suit++) {
+				const cardIdx = knownRank + (suit * 7);
 				const r = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId, BigInt(2), BigInt(cardIdx));
 				sim.circuitContext = r.context;
 				if (r.result === true) contractCount++;
@@ -865,7 +878,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		sim.circuitContext = r.context;
 		const isEmpty = r.result;
 		
-		// We've drawn 12 cards (6+6), deck should have 40 left
+		// We've drawn 8 cards (4+4), deck should have 13 left
 		if (isEmpty === false) {
 			recordTest('isDeckEmpty (after draws)', true, null, 'deck still has cards');
 		} else {
@@ -1051,7 +1064,15 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	sim.reset();
 	const gameId2 = sim.gameId;
 	log(`New Game ID: ${formatGameId(gameId2)}`);
-	
+
+	// Re-initialize static deck after reset
+	try {
+		const rInit = provableCircuits.init_deck(sim.circuitContext);
+		sim.circuitContext = rInit.context;
+	} catch (e) {
+		log(`  ❌ init_deck (reset) failed: ${e}`);
+	}
+
 	// ============================================
 	// TEST 32: applyMask (fresh state)
 	// ============================================
@@ -1077,7 +1098,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		sim.circuitContext = r2.context;
 		
 		// Discover hands using doesPlayerHaveSpecificCard
-		for (let cardIdx = 0; cardIdx < 52; cardIdx++) {
+		for (let cardIdx = 0; cardIdx < 21; cardIdx++) {
 			const r1 = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId2, BigInt(1), BigInt(cardIdx));
 			sim.circuitContext = r1.context;
 			if (r1.result === true) {
@@ -1094,8 +1115,8 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		logInfo(`P1 hand (${sim.player1Hand.length}): ${formatHand(sim.player1Hand)}`);
 		logInfo(`P2 hand (${sim.player2Hand.length}): ${formatHand(sim.player2Hand)}`);
 		
-		if (sim.player1Hand.length === 7 && sim.player2Hand.length === 7) {
-			recordTest('dealCards', true, null, 'dealt 7 cards to each player');
+		if (sim.player1Hand.length === 4 && sim.player2Hand.length === 4) {
+			recordTest('dealCards', true, null, 'dealt 4 cards to each player');
 		} else {
 			recordTest('dealCards', true, null, `P1=${sim.player1Hand.length}, P2=${sim.player2Hand.length} cards`);
 		}
@@ -1143,9 +1164,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			logInfo(`Player ${currentPlayer} asking for rank ${RANK_NAMES[askedRank]}`);
 			
 			// Call askForCard then respondToAsk
-			const r = provableCircuits.askForCard(sim.circuitContext, gameId2, BigInt(currentPlayer), BigInt(askedRank));
+			const r = provableCircuits.askForCard(sim.circuitContext, gameId2, BigInt(currentPlayer), BigInt(askedRank), BigInt(Date.now()));
 			sim.circuitContext = r.context;
-			const r2 = provableCircuits.respondToAsk(sim.circuitContext, gameId2, BigInt(opponentPlayer));
+			const r2 = provableCircuits.respondToAsk(sim.circuitContext, gameId2, BigInt(opponentPlayer), BigInt(Date.now()));
 			sim.circuitContext = r2.context;
 			
 			const result = r2.result;
@@ -1184,7 +1205,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			const currentPlayer = Number(turnR.result);
 			
 			// Draw a card using goFish
-			const r = provableCircuits.goFish(sim.circuitContext, gameId2, BigInt(currentPlayer));
+			const r = provableCircuits.goFish(sim.circuitContext, gameId2, BigInt(currentPlayer), BigInt(Date.now()));
 			sim.circuitContext = r.context;
 			const drawnPoint = r.result;
 			
@@ -1238,7 +1259,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			logInfo(`Drew requested card (${RANK_NAMES[askedRank]})? ${drewRequestedCard}`);
 			
 			// afterGoFish now requires gameId and playerId
-			const r = provableCircuits.afterGoFish(sim.circuitContext, gameId2, BigInt(currentPlayer), drewRequestedCard);
+			const r = provableCircuits.afterGoFish(sim.circuitContext, gameId2, BigInt(currentPlayer), drewRequestedCard, BigInt(Date.now()));
 			sim.circuitContext = r.context;
 			
 			const phaseAfter = circuits.getGamePhase(sim.circuitContext, gameId2);
@@ -1265,21 +1286,21 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		// Count how many of this rank P1 has (using doesPlayerHaveSpecificCard)
 		let p1Count = 0;
-		for (let suit = 0; suit < 4; suit++) {
-			const cardIdx = testRank + (suit * 13);
+		for (let suit = 0; suit < 3; suit++) {
+			const cardIdx = testRank + (suit * 7);
 			const countR = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId2, BigInt(1), BigInt(cardIdx));
 			sim.circuitContext = countR.context;
 			if (countR.result === true) p1Count++;
 		}
 		logInfo(`P1 has ${p1Count} ${RANK_NAMES[testRank]}s`);
-		
+
 		const r = provableCircuits.checkAndScoreBook(sim.circuitContext, gameId2, BigInt(1), BigInt(testRank));
 		sim.circuitContext = r.context;
 		const scored = r.result;
-		
+
 		logInfo(`checkAndScoreBook returned: ${scored}`);
-		
-		if (p1Count === 4) {
+
+		if (p1Count === 3) {
 			if (scored === true) {
 				recordTest('checkAndScoreBook', true, null, `scored book of ${RANK_NAMES[testRank]}s`);
 			} else {
@@ -1516,11 +1537,11 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		logInfo(`Game A hands: P1=${handA.result[0]}, P2=${handA.result[1]}`);
 		logInfo(`Game B hands: P1=${handB.result[0]}, P2=${handB.result[1]}`);
 		
-		const aValid = Number(handA.result[0]) === 7 && Number(handA.result[1]) === 7;
-		const bValid = Number(handB.result[0]) === 7 && Number(handB.result[1]) === 7;
-		
+		const aValid = Number(handA.result[0]) === 4 && Number(handA.result[1]) === 4;
+		const bValid = Number(handB.result[0]) === 4 && Number(handB.result[1]) === 4;
+
 		if (aValid && bValid) {
-			recordTest('Independent hand sizes', true, null, 'both games have 7 cards each player');
+			recordTest('Independent hand sizes', true, null, 'both games have 4 cards each player');
 		} else {
 			recordTest('Independent hand sizes', false, `Invalid hand sizes`);
 		}
@@ -1541,11 +1562,11 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		logInfo(`Game A top index: ${topA.result}`);
 		logInfo(`Game B top index: ${topB.result}`);
 		
-		// Both should be at 14 (7 cards dealt to each player)
-		if (Number(topA.result) === 14 && Number(topB.result) === 14) {
-			recordTest('Independent deck indices', true, null, 'both games at card 14');
+		// Both should be at 8 (4 cards dealt to each player)
+		if (Number(topA.result) === 8 && Number(topB.result) === 8) {
+			recordTest('Independent deck indices', true, null, 'both games at card 8');
 		} else {
-			recordTest('Independent deck indices', false, `Expected 14 for both`);
+			recordTest('Independent deck indices', false, `Expected 8 for both, got A=${topA.result} B=${topB.result}`);
 		}
 	} catch (e) {
 		recordTest('Independent deck indices', false, e);
@@ -1586,11 +1607,11 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		logInfo(`Game A cards dealt: P1=${dealtA1.result}, P2=${dealtA2.result}`);
 		
-		// Player 1 dealt 7 cards to P2, Player 2 dealt 7 cards to P1
-		if (Number(dealtA1.result) === 7 && Number(dealtA2.result) === 7) {
+		// Player 1 dealt 4 cards to P2, Player 2 dealt 4 cards to P1
+		if (Number(dealtA1.result) === 4 && Number(dealtA2.result) === 4) {
 			recordTest('getCardsDealt', true, null, 'correct card counts');
 		} else {
-			recordTest('getCardsDealt', false, `Expected 7 each`);
+			recordTest('getCardsDealt', false, `Expected 4 each, got P1=${dealtA1.result} P2=${dealtA2.result}`);
 		}
 	} catch (e) {
 		recordTest('getCardsDealt', false, e);
@@ -1604,7 +1625,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	let gameAAskedRank = -1;
 	try {
 		// Discover P1's hand in Game A
-		for (let cardIdx = 0; cardIdx < 52; cardIdx++) {
+		for (let cardIdx = 0; cardIdx < 21; cardIdx++) {
 			const r = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameA, BigInt(1), BigInt(cardIdx));
 			sim.circuitContext = r.context;
 			if (r.result === true) {
@@ -1614,9 +1635,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		// P1 asks for a card
 		gameAAskedRank = getCardRank(gameAPlayer1Hand[0]!);
-		const askR = provableCircuits.askForCard(sim.circuitContext, gameA, BigInt(1), BigInt(gameAAskedRank));
+		const askR = provableCircuits.askForCard(sim.circuitContext, gameA, BigInt(1), BigInt(gameAAskedRank), BigInt(Date.now()));
 		sim.circuitContext = askR.context;
-		
+
 		recordTest('Play turn in Game A', true, null, `P1 asked for ${RANK_NAMES[gameAAskedRank]}`);
 	} catch (e) {
 		recordTest('Play turn in Game A', false, e);
@@ -1697,7 +1718,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 57: Complete turn in Game A');
 	try {
-		const respondR = provableCircuits.respondToAsk(sim.circuitContext, gameA, BigInt(2));
+		const respondR = provableCircuits.respondToAsk(sim.circuitContext, gameA, BigInt(2), BigInt(Date.now()));
 		sim.circuitContext = respondR.context;
 		
 		const opponentHadCards = respondR.result[0] as boolean;
@@ -1717,7 +1738,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	try {
 		// Discover P1's hand in Game B
 		let gameBPlayer1Hand: bigint[] = [];
-		for (let cardIdx = 0; cardIdx < 52; cardIdx++) {
+		for (let cardIdx = 0; cardIdx < 21; cardIdx++) {
 			const r = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameB, BigInt(1), BigInt(cardIdx));
 			sim.circuitContext = r.context;
 			if (r.result === true) {
@@ -1727,11 +1748,11 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		// P1 asks for a card in game B
 		const gameBAskedRank = getCardRank(gameBPlayer1Hand[0]!);
-		const askR = provableCircuits.askForCard(sim.circuitContext, gameB, BigInt(1), BigInt(gameBAskedRank));
+		const askR = provableCircuits.askForCard(sim.circuitContext, gameB, BigInt(1), BigInt(gameBAskedRank), BigInt(Date.now()));
 		sim.circuitContext = askR.context;
-		
+
 		// Respond
-		const respondR = provableCircuits.respondToAsk(sim.circuitContext, gameB, BigInt(2));
+		const respondR = provableCircuits.respondToAsk(sim.circuitContext, gameB, BigInt(2), BigInt(Date.now()));
 		sim.circuitContext = respondR.context;
 		
 		recordTest('Play turn in Game B', true, null, `P1 asked for ${RANK_NAMES[gameBAskedRank]}`);
@@ -1787,7 +1808,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			const currentTurn = circuits.getCurrentTurn(sim.circuitContext, gameA);
 			sim.circuitContext = currentTurn.context;
 			
-			const goFishR = provableCircuits.goFish(sim.circuitContext, gameA, currentTurn.result);
+			const goFishR = provableCircuits.goFish(sim.circuitContext, gameA, currentTurn.result, BigInt(Date.now()));
 			sim.circuitContext = goFishR.context;
 			
 			// Decrypt the drawn card
@@ -1802,7 +1823,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			// Complete with afterGoFish
 			const drawnRank = getCardRank(cardR.result);
 			const drewRequested = drawnRank === gameAAskedRank;
-			const afterR = provableCircuits.afterGoFish(sim.circuitContext, gameA, currentTurn.result, drewRequested);
+			const afterR = provableCircuits.afterGoFish(sim.circuitContext, gameA, currentTurn.result, drewRequested, BigInt(Date.now()));
 			sim.circuitContext = afterR.context;
 			
 			recordTest('Go Fish in Game A', true, null, `drew ${formatCard(cardR.result)}`);
@@ -1823,9 +1844,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		logInfo(`Game B top card index: ${topB.result}`);
 		
-		// Game B should still be at 14 (no draws happened in game B)
-		if (Number(topB.result) === 14) {
-			recordTest('Game B deck unchanged', true, null, 'deck index unchanged at 14');
+		// Game B should still be at 8 (no draws happened in game B since dealing)
+		if (Number(topB.result) === 8) {
+			recordTest('Game B deck unchanged', true, null, 'deck index unchanged at 8');
 		} else {
 			recordTest('Game B deck unchanged', true, null, `deck index is ${topB.result}`);
 		}
@@ -1945,13 +1966,13 @@ function checkAndScoreBooks(hand: bigint[], books: number[]): number[] {
 		byRank.get(rank)!.push(card);
 	}
 	
-	// Check for 4 of a kind
+	// Check for 3 of a kind (one per suit, 3 suits in this deck)
 	for (const [rank, cards] of byRank.entries()) {
-		if (cards.length === 4 && !books.includes(rank)) {
+		if (cards.length === 3 && !books.includes(rank)) {
 			newBooks.push(rank);
 			books.push(rank);
 			
-			// Remove all 4 cards from hand
+			// Remove all 3 cards from hand
 			for (const card of cards) {
 				const idx = hand.indexOf(card);
 				if (idx !== -1) hand.splice(idx, 1);
@@ -2014,7 +2035,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 	const refreshHands = () => {
 		sim.player1Hand = [];
 		sim.player2Hand = [];
-		for (let cardIdx = 0; cardIdx < 52; cardIdx++) {
+		for (let cardIdx = 0; cardIdx < 21; cardIdx++) {
 			const r1 = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId, BigInt(1), BigInt(cardIdx));
 			sim.circuitContext = r1.context;
 			if (r1.result === true) {
@@ -2093,9 +2114,9 @@ async function runGameSimulation(sim: GoFishSimulator) {
 		
 		try {
 			// Call askForCard then respondToAsk
-			const askR = provableCircuits.askForCard(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rankToAsk));
+			const askR = provableCircuits.askForCard(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rankToAsk), BigInt(Date.now()));
 			sim.circuitContext = askR.context;
-			const askR2 = provableCircuits.respondToAsk(sim.circuitContext, gameId, BigInt(opponentPlayer));
+			const askR2 = provableCircuits.respondToAsk(sim.circuitContext, gameId, BigInt(opponentPlayer), BigInt(Date.now()));
 			sim.circuitContext = askR2.context;
 			
 			const opponentHadCards = askR2.result[0] as boolean;
@@ -2118,7 +2139,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 					const deckSize = Number(r2.result);
 					
 					if (topIdx < deckSize) {
-						const goFishR = provableCircuits.goFish(sim.circuitContext, gameId, BigInt(currentPlayer));
+						const goFishR = provableCircuits.goFish(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(Date.now()));
 						sim.circuitContext = goFishR.context;
 						const drawnPoint = goFishR.result;
 						
@@ -2133,7 +2154,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 						
 						// Call afterGoFish with whether we drew the requested card
 						const drewRequested = drawnRank === rankToAsk;
-						const afterR = provableCircuits.afterGoFish(sim.circuitContext, gameId, BigInt(currentPlayer), drewRequested);
+						const afterR = provableCircuits.afterGoFish(sim.circuitContext, gameId, BigInt(currentPlayer), drewRequested, BigInt(Date.now()));
 						sim.circuitContext = afterR.context;
 						
 						// Refresh hands
