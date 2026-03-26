@@ -9,9 +9,9 @@
  * This adapter only adds dust fees (balanceUnboundTransaction) and submits —
  * it never calls the proof server.
  *
- * Important: we deserialize using ledger-v7 (same version used by WalletFacade internally)
- * to avoid a WASM instance mismatch. The browser WASM prover serializes in a wire-compatible
- * format so ledger-v7's Transaction.deserialize can consume the bytes directly.
+ * We deserialize using ledger-v8 — the same version used by WalletFacade internally
+ * (via @paimaexample/midnight-contracts@0.10.7 → wallet-sdk-facade@3.0.0 → ledger-v8).
+ * The browser WASM prover serializes in ledger-v8 format.
  */
 
 import type {
@@ -28,7 +28,7 @@ import {
 } from "@paimaexample/midnight-contracts/wallet-info";
 import type { WalletResult } from "@paimaexample/midnight-contracts/types";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import { Transaction } from "@midnight-ntwrk/ledger-v7";
+import { Transaction } from "@midnight-ntwrk/ledger-v8";
 import { hexStringToUint8Array } from "@paimaexample/utils";
 
 type BlockchainHash = string;
@@ -54,12 +54,14 @@ const indexer =
 const indexerWS =
   Deno.env.get("INDEXER_WS_URL") || "ws://localhost:8088/api/v3/graphql/ws";
 const node = Deno.env.get("NODE_URL") || "http://localhost:9944";
-// Proof server is optional for the balancing adapter — it only handles
-// balancing of already-proven unbound transactions and never calls the
-// proof server itself. Only pass the URL if explicitly configured so that
-// buildWalletFacade doesn't attempt to connect to it during wallet init.
+// The balancing adapter never calls the proof server (it only balances
+// already-proven unbound transactions), but the wallet facade's
+// createWalletConfiguration requires a valid URL. Default to the standard
+// local proof server address; override via PROOF_SERVER_URL if needed.
 const proofServer =
-  Deno.env.get("PROOF_SERVER_URL") || "";
+  Deno.env.get("PROOF_SERVER_URL") || "http://localhost:6300";
+const backendApiUrl =
+  Deno.env.get("BACKEND_API_URL") ?? "http://localhost:9996";
 
 // ---------------------------------------------------------------------------
 // Batch payload type
@@ -69,6 +71,8 @@ interface BalancingBatchPayload {
   tx: string;        // hex-encoded serialized UnboundTransaction
   txStage: string;   // "unbound"
   circuitId: string;
+  lobbyId?: string;  // optional: lobby ID for setup notifications
+  playerId?: number; // optional: player ID for setup notifications
 }
 
 // ---------------------------------------------------------------------------
@@ -84,29 +88,35 @@ export class GoFishBalancingAdapter
   private initializationPromise: Promise<void> | null = null;
   private hasFunds = false;
   private walletAddress: string | null = null;
+  private readonly walletSeed: string;
 
   constructor() {
-    const walletSeed =
+    this.walletSeed =
       Deno.env.get("MIDNIGHT_WALLET_SEED") ||
       "0000000000000000000000000000000000000000000000000000000000000001";
-    this.initializationPromise = this.initialize(walletSeed);
+    this.initializationPromise = this.initialize();
   }
 
-  private async initialize(walletSeed: string): Promise<void> {
-    try {
-      setNetworkId(networkID as any);
-      const networkUrls: MidnightNetworkUrls = {
-        indexer,
-        indexerWS,
-        node,
-        proofServer,
-      };
-      this.walletResult = await buildWalletFacade(networkUrls, walletSeed, networkID);
-      this.walletAddress = this.walletResult.dustAddress;
-      console.log(`⚡ [balancing] wallet ready at ${this.walletAddress}`);
-      this.isInitialized = true;
-    } catch (err) {
-      console.error("❌ [balancing] wallet init failed:", err);
+  private async initialize(): Promise<void> {
+    // Retry loop: Midnight indexer/node may not be ready when the batcher starts.
+    // Keep retrying every 5s until the wallet is ready.
+    while (!this.isInitialized) {
+      try {
+        setNetworkId(networkID as any);
+        const networkUrls: MidnightNetworkUrls = {
+          indexer,
+          indexerWS,
+          node,
+          proofServer,
+        };
+        this.walletResult = await buildWalletFacade(networkUrls, this.walletSeed, networkID);
+        this.walletAddress = this.walletResult.dustAddress;
+        console.log(`⚡ [balancing] wallet ready at ${this.walletAddress}`);
+        this.isInitialized = true;
+      } catch (err) {
+        console.error("❌ [balancing] wallet init failed, retrying in 5s:", err);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
   }
 
@@ -144,7 +154,13 @@ export class GoFishBalancingAdapter
       }
       return {
         selectedInputs: [input],
-        data: { tx: parsed.tx, txStage: parsed.txStage, circuitId: parsed.circuitId ?? "unknown" },
+        data: {
+          tx: parsed.tx,
+          txStage: parsed.txStage,
+          circuitId: parsed.circuitId ?? "unknown",
+          lobbyId: parsed.lobbyId,
+          playerId: parsed.playerId,
+        },
       };
     } catch (err) {
       console.error("[balancing] buildBatchData parse error:", err);
@@ -152,10 +168,9 @@ export class GoFishBalancingAdapter
     }
   }
 
-  async submitBatch(data: BalancingBatchPayload | null): Promise<BlockchainHash> {
+  async submitBatch(data: BalancingBatchPayload | null, _fee?: string | bigint): Promise<BlockchainHash> {
     if (this.initializationPromise) {
       await this.initializationPromise;
-      this.initializationPromise = null;
     }
 
     if (!this.isInitialized || !this.walletResult) {
@@ -173,8 +188,8 @@ export class GoFishBalancingAdapter
 
     console.log(`⚡ [balancing] balancing circuit=${data.circuitId} txStage=${data.txStage}`);
 
-    // Deserialize using ledger-v7 (same WASM instance as WalletFacade) to avoid assertClass mismatch.
-    // The browser prover serializes in a wire-compatible format that ledger-v7 can consume directly.
+    // Deserialize using ledger-v8 (same WASM instance as WalletFacade) to avoid assertClass mismatch.
+    // The browser WASM prover serializes in v8-format; ledger-v8 Transaction.deserialize consumes it directly.
     const txBytes = hexStringToUint8Array(data.tx);
     const unboundTx = Transaction.deserialize(
       "signature",
@@ -183,25 +198,52 @@ export class GoFishBalancingAdapter
       txBytes,
     );
 
-    // Balance: add dust fee input/output
+    // Balance: add dust fee input/output.
+    // Do NOT restrict tokenKindsToBalance — let the wallet facade balance all token kinds
+    // correctly. Restricting to ["dust"] was causing the node to silently reject the tx
+    // because the unbound transaction's fee segment was not being properly computed.
     const recipe = await wallet.balanceUnboundTransaction(unboundTx as any, {
       shieldedSecretKeys: walletZswapSecretKeys,
       dustSecretKey: walletDustSecretKey,
-    }, { ttl: createTtl() });
+    }, { ttl: createTtl() } as any);
+    console.log(`⚡ [balancing] recipe type=${(recipe as any).type} hasBalancingTx=${!!(recipe as any).balancingTransaction}`);
 
-    let finalizedTx;
-    if (recipe.balancingTransaction) {
-      const signed = await wallet.signUnprovenTransaction(
-        recipe.balancingTransaction,
-        (payload: Uint8Array) => unshieldedKeystore.signData(payload),
-      );
-      finalizedTx = await wallet.finalizeRecipe({ ...recipe, balancingTransaction: signed });
-    } else {
-      finalizedTx = await wallet.finalizeRecipe(recipe);
+    // Use signRecipe which handles all recipe types (UNBOUND_TRANSACTION, UNPROVEN_TRANSACTION,
+    // FINALIZED_TRANSACTION) correctly. Previously we manually extracted balancingTransaction
+    // and called signUnprovenTransaction, but signRecipe is the canonical approach used by
+    // the official MidnightBalancingAdapter and handles edge cases we were missing.
+    const signSegment = (payload: Uint8Array) => unshieldedKeystore.signData(payload);
+    const signedRecipe = await wallet.signRecipe(recipe as any, signSegment);
+    console.log(`⚡ [balancing] signRecipe done, recipe type=${(signedRecipe as any).type}`);
+
+    const finalizedTx = await wallet.finalizeRecipe(signedRecipe as any);
+    console.log(`⚡ [balancing] finalizeRecipe done`);
+
+    // Log the actual transaction hash (for indexer lookup) vs the submission ID
+    let derivedTxHash: string | null = null;
+    try {
+      derivedTxHash = (finalizedTx as any).transactionHash?.()?.toString?.() ?? null;
+      if (derivedTxHash) console.log(`⚡ [balancing] derived txHash=${derivedTxHash}`);
+    } catch { /* ignore */ }
+
+    const submittedTxId = await wallet.submitTransaction(finalizedTx);
+    const txHash = derivedTxHash ?? submittedTxId?.toString();
+    console.log(`✅ [balancing] circuit=${data.circuitId} submittedId=${submittedTxId} txHash=${txHash}`);
+
+    // Notify backend of setup completion so the other player can proceed immediately
+    // (don't wait for on-chain confirmation — submission is sufficient for coordination)
+    if (data.lobbyId && data.playerId && (data.circuitId === "applyMask" || data.circuitId === "dealCards")) {
+      const action = data.circuitId === "applyMask" ? "mask_applied" : "dealt_complete";
+      fetch(`${backendApiUrl}/api/midnight/notify_setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lobby_id: data.lobbyId, player_id: data.playerId, action }),
+      }).then(r => {
+        if (r.ok) console.log(`✅ [balancing] notify_setup: ${action} lobby=${data.lobbyId} player=${data.playerId}`);
+        else console.warn(`⚠️ [balancing] notify_setup failed: ${r.status}`);
+      }).catch(err => console.warn(`⚠️ [balancing] notify_setup error:`, err));
     }
 
-    const txHash = await wallet.submitTransaction(finalizedTx);
-    console.log(`✅ [balancing] circuit=${data.circuitId} submitted txHash=${txHash}`);
     return txHash;
   }
 

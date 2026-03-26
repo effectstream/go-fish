@@ -18,7 +18,7 @@ import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import { toHex } from "@midnight-ntwrk/compact-runtime";
+import { toHex, CompactTypeBoolean, CompactTypeUnsignedInteger, CostModel } from "@midnight-ntwrk/compact-runtime";
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { getBrowserProofProvider } from "./midnightBrowserProofProvider";
 import { createInMemoryPrivateStateProvider } from "./midnightInMemoryPrivateStateProvider";
@@ -206,14 +206,16 @@ function detectTxStage(serializedTx: string): "unproven" | "unbound" | "finalize
   throw new Error(`[GoFishContractService] Unknown tx stage markers: proof=${m[1]} binding=${m[2]}`);
 }
 
-async function postToBatcher(serializedTx: string, circuitId: string): Promise<void> {
+async function postToBatcher(serializedTx: string, circuitId: string, meta?: { lobbyId?: string; playerId?: number }): Promise<void> {
   const txStage = detectTxStage(serializedTx);
+  const txHash = serializedTx.slice(0, 32); // first 16 bytes as fingerprint
+  console.log(`[GoFishContractService] ${circuitId}: detected txStage=${txStage}, txLen=${serializedTx.length / 2} bytes, txStart=${txHash}`);
   const body = {
     data: {
       target: "midnight_balancing",
       address: "go_fish_player",
       addressType: 0,
-      input: JSON.stringify({ tx: serializedTx, txStage, circuitId }),
+      input: JSON.stringify({ tx: serializedTx, txStage, circuitId, ...(meta ?? {}) }),
       timestamp: Date.now(),
     },
     confirmationLevel: "no-wait",
@@ -236,12 +238,13 @@ async function callDelegated(
   provider: any,
   circuitId: string,
   callFn: () => Promise<any>,
+  meta?: { lobbyId?: string; playerId?: number },
 ): Promise<void> {
   let delegated = false;
 
   provider.__delegatedBalanceHook = async (tx: any) => {
     const serializedTx = toHex((tx as any).serialize());
-    await postToBatcher(serializedTx, circuitId);
+    await postToBatcher(serializedTx, circuitId, meta);
     delegated = true;  // posted successfully — any subsequent SDK throw is safe to suppress
   };
 
@@ -286,6 +289,7 @@ function withSecrets<T>(
   // Set primary player secrets (uses hex key to match witness lookup)
   const secret = PlayerKeyManager.getPlayerSecret(lobbyId, primaryId);
   const seed = PlayerKeyManager.getShuffleSeed(lobbyId, primaryId);
+  console.log(`[GoFishContractService] withSecrets: setting player=${primaryId} secret=${secret.toString(16).slice(0, 16)}… gameIdHex=${gameIdHex.slice(0, 16)}…`);
   setPlayerSecrets(gameIdHex, primaryId, secret, seed);
 
   // Set opponent secrets if available locally
@@ -319,13 +323,121 @@ export async function callInitDeck(): Promise<void> {
   );
 }
 
+/**
+ * Poll the indexer until the contract's on-chain state changes from `stateBeforeHex`,
+ * indicating that the init_deck transaction has been applied.
+ * Times out after `timeoutMs` (default 120s), returns true on change, false on timeout.
+ */
+export async function waitForStateDeckInitialized(
+  stateBeforeHex: string,
+  timeoutMs = 120_000,
+): Promise<boolean> {
+  const addr = await getContractAddress();
+  const provider = getPublicDataProvider();
+  const deadline = Date.now() + timeoutMs;
+  let pollCount = 0;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000));
+    pollCount++;
+    try {
+      const state = await provider.queryContractState(addr as any);
+      if (!state) {
+        if (pollCount % 5 === 0) console.warn(`[GoFishContractService] queryContractState returned null (poll #${pollCount}, addr=${addr.slice(0,16)}...)`);
+        continue;
+      }
+      const currentHex = toHex(state.serialize());
+      if (currentHex !== stateBeforeHex) {
+        console.log("[GoFishContractService] on-chain state changed — init_deck applied");
+        return true;
+      }
+      // Every 10 polls, log a direct staticDeckInitialized query for extra confirmation
+      if (pollCount % 10 === 0) {
+        const isDeckInit = await queryIsStaticDeckInitialized().catch(() => null);
+        console.log(`[GoFishContractService] poll #${pollCount}: state unchanged, staticDeckInitialized=${isDeckInit}`);
+      }
+    } catch (err) {
+      if (pollCount % 5 === 0) console.warn(`[GoFishContractService] queryContractState error (poll #${pollCount}):`, err);
+    }
+  }
+  console.warn("[GoFishContractService] waitForStateDeckInitialized timed out");
+  return false;
+}
+
+/**
+ * Query the current raw contract state hex (for use before submitting init_deck).
+ * Returns null if state cannot be fetched.
+ */
+export async function queryCurrentStateHex(): Promise<string | null> {
+  try {
+    const addr = await getContractAddress();
+    const provider = getPublicDataProvider();
+    const state = await provider.queryContractState(addr as any);
+    if (!state) return null;
+    return toHex(state.serialize());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Query the on-chain `staticDeckInitialized` ledger field.
+ * Uses ContractState.query() with the same VM ops as the compiled _init_static_deck circuit
+ * to read the boolean at state path [outer-index-0][inner-index-2].
+ * Returns true if the deck is already initialized, false otherwise, null on error.
+ */
+export async function queryIsStaticDeckInitialized(): Promise<boolean | null> {
+  try {
+    const addr = await getContractAddress();
+    const provider = getPublicDataProvider();
+    const contractState = await provider.queryContractState(addr as any);
+    if (!contractState) return null;
+
+    // _descriptor_5 = CompactTypeUnsignedInteger(255n, 1) — used for ledger array/map keys
+    const keyType = new CompactTypeUnsignedInteger(255n, 1);
+    const key0 = { value: keyType.toValue(0n), alignment: keyType.alignment() };
+    const key2 = { value: keyType.toValue(2n), alignment: keyType.alignment() };
+
+    // Mirror the _init_static_deck_0 queryLedgerState ops exactly.
+    // dup(0) preserves the state on the stack so the final stack length matches the initial.
+    // idx([0n, 2n]) consumes the duplicate and pushes the cell at staticDeckInitialized.
+    // popeq emits the cell value as a GatherResult and pops it, restoring stack length.
+    const results = contractState.query(
+      [
+        { dup: { n: 0 } },
+        {
+          idx: {
+            cached: false,
+            pushPath: false,
+            path: [
+              { tag: 'value' as const, value: key0 },
+              { tag: 'value' as const, value: key2 },
+            ],
+          },
+        },
+        { popeq: { cached: false, result: null } },
+      ],
+      CostModel.initialCostModel(),
+    );
+
+    const gatherResults = (results as any)[1];
+    const first = Array.isArray(gatherResults) ? gatherResults[0] : null;
+    if (!first || first.tag !== 'read') return null;
+    return CompactTypeBoolean.fromValue(first.content.value);
+  } catch (err) {
+    console.warn('[GoFishContractService] queryIsStaticDeckInitialized failed:', err);
+    return null;
+  }
+}
+
 export async function callApplyMask(lobbyId: string, playerId: 1 | 2): Promise<void> {
+  console.log(`[GoFishContractService] callApplyMask: lobbyId=${lobbyId} playerId=${playerId}`);
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
 
   await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "applyMask", () =>
-      contract.callTx.applyMask(gameId, BigInt(playerId))
+      contract.callTx.applyMask(gameId, BigInt(playerId)),
+      { lobbyId, playerId },
     );
   });
 }
@@ -336,7 +448,8 @@ export async function callDealCards(lobbyId: string, playerId: 1 | 2): Promise<v
 
   await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "dealCards", () =>
-      contract.callTx.dealCards(gameId, BigInt(playerId))
+      contract.callTx.dealCards(gameId, BigInt(playerId)),
+      { lobbyId, playerId },
     );
   });
 }

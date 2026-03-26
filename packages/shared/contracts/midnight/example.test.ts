@@ -354,7 +354,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	log(`Game ID: ${formatGameId(sim.gameId)}`);
 	
 	const circuits = sim.contract.circuits;
-	const impureCircuits = sim.contract.impureCircuits;
+	const provableCircuits = sim.contract.provableCircuits;
 	const gameId = sim.gameId;
 	
 	// ============================================
@@ -362,7 +362,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 1: applyMask (Player 1) - creates game');
 	try {
-		const r = impureCircuits.applyMask(sim.circuitContext, gameId, BigInt(1));
+		const r = provableCircuits.applyMask(sim.circuitContext, gameId, BigInt(1));
 		sim.circuitContext = r.context;
 		recordTest('applyMask (Player 1)', true, null, 'mask applied, game created');
 	} catch (e) {
@@ -511,7 +511,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 10: applyMask (Player 2)');
 	try {
-		const r = impureCircuits.applyMask(sim.circuitContext, gameId, BigInt(2));
+		const r = provableCircuits.applyMask(sim.circuitContext, gameId, BigInt(2));
 		sim.circuitContext = r.context;
 		recordTest('applyMask (Player 2)', true, null, 'mask applied successfully');
 	} catch (e) {
@@ -523,9 +523,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 11: dealCards');
 	try {
-		const r1 = impureCircuits.dealCards(sim.circuitContext, gameId, BigInt(1));
+		const r1 = provableCircuits.dealCards(sim.circuitContext, gameId, BigInt(1));
 		sim.circuitContext = r1.context;
-		const r2 = impureCircuits.dealCards(sim.circuitContext, gameId, BigInt(2));
+		const r2 = provableCircuits.dealCards(sim.circuitContext, gameId, BigInt(2));
 		sim.circuitContext = r2.context;
 		
 		// Get hand sizes to verify
@@ -742,7 +742,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		const beforeTurn = Number(r1.result);
 		
 		// Switch turn - now requires gameId and playerId (must be current player)
-		const r2 = impureCircuits.switchTurn(sim.circuitContext, gameId, BigInt(beforeTurn));
+		const r2 = provableCircuits.switchTurn(sim.circuitContext, gameId, BigInt(beforeTurn));
 		sim.circuitContext = r2.context;
 		
 		// Check after
@@ -1057,9 +1057,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 32: applyMask (fresh state for game flow)');
 	try {
-		const r1 = impureCircuits.applyMask(sim.circuitContext, gameId2, BigInt(1));
+		const r1 = provableCircuits.applyMask(sim.circuitContext, gameId2, BigInt(1));
 		sim.circuitContext = r1.context;
-		const r2 = impureCircuits.applyMask(sim.circuitContext, gameId2, BigInt(2));
+		const r2 = provableCircuits.applyMask(sim.circuitContext, gameId2, BigInt(2));
 		sim.circuitContext = r2.context;
 		recordTest('applyMask (game flow)', true, null, 'both players applied masks');
 	} catch (e) {
@@ -1071,9 +1071,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 33: dealCards (Setup phase)');
 	try {
-		const r1 = impureCircuits.dealCards(sim.circuitContext, gameId2, BigInt(1));
+		const r1 = provableCircuits.dealCards(sim.circuitContext, gameId2, BigInt(1));
 		sim.circuitContext = r1.context;
-		const r2 = impureCircuits.dealCards(sim.circuitContext, gameId2, BigInt(2));
+		const r2 = provableCircuits.dealCards(sim.circuitContext, gameId2, BigInt(2));
 		sim.circuitContext = r2.context;
 		
 		// Discover hands using doesPlayerHaveSpecificCard
@@ -1143,9 +1143,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			logInfo(`Player ${currentPlayer} asking for rank ${RANK_NAMES[askedRank]}`);
 			
 			// Call askForCard then respondToAsk
-			const r = impureCircuits.askForCard(sim.circuitContext, gameId2, BigInt(currentPlayer), BigInt(askedRank));
+			const r = provableCircuits.askForCard(sim.circuitContext, gameId2, BigInt(currentPlayer), BigInt(askedRank));
 			sim.circuitContext = r.context;
-			const r2 = impureCircuits.respondToAsk(sim.circuitContext, gameId2, BigInt(opponentPlayer));
+			const r2 = provableCircuits.respondToAsk(sim.circuitContext, gameId2, BigInt(opponentPlayer));
 			sim.circuitContext = r2.context;
 			
 			const result = r2.result;
@@ -1184,7 +1184,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			const currentPlayer = Number(turnR.result);
 			
 			// Draw a card using goFish
-			const r = impureCircuits.goFish(sim.circuitContext, gameId2, BigInt(currentPlayer));
+			const r = provableCircuits.goFish(sim.circuitContext, gameId2, BigInt(currentPlayer));
 			sim.circuitContext = r.context;
 			const drawnPoint = r.result;
 			
@@ -1238,7 +1238,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			logInfo(`Drew requested card (${RANK_NAMES[askedRank]})? ${drewRequestedCard}`);
 			
 			// afterGoFish now requires gameId and playerId
-			const r = impureCircuits.afterGoFish(sim.circuitContext, gameId2, BigInt(currentPlayer), drewRequestedCard);
+			const r = provableCircuits.afterGoFish(sim.circuitContext, gameId2, BigInt(currentPlayer), drewRequestedCard);
 			sim.circuitContext = r.context;
 			
 			const phaseAfter = circuits.getGamePhase(sim.circuitContext, gameId2);
@@ -1273,7 +1273,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		}
 		logInfo(`P1 has ${p1Count} ${RANK_NAMES[testRank]}s`);
 		
-		const r = impureCircuits.checkAndScoreBook(sim.circuitContext, gameId2, BigInt(1), BigInt(testRank));
+		const r = provableCircuits.checkAndScoreBook(sim.circuitContext, gameId2, BigInt(1), BigInt(testRank));
 		sim.circuitContext = r.context;
 		const scored = r.result;
 		
@@ -1397,7 +1397,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 43: Create Game A - applyMask P1');
 	try {
-		const r = impureCircuits.applyMask(sim.circuitContext, gameA, BigInt(1));
+		const r = provableCircuits.applyMask(sim.circuitContext, gameA, BigInt(1));
 		sim.circuitContext = r.context;
 		
 		// Verify game A now exists
@@ -1435,7 +1435,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 45: Create Game B - applyMask P1');
 	try {
-		const r = impureCircuits.applyMask(sim.circuitContext, gameB, BigInt(1));
+		const r = provableCircuits.applyMask(sim.circuitContext, gameB, BigInt(1));
 		sim.circuitContext = r.context;
 		
 		const existsR = circuits.doesGameExist(sim.circuitContext, gameB);
@@ -1482,20 +1482,20 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	logSection('TEST 47: Complete setup for both games');
 	try {
 		// Apply mask for P2 in both games
-		const rA2 = impureCircuits.applyMask(sim.circuitContext, gameA, BigInt(2));
+		const rA2 = provableCircuits.applyMask(sim.circuitContext, gameA, BigInt(2));
 		sim.circuitContext = rA2.context;
-		const rB2 = impureCircuits.applyMask(sim.circuitContext, gameB, BigInt(2));
+		const rB2 = provableCircuits.applyMask(sim.circuitContext, gameB, BigInt(2));
 		sim.circuitContext = rB2.context;
 		
 		// Deal cards in both games
-		const dealA1 = impureCircuits.dealCards(sim.circuitContext, gameA, BigInt(1));
+		const dealA1 = provableCircuits.dealCards(sim.circuitContext, gameA, BigInt(1));
 		sim.circuitContext = dealA1.context;
-		const dealA2 = impureCircuits.dealCards(sim.circuitContext, gameA, BigInt(2));
+		const dealA2 = provableCircuits.dealCards(sim.circuitContext, gameA, BigInt(2));
 		sim.circuitContext = dealA2.context;
 		
-		const dealB1 = impureCircuits.dealCards(sim.circuitContext, gameB, BigInt(1));
+		const dealB1 = provableCircuits.dealCards(sim.circuitContext, gameB, BigInt(1));
 		sim.circuitContext = dealB1.context;
-		const dealB2 = impureCircuits.dealCards(sim.circuitContext, gameB, BigInt(2));
+		const dealB2 = provableCircuits.dealCards(sim.circuitContext, gameB, BigInt(2));
 		sim.circuitContext = dealB2.context;
 		
 		recordTest('Complete both game setups', true, null, 'both games set up successfully');
@@ -1614,7 +1614,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		// P1 asks for a card
 		gameAAskedRank = getCardRank(gameAPlayer1Hand[0]!);
-		const askR = impureCircuits.askForCard(sim.circuitContext, gameA, BigInt(1), BigInt(gameAAskedRank));
+		const askR = provableCircuits.askForCard(sim.circuitContext, gameA, BigInt(1), BigInt(gameAAskedRank));
 		sim.circuitContext = askR.context;
 		
 		recordTest('Play turn in Game A', true, null, `P1 asked for ${RANK_NAMES[gameAAskedRank]}`);
@@ -1697,7 +1697,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	// ============================================
 	logSection('TEST 57: Complete turn in Game A');
 	try {
-		const respondR = impureCircuits.respondToAsk(sim.circuitContext, gameA, BigInt(2));
+		const respondR = provableCircuits.respondToAsk(sim.circuitContext, gameA, BigInt(2));
 		sim.circuitContext = respondR.context;
 		
 		const opponentHadCards = respondR.result[0] as boolean;
@@ -1727,11 +1727,11 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		
 		// P1 asks for a card in game B
 		const gameBAskedRank = getCardRank(gameBPlayer1Hand[0]!);
-		const askR = impureCircuits.askForCard(sim.circuitContext, gameB, BigInt(1), BigInt(gameBAskedRank));
+		const askR = provableCircuits.askForCard(sim.circuitContext, gameB, BigInt(1), BigInt(gameBAskedRank));
 		sim.circuitContext = askR.context;
 		
 		// Respond
-		const respondR = impureCircuits.respondToAsk(sim.circuitContext, gameB, BigInt(2));
+		const respondR = provableCircuits.respondToAsk(sim.circuitContext, gameB, BigInt(2));
 		sim.circuitContext = respondR.context;
 		
 		recordTest('Play turn in Game B', true, null, `P1 asked for ${RANK_NAMES[gameBAskedRank]}`);
@@ -1787,7 +1787,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			const currentTurn = circuits.getCurrentTurn(sim.circuitContext, gameA);
 			sim.circuitContext = currentTurn.context;
 			
-			const goFishR = impureCircuits.goFish(sim.circuitContext, gameA, currentTurn.result);
+			const goFishR = provableCircuits.goFish(sim.circuitContext, gameA, currentTurn.result);
 			sim.circuitContext = goFishR.context;
 			
 			// Decrypt the drawn card
@@ -1802,7 +1802,7 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			// Complete with afterGoFish
 			const drawnRank = getCardRank(cardR.result);
 			const drewRequested = drawnRank === gameAAskedRank;
-			const afterR = impureCircuits.afterGoFish(sim.circuitContext, gameA, currentTurn.result, drewRequested);
+			const afterR = provableCircuits.afterGoFish(sim.circuitContext, gameA, currentTurn.result, drewRequested);
 			sim.circuitContext = afterR.context;
 			
 			recordTest('Go Fish in Game A', true, null, `drew ${formatCard(cardR.result)}`);
@@ -1988,7 +1988,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 	log('Starting game with current state...\n');
 	
 	const circuits = sim.contract.circuits;
-	const impureCircuits = sim.contract.impureCircuits;
+	const provableCircuits = sim.contract.provableCircuits;
 	const gameId = sim.gameId;
 	
 	log(`Game ID: ${formatGameId(gameId)}`);
@@ -2058,7 +2058,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 				log(`\nP${currentPlayer} has no cards, switching turn...`);
 				// Switch turn when no cards and can't draw
 				try {
-					const r = impureCircuits.switchTurn(sim.circuitContext, gameId, BigInt(currentPlayer));
+					const r = provableCircuits.switchTurn(sim.circuitContext, gameId, BigInt(currentPlayer));
 					sim.circuitContext = r.context;
 				} catch (e) {
 					log(`  Error switching turn: ${e}`);
@@ -2067,7 +2067,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 			} else {
 				log(`\nP${currentPlayer} has no cards and deck is empty, skipping...`);
 				try {
-					const r = impureCircuits.switchTurn(sim.circuitContext, gameId, BigInt(currentPlayer));
+					const r = provableCircuits.switchTurn(sim.circuitContext, gameId, BigInt(currentPlayer));
 					sim.circuitContext = r.context;
 				} catch (e) {
 					// Might fail if not in right phase
@@ -2093,9 +2093,9 @@ async function runGameSimulation(sim: GoFishSimulator) {
 		
 		try {
 			// Call askForCard then respondToAsk
-			const askR = impureCircuits.askForCard(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rankToAsk));
+			const askR = provableCircuits.askForCard(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rankToAsk));
 			sim.circuitContext = askR.context;
-			const askR2 = impureCircuits.respondToAsk(sim.circuitContext, gameId, BigInt(opponentPlayer));
+			const askR2 = provableCircuits.respondToAsk(sim.circuitContext, gameId, BigInt(opponentPlayer));
 			sim.circuitContext = askR2.context;
 			
 			const opponentHadCards = askR2.result[0] as boolean;
@@ -2118,7 +2118,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 					const deckSize = Number(r2.result);
 					
 					if (topIdx < deckSize) {
-						const goFishR = impureCircuits.goFish(sim.circuitContext, gameId, BigInt(currentPlayer));
+						const goFishR = provableCircuits.goFish(sim.circuitContext, gameId, BigInt(currentPlayer));
 						sim.circuitContext = goFishR.context;
 						const drawnPoint = goFishR.result;
 						
@@ -2133,7 +2133,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 						
 						// Call afterGoFish with whether we drew the requested card
 						const drewRequested = drawnRank === rankToAsk;
-						const afterR = impureCircuits.afterGoFish(sim.circuitContext, gameId, BigInt(currentPlayer), drewRequested);
+						const afterR = provableCircuits.afterGoFish(sim.circuitContext, gameId, BigInt(currentPlayer), drewRequested);
 						sim.circuitContext = afterR.context;
 						
 						// Refresh hands
@@ -2147,7 +2147,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 			throw e;
 			// Try to switch turn on error
 			// try {
-			// 	const r = impureCircuits.switchTurn(sim.circuitContext, gameId, BigInt(currentPlayer));
+			// 	const r = provableCircuits.switchTurn(sim.circuitContext, gameId, BigInt(currentPlayer));
 			// 	sim.circuitContext = r.context;
 			// } catch (e2) {
 			// 	// Ignore
@@ -2163,7 +2163,7 @@ async function runGameSimulation(sim: GoFishSimulator) {
 			// Also score in contract
 			for (const rank of newBooks) {
 				try {
-					const r = impureCircuits.checkAndScoreBook(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rank));
+					const r = provableCircuits.checkAndScoreBook(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rank));
 					sim.circuitContext = r.context;
 				} catch (e) {
 					// May already be scored or not have all cards

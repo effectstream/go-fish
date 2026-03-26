@@ -136,7 +136,7 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
 }
 
 // Deal a single card to a player during setup
-circuit dealCard(gameId: Bytes<32>, _toPlayerId: Uint<64>): NativePoint {
+circuit dealCard(gameId: Bytes<32>, _toPlayerId: Uint<64>): JubjubPoint {
     const toPlayerId = disclose(_toPlayerId);
     const gid = disclose(gameId);
     const currentPhase = go_fish_getPhase(gid);
@@ -167,12 +167,12 @@ export circuit get_deck_size(gameId: Bytes<32>): Uint<64> {
 // CARD TRANSFER CIRCUITS
 // ============================================
 
-export circuit partial_decryption(gameId: Bytes<32>, point: NativePoint, playerId: Uint<64>): NativePoint {
+export circuit partial_decryption(gameId: Bytes<32>, point: JubjubPoint, playerId: Uint<64>): JubjubPoint {
     return deck_partial_decryption(disclose(gameId), point, playerId);
 }
 
 // Transfer a single card from one player to another (internal use)
-circuit moveCardFromPlayerToPlayerCardInHand(gameId: Bytes<32>, fromPlayerId: Uint<64>, _semiMaskedPoint: NativePoint): [] {
+circuit moveCardFromPlayerToPlayerCardInHand(gameId: Bytes<32>, fromPlayerId: Uint<64>, _semiMaskedPoint: JubjubPoint): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(fromPlayerId);
     const semiMaskedPoint = disclose(_semiMaskedPoint);
@@ -232,7 +232,7 @@ circuit transferCardOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank
     
     // CHANGED: Multiply by 7 (number of ranks)
     const cardIndex = (disclosed_rank + (disclosed_suit * 7 as Uint<32>)) as Uint<32>;
-    const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as NativePoint;
+    const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as JubjubPoint;
     
     // EC-MUL GUARD BUG FIX: eliminate deck_lookupFullyMasked entirely.
     // opponentMaskedPoint = baseCard * opponentSecret (derived directly from baseCard).
@@ -368,7 +368,7 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
 // DRAWING CARDS
 // ============================================
 
-export circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): NativePoint {
+export circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): JubjubPoint {
     const gid = disclose(gameId);
     const toPlayerId = disclose(_toPlayerId);
     const disclosed_playerId = disclose(toPlayerId);
@@ -396,7 +396,7 @@ export circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): 
     return semi_encrypted_point;
 }
 
-export circuit goFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): NativePoint {
+export circuit goFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): JubjubPoint {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
 
@@ -483,7 +483,7 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
     return [];
 }
 
-export circuit get_card_from_point(point: NativePoint): Field {
+export circuit get_card_from_point(point: JubjubPoint): Field {
     return deck_getCardFromPoint(point);
 }
 
@@ -500,9 +500,9 @@ export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, _target
     assert(playerId == 1 as Uint<64> || playerId == 2 as Uint<64>, "Invalid player index");
 
     // CHANGED: Offsets to +7 and +14 for the 3 suits (since rank size is 7)
-    const baseCard1 = deck_reverseDeckCurveToCard.lookup(targetRank) as NativePoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(targetRank+7 as Uint<32>) as NativePoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(targetRank+14 as Uint<32>) as NativePoint;
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(targetRank) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(targetRank+7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(targetRank+14 as Uint<32>) as JubjubPoint;
 
     // EC-MUL GUARD BUG FIX: fetch both secrets unconditionally, then select with ternary
     const [secret1, _1] = deck_getSecretFromPlayerId(gid, 1);
@@ -526,9 +526,9 @@ circuit countCardsOfRank(gameId: Bytes<32>, playerId: Uint<64>, targetRank: Uint
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
 
     // CHANGED: Offsets to +7 and +14
-    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as NativePoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as NativePoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as NativePoint;
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as JubjubPoint;
 
     // Fetch both secrets unconditionally, then select with ternary (cond_select in ZKIR — no ec_mul).
     // This ensures the std_ecMul calls below are unconditional in the compiled ZKIR, preventing
@@ -576,9 +576,9 @@ export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRa
     const cardCount = countCardsOfRank(gid, playerId, targetRank);
 
     // CHANGED: Offsets to +7 and +14
-    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as NativePoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as NativePoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as NativePoint;
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as JubjubPoint;
 
     // Fetch both secrets unconditionally, select with ternary — ec_mul stays unconditional in ZKIR.
     const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
@@ -703,7 +703,7 @@ export circuit doesPlayerHaveSpecificCard(gameId: Bytes<32>, playerId: Uint<64>,
     assert(disclosed_cardIndex >= 0 && disclosed_cardIndex < 21, "Invalid card index");
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
 
-    const baseCard = deck_reverseDeckCurveToCard.lookup(disclosed_cardIndex) as NativePoint;
+    const baseCard = deck_reverseDeckCurveToCard.lookup(disclosed_cardIndex) as JubjubPoint;
 
     // Fetch both secrets unconditionally, select with ternary — ec_mul stays unconditional in ZKIR.
     const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);

@@ -10,7 +10,7 @@ import type {
 } from "@midnight-ntwrk/midnight-js-types";
 import { CompiledContract, ContractExecutable } from "@midnight-ntwrk/compact-js";
 import {
-  ImpureCircuitId,
+  ProvableCircuitId,
   VerifierKey,
 } from "@midnight-ntwrk/compact-js/effect/Contract";
 import {
@@ -53,7 +53,7 @@ import {
   ContractState as LedgerContractState,
   Intent,
   Transaction,
-} from "@midnight-ntwrk/ledger-v7";
+} from "@midnight-ntwrk/ledger-v8";
 import type {
   CoinPublicKey,
   DustSecretKey,
@@ -61,14 +61,8 @@ import type {
   FinalizedTransaction,
   TransactionId,
   ZswapSecretKeys,
-} from "@midnight-ntwrk/ledger-v7";
-// compact-js still returns maintenance updates backed by the older ledger wasm
-// runtime, so keep a narrow compatibility bridge here when building verifier-key
-// maintenance transactions.
-import {
-  Intent as LegacyIntent,
-  Transaction as LegacyTransaction,
-} from "npm:@midnight-ntwrk/ledger-v7@7.0.0";
+} from "@midnight-ntwrk/ledger-v8";
+// compact-js 2.5.0 now uses ledger-v8 natively — no legacy bridge needed.
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 
 // ============================================================================
@@ -432,11 +426,9 @@ function createCompiledContract(
 }
 
 /**
- * Local reimplementation of submitInsertVerifierKeyTx that bridges the ledger-v7
- * WASM instance mismatch between compact-js (pinned at 7.0.0) and midnight-js-contracts
- * (which uses 7.0.3). By building the tx with LegacyTransaction/LegacyIntent from
- * 7.0.0, then round-tripping through serialize/deserialize, we get a Transaction
- * instance compatible with the wallet's 7.0.3 WASM.
+ * Local reimplementation of submitInsertVerifierKeyTx using ledger-v8.
+ * Builds and submits an insert-verifier-key maintenance transaction.
+ * compact-js 2.5.0 uses ledger-v8 natively; no legacy round-trip needed.
  */
 async function submitInsertVerifierKeyTxLocal(
   providers: ReturnType<typeof configureProviders>,
@@ -477,7 +469,7 @@ async function submitInsertVerifierKeyTxLocal(
   const exitResult = await contractRuntime.runPromiseExit(
     // deno-lint-ignore no-explicit-any
     (contractExec as any).addOrReplaceContractOperation(
-      ImpureCircuitId(circuitId as any),
+      ProvableCircuitId(circuitId as any),
       VerifierKey(verifierKey as Uint8Array),
       {
         address: asContractAddress(contractAddress),
@@ -488,21 +480,14 @@ async function submitInsertVerifierKeyTxLocal(
   // deno-lint-ignore no-explicit-any
   const maintenanceResult = exitResultOrError(exitResult as any) as any;
 
-  // Build with the legacy (7.0.0) WASM that compact-js uses, then round-trip
-  // through serialize/deserialize to get a 7.0.3-compatible Transaction.
-  const legacyUnprovenTx = LegacyTransaction.fromParts(
+  // compact-js 2.5.0 uses ledger-v8 natively — build the transaction directly.
+  const unprovenTx = Transaction.fromParts(
     getNetworkId(),
     undefined,
     undefined,
-    LegacyIntent.new(createTtl()).addMaintenanceUpdate(
+    Intent.new(createTtl()).addMaintenanceUpdate(
       maintenanceResult.public.maintenanceUpdate,
     ),
-  );
-  const unprovenTx = Transaction.deserialize(
-    "signature",
-    "pre-proof",
-    "pre-binding",
-    legacyUnprovenTx.serialize(),
   );
 
   const recipe = await walletResult.wallet.balanceUnprovenTransaction(

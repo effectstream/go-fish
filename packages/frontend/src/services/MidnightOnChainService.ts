@@ -18,7 +18,7 @@ import { isBatcherModeEnabled } from "../proving/batcher-providers";
 import * as BatcherMidnightService from "./BatcherMidnightService";
 import * as GoFishContractService from "./GoFishContractService";
 
-// Import Midnight SDK packages (v3 with ledger-v7)
+// Import Midnight SDK packages (v4 with ledger-v8)
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
 import {
   Transaction,
@@ -26,7 +26,7 @@ import {
   type FinalizedTransaction,
   type CoinPublicKey,
   type EncPublicKey,
-} from "@midnight-ntwrk/ledger-v7";
+} from "@midnight-ntwrk/ledger-v8";
 import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import {
   type DeployedContract,
@@ -235,7 +235,7 @@ async function loadContractModule(): Promise<boolean> {
 
 /**
  * Create wallet and midnight provider from connected wallet API
- * Uses ledger-v7 with SDK v3 types
+ * Uses ledger-v8 with SDK v3 types
  */
 function createWalletAndMidnightProvider(
   connectedAPI: ConnectedAPI,
@@ -260,10 +260,10 @@ function createWalletAndMidnightProvider(
     ): Promise<FinalizedTransaction> {
       try {
         console.log("[MidnightOnChain] Balancing transaction via wallet");
-        // Serialize using ledger-v7 (network ID is set globally)
+        // Serialize using ledger-v8 (network ID is set globally)
         const serializedTx = toHex((tx as any).serialize());
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
-        // Deserialize using ledger-v7 (network ID is set globally)
+        // Deserialize using ledger-v8 (network ID is set globally)
         const transaction = Transaction.deserialize(fromHex(received.tx));
         return transaction as FinalizedTransaction;
       } catch (e: any) {
@@ -290,7 +290,7 @@ function createWalletAndMidnightProvider(
     },
     async submitTx(tx: FinalizedTransaction): Promise<TransactionId> {
       // Submit transaction directly - the wallet API handles the serialization
-      // Cast to any since FinalizedTransaction from ledger-v7 and Transaction from wallet API
+      // Cast to any since FinalizedTransaction from ledger-v8 and Transaction from wallet API
       // are structurally compatible but have different nominal types
       await connectedAPI.submitTransaction(tx as any);
       const txIdentifiers = tx.identifiers();
@@ -720,7 +720,32 @@ export async function initializeStaticDeck(): Promise<{ success: boolean; errorM
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using GoFishContractService for init_deck (WASM proving)...");
     try {
+      // Check on-chain whether static deck is already initialized before submitting.
+      // init_static_deck is idempotent (returns [] early if already set), which means
+      // re-submitting it produces no state change and waitForStateDeckInitialized
+      // would time out forever. Skip submission entirely when already initialized.
+      const alreadyInitialized = await GoFishContractService.queryIsStaticDeckInitialized();
+      if (alreadyInitialized === true) {
+        console.log("[MidnightOnChain] Static deck already initialized on-chain — skipping init_deck");
+        staticDeckInitialized = true;
+        return { success: true };
+      }
+
+      // Snapshot state before submission so we can detect when init_deck lands on-chain
+      const stateBeforeHex = await GoFishContractService.queryCurrentStateHex();
       await GoFishContractService.callInitDeck();
+      // Wait for the on-chain state to change before marking as initialized.
+      // This ensures applyMask doesn't run before init_deck is applied.
+      if (stateBeforeHex !== null) {
+        console.log("[MidnightOnChain] Waiting for init_deck to land on-chain...");
+        const changed = await GoFishContractService.waitForStateDeckInitialized(stateBeforeHex);
+        if (!changed) {
+          return { success: false, errorMessage: "init_deck timed out waiting for on-chain confirmation" };
+        }
+      } else {
+        // Could not snapshot state — wait a fixed delay as a fallback
+        await new Promise(r => setTimeout(r, 15_000));
+      }
       staticDeckInitialized = true;
       return { success: true };
     } catch (err: any) {

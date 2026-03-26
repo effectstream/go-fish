@@ -18,7 +18,7 @@ import type {
   MidnightProvider,
   UnboundTransaction,
   WalletProvider,
-} from "npm:@midnight-ntwrk/midnight-js-types@3.0.0";
+} from "npm:@midnight-ntwrk/midnight-js-types@4.0.2";
 import type {
   CoinPublicKey,
   DustSecretKey,
@@ -26,18 +26,18 @@ import type {
   FinalizedTransaction,
   TransactionId,
   ZswapSecretKeys,
-} from "npm:@midnight-ntwrk/ledger-v7@7.0.0";
+} from "npm:@midnight-ntwrk/ledger-v8@8.0.3";
 import {
   type DeployedContract,
   findDeployedContract,
   type FoundContract,
-} from "npm:@midnight-ntwrk/midnight-js-contracts@3.0.0";
-import { CompiledContract, ContractExecutable } from "npm:@midnight-ntwrk/compact-js";
-import { indexerPublicDataProvider } from "npm:@midnight-ntwrk/midnight-js-indexer-public-data-provider@3.0.0";
-import { httpClientProofProvider } from "npm:@midnight-ntwrk/midnight-js-http-client-proof-provider@3.0.0";
-import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@3.0.0";
-import { levelPrivateStateProvider } from "npm:@midnight-ntwrk/midnight-js-level-private-state-provider@3.0.0";
-import { setNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@3.0.0";
+} from "npm:@midnight-ntwrk/midnight-js-contracts@4.0.2";
+import { CompiledContract, ContractExecutable } from "npm:@midnight-ntwrk/compact-js@2.5.0";
+import { indexerPublicDataProvider } from "npm:@midnight-ntwrk/midnight-js-indexer-public-data-provider@4.0.2";
+import { httpClientProofProvider } from "npm:@midnight-ntwrk/midnight-js-http-client-proof-provider@4.0.2";
+import { NodeZkConfigProvider } from "npm:@midnight-ntwrk/midnight-js-node-zk-config-provider@4.0.2";
+import { levelPrivateStateProvider } from "npm:@midnight-ntwrk/midnight-js-level-private-state-provider@4.0.2";
+import { setNetworkId } from "npm:@midnight-ntwrk/midnight-js-network-id@4.0.2";
 import {
   buildWalletFacade,
   getInitialShieldedState,

@@ -80,7 +80,7 @@ export async function initializeMidnightContract(): Promise<{ success: boolean; 
     // Initialize the static deck mappings (required before any game can be created)
     // This sets up reverseDeckCurveToCard and deckCurveToCard for all 21 cards
     console.log('[MidnightBridge] Initializing static deck mappings...');
-    const initDeckResult = contract.impureCircuits.init_deck(circuitContext);
+    const initDeckResult = contract.provableCircuits.init_deck(circuitContext);
     circuitContext = initDeckResult.context;
     console.log('[MidnightBridge] Static deck initialized');
 
@@ -227,7 +227,7 @@ export async function applyMask(
     console.log(`[MidnightBridge] applyMask(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     // Call contract circuit
-    const result = contract.impureCircuits.applyMask(
+    const result = contract.provableCircuits.applyMask(
       circuitContext,
       gameId,
       BigInt(playerId)
@@ -267,7 +267,7 @@ export async function dealCards(
     console.log(`[MidnightBridge] dealCards(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     // Call contract circuit
-    const result = contract.impureCircuits.dealCards(
+    const result = contract.provableCircuits.dealCards(
       circuitContext,
       gameId,
       BigInt(playerId)
@@ -308,7 +308,7 @@ export async function askForCard(
     console.log(`[MidnightBridge] askForCard(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${targetRank})`);
 
     // Call contract circuit
-    const result = contract.impureCircuits.askForCard(
+    const result = contract.provableCircuits.askForCard(
       circuitContext,
       gameId,
       BigInt(playerId),
@@ -349,7 +349,7 @@ export async function respondToAsk(
     console.log(`[MidnightBridge] respondToAsk(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     // Call contract circuit - returns [hasCards: boolean, count: bigint]
-    const result = contract.impureCircuits.respondToAsk(
+    const result = contract.provableCircuits.respondToAsk(
       circuitContext,
       gameId,
       BigInt(playerId)
@@ -391,7 +391,7 @@ export async function goFish(
     console.log(`[MidnightBridge] goFish(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     // Call contract circuit - returns CurvePoint (semi-masked card)
-    const result = contract.impureCircuits.goFish(
+    const result = contract.provableCircuits.goFish(
       circuitContext,
       gameId,
       BigInt(playerId)
@@ -434,7 +434,7 @@ export async function afterGoFish(
     console.log(`[MidnightBridge] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drew: ${drewRequestedCard})`);
 
     // Call contract circuit
-    const result = contract.impureCircuits.afterGoFish(
+    const result = contract.provableCircuits.afterGoFish(
       circuitContext,
       gameId,
       BigInt(playerId),
@@ -476,7 +476,7 @@ export async function checkAndScoreBook(
     console.log(`[MidnightBridge] checkAndScoreBook(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${targetRank})`);
 
     // Call contract circuit - returns boolean (true if book was completed)
-    const result = contract.impureCircuits.checkAndScoreBook(
+    const result = contract.provableCircuits.checkAndScoreBook(
       circuitContext,
       gameId,
       BigInt(playerId),
@@ -513,7 +513,7 @@ export async function getGamePhase(lobbyId: string): Promise<number | null> {
     console.log(`[MidnightBridge] getGamePhase(gameId: ${lobbyId})`);
 
     // Call contract circuit
-    const result = contract.impureCircuits.getGamePhase(
+    const result = contract.provableCircuits.getGamePhase(
       circuitContext,
       gameId
     );
@@ -543,7 +543,7 @@ export async function getScores(lobbyId: string): Promise<[number, number] | nul
     console.log(`[MidnightBridge] getScores(gameId: ${lobbyId})`);
 
     // Call contract circuit
-    const result = contract.impureCircuits.getScores(
+    const result = contract.provableCircuits.getScores(
       circuitContext,
       gameId
     );
@@ -591,7 +591,7 @@ export async function getPlayerHand(
 
         try {
           // Check if player owns this semi-masked card
-          const checkResult: any = contract.impureCircuits.doesPlayerHaveSpecificCard(
+          const checkResult: any = contract.provableCircuits.doesPlayerHaveSpecificCard(
             circuitContext,
             gameId,
             BigInt(playerId),

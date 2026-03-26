@@ -721,6 +721,8 @@ export class GoFishMidnightAdapter extends MidnightAdapter {
     const lastAskedRankNum = Number(lastAskedRankRaw as bigint ?? 255n);
     const lastAskingPlayerNum = Number(lastAskingPlayerRaw as bigint ?? 0n);
 
+    console.log(`[GoFishMidnightAdapter.queryGameState] lobby=${lobbyId} maskP1Raw=${JSON.stringify(maskP1Raw)} maskP2Raw=${JSON.stringify(maskP2Raw)} dealtP1Raw=${JSON.stringify(dealtP1Raw)} dealtP2Raw=${JSON.stringify(dealtP2Raw)}`);
+
     return {
       phase: Number(phase as number),
       currentTurn: Number(currentTurn as bigint ?? 1n),

@@ -43,12 +43,11 @@
     "@sinclair/typebox": "npm:@sinclair/typebox@^0.34.30",
     "effection": "npm:effection@^3.5.0",
     "@paimaexample/explorer": "npm:@paimaexample/explorer@0.9.0",
-    "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0",
-    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
-    "@midnight-ntwrk/wallet-sdk-address-format": "npm:@midnight-ntwrk/wallet-sdk-address-format@3.0.1",
-    "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v7@7.0.3",
-    "@midnight-ntwrk/ledger-v7": "npm:@midnight-ntwrk/ledger-v7@7.0.3",
-    "@midnight-ntwrk/ledger-v8": "npm:@midnight-ntwrk/ledger-v8@8.0.2",
+    "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v3@3.0.0",
+    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.15.0",
+    "@midnight-ntwrk/wallet-sdk-address-format": "npm:@midnight-ntwrk/wallet-sdk-address-format@3.1.0",
+    "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v8@8.0.3",
+    "@midnight-ntwrk/ledger-v8": "npm:@midnight-ntwrk/ledger-v8@8.0.3",
     "@midnight-ntwrk/zswap": "npm:@midnight-ntwrk/zswap@4.0.0",
     "@types/node": "npm:@types/node@^20.0.0"
   }

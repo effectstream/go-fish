@@ -334,18 +334,23 @@ export async function queryOnChainSetupStatuses(lobbyId: string): Promise<{
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lobbyId }),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.warn(`[MidnightOnChain] queryOnChainSetupStatuses: batcher returned ${response.status} for lobby=${lobbyId}`);
+      return null;
+    }
     const data = await response.json() as {
       exists: boolean;
       maskApplied?: [boolean, boolean];
       hasDealt?: [boolean, boolean];
     };
+    console.log(`[MidnightOnChain] queryOnChainSetupStatuses lobby=${lobbyId} raw=`, JSON.stringify(data));
     if (!data.exists || !data.maskApplied) return null;
     return {
       maskApplied: data.maskApplied,
       hasDealt: data.hasDealt ?? [false, false],
     };
-  } catch {
+  } catch (err) {
+    console.warn(`[MidnightOnChain] queryOnChainSetupStatuses: fetch threw for lobby=${lobbyId}:`, err);
     return null;
   }
 }

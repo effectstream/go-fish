@@ -181,7 +181,7 @@ export async function queryGamePhase(lobbyId: string): Promise<number | null> {
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getGamePhase(queryContext, gameId);
+    const result = queryContract.provableCircuits.getGamePhase(queryContext, gameId);
     queryContext = result.context;
 
     const phase = Number(result.result);
@@ -207,7 +207,7 @@ export async function queryScores(lobbyId: string): Promise<[number, number] | n
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getScores(queryContext, gameId);
+    const result = queryContract.provableCircuits.getScores(queryContext, gameId);
     queryContext = result.context;
 
     const [score1, score2] = result.result;
@@ -230,7 +230,7 @@ export async function queryCurrentTurn(lobbyId: string): Promise<number | null> 
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getCurrentTurn(queryContext, gameId);
+    const result = queryContract.provableCircuits.getCurrentTurn(queryContext, gameId);
     queryContext = result.context;
 
     return Number(result.result);
@@ -252,7 +252,7 @@ export async function queryIsGameOver(lobbyId: string): Promise<boolean> {
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.isGameOver(queryContext, gameId);
+    const result = queryContract.provableCircuits.isGameOver(queryContext, gameId);
     queryContext = result.context;
 
     return result.result;
@@ -274,7 +274,7 @@ export async function queryHandSizes(lobbyId: string): Promise<[number, number] 
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getHandSizes(queryContext, gameId);
+    const result = queryContract.provableCircuits.getHandSizes(queryContext, gameId);
     queryContext = result.context;
 
     const [size1, size2] = result.result;
@@ -299,11 +299,11 @@ export async function queryDeckCount(lobbyId: string): Promise<number | null> {
     const gameId = lobbyIdToGameId(lobbyId);
 
     // Get deck size and top card index
-    const deckSizeResult = queryContract.impureCircuits.get_deck_size(queryContext, gameId);
+    const deckSizeResult = queryContract.provableCircuits.get_deck_size(queryContext, gameId);
     queryContext = deckSizeResult.context;
     const deckSize = Number(deckSizeResult.result);
 
-    const topCardResult = queryContract.impureCircuits.get_top_card_index(queryContext, gameId);
+    const topCardResult = queryContract.provableCircuits.get_top_card_index(queryContext, gameId);
     queryContext = topCardResult.context;
     const topCardIndex = Number(topCardResult.result);
 
@@ -436,7 +436,7 @@ export async function queryLastAskedRank(lobbyId: string): Promise<number | null
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getLastAskedRank(queryContext, gameId);
+    const result = queryContract.provableCircuits.getLastAskedRank(queryContext, gameId);
     queryContext = result.context;
 
     return Number(result.result);
@@ -459,7 +459,7 @@ export async function queryLastAskingPlayer(lobbyId: string): Promise<number | n
     }
 
     const gameId = lobbyIdToGameId(lobbyId);
-    const result = queryContract.impureCircuits.getLastAskingPlayer(queryContext, gameId);
+    const result = queryContract.provableCircuits.getLastAskingPlayer(queryContext, gameId);
     queryContext = result.context;
 
     return Number(result.result);
@@ -483,6 +483,7 @@ async function querySetupStatusWithFallback(
 ): Promise<{ hasMaskApplied: boolean; hasDealt: boolean }> {
   // Primary: in-memory map populated by notify_setup (now persisted to disk)
   const onChainStatus = await queryOnChainSetupStatus(lobbyId, playerId);
+  console.log(`[MidnightQuery] querySetupStatusWithFallback(${lobbyId}, ${playerId}): map returned mask=${onChainStatus.hasMaskApplied} dealt=${onChainStatus.hasDealt}`);
   if (onChainStatus.hasMaskApplied || onChainStatus.hasDealt) {
     return onChainStatus;
   }
@@ -492,13 +493,13 @@ async function querySetupStatusWithFallback(
     if (!queryContract || !queryContext) return onChainStatus;
     const gameId = lobbyIdToGameId(lobbyId);
 
-    const maskResult = queryContract.impureCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
+    const maskResult = queryContract.provableCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
     queryContext = maskResult.context;
     const hasMaskApplied = Boolean(maskResult.result);
 
     let hasDealt = false;
-    if (queryContract.impureCircuits.hasDealt) {
-      const dealResult = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
+    if (queryContract.provableCircuits.hasDealt) {
+      const dealResult = queryContract.provableCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
       queryContext = dealResult.context;
       hasDealt = Boolean(dealResult.result);
     }
@@ -540,7 +541,7 @@ export async function queryHasMaskApplied(lobbyId: string, playerId: 1 | 2): Pro
       }
 
       const gameId = lobbyIdToGameId(lobbyId);
-      const result = queryContract.impureCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
+      const result = queryContract.provableCircuits.hasMaskApplied(queryContext, gameId, BigInt(playerId));
       queryContext = result.context;
 
       return result.result;
@@ -580,8 +581,8 @@ export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<b
       const gameId = lobbyIdToGameId(lobbyId);
 
       // Try hasDealt circuit first (checks if player called dealCards)
-      if (queryContract.impureCircuits.hasDealt) {
-        const result = queryContract.impureCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
+      if (queryContract.provableCircuits.hasDealt) {
+        const result = queryContract.provableCircuits.hasDealt(queryContext, gameId, BigInt(playerId));
         queryContext = result.context;
         const hasDealt = Boolean(result.result);
         console.log(`[MidnightQuery] queryHasDealt(${lobbyId}, player ${playerId}): ${hasDealt}`);
@@ -591,7 +592,7 @@ export async function queryHasDealt(lobbyId: string, playerId: 1 | 2): Promise<b
       // Fallback: Check if opponent has received cards (player deals to opponent)
       // Player 1 deals to Player 2, Player 2 deals to Player 1
       const opponentId = playerId === 1 ? 2 : 1;
-      const cardsDealtResult = queryContract.impureCircuits.getCardsDealt(queryContext, gameId, BigInt(opponentId));
+      const cardsDealtResult = queryContract.provableCircuits.getCardsDealt(queryContext, gameId, BigInt(opponentId));
       queryContext = cardsDealtResult.context;
       const cardsDealt = Number(cardsDealtResult.result);
       const hasDealt = cardsDealt > 0;

@@ -860,9 +860,10 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     let opponentHasMaskApplied = await queryHasMaskApplied(lobby_id, opponentId);
     let opponentHasDealt = await queryHasDealt(lobby_id, opponentId);
 
-    // If any status is false, cross-check against the real on-chain state via the batcher query.
-    // This handles the case where notify_setup was missed (e.g. silent fetch failure in browser).
-    if (!hasMaskApplied || !opponentHasMaskApplied || !hasDealt || !opponentHasDealt) {
+    // Always cross-check against the real on-chain state via the batcher query.
+    // This handles the case where notify_setup was missed (e.g. browser timing, network failure).
+    // Run in parallel with the map reads above, so latency is hidden.
+    {
       const onChainSetup = await queryOnChainSetupStatuses(lobby_id);
       if (onChainSetup) {
         const [p1Mask, p2Mask] = onChainSetup.maskApplied;
@@ -894,6 +895,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       }
     }
 
+    console.log(`[API] setup_status response: lobby=${lobby_id} player=${playerId} mask=${hasMaskApplied} dealt=${hasDealt} oppMask=${opponentHasMaskApplied} oppDealt=${opponentHasDealt}`);
     return {
       hasMaskApplied,
       hasDealt,
@@ -1012,6 +1014,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   // When player_secret is included, also replays the circuit on the local actionContract
   // so the node's in-memory state stays in sync with the real Midnight chain state.
   server.post("/api/midnight/notify_setup", async (request, reply) => {
+    console.log(`[API] notify_setup RAW body: player_id=${(request.body as any)?.player_id} action=${(request.body as any)?.action} lobby=${(request.body as any)?.lobby_id}`);
     const { lobby_id, player_id, action, player_secret, shuffle_seed, opponent_secret, opponent_shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;

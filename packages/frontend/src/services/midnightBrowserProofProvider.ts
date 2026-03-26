@@ -1,6 +1,5 @@
-// Transaction from ledger-v8 is used here because @paima/midnight-wasm-prover produces
-// ledger-v8-format proofs. Go-fish's main service uses ledger-v7; the cast to UnboundTransaction
-// is safe because both versions are wire-compatible for pre-binding transactions.
+// Transaction from ledger-v8 is used because @paima/midnight-wasm-prover produces
+// ledger-v8-format proofs. The entire stack now uses ledger-v8.
 import { Transaction } from "@midnight-ntwrk/ledger-v8";
 import type { ProofProvider, UnboundTransaction } from "@midnight-ntwrk/midnight-js-types";
 import type {

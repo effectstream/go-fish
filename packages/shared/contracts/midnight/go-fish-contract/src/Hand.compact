@@ -14,7 +14,7 @@ export ledger handSize1: Map<Bytes<32>, Uint<64>>;
 export ledger handSize2: Map<Bytes<32>, Uint<64>>;
 
 // Helper to create a composite key from gameId and card point
-circuit makeCardKey(gameId: Bytes<32>, card: NativePoint): Bytes<32> {
+circuit makeCardKey(gameId: Bytes<32>, card: JubjubPoint): Bytes<32> {
     // Hash the combination of gameId and card to create a unique key
     const cardHash = h_hashCurvePoint(card);
     return h_hashVector([disclose(gameId), cardHash]);
@@ -49,7 +49,7 @@ export circuit getHandSize(gameId: Bytes<32>, playerId: Uint<64>): Uint<64> {
 
 // Cards in players hands are semi-masked, meaning they are 
 // masked only by the player's secret key.
-export circuit removeCardFromHand(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: NativePoint): NativePoint {
+export circuit removeCardFromHand(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: JubjubPoint): JubjubPoint {
     const gid = disclose(gameId);
     const cardKey = makeCardKey(gid, disclose(semiMaskedPoint));
     
@@ -74,7 +74,7 @@ export circuit removeCardFromHand(gameId: Bytes<32>, playerId: Uint<64>, semiMas
     return semiMaskedPoint;
 }
 
-export circuit insertCardIntoHand(gameId: Bytes<32>, playerId: Uint<64>, card: NativePoint): [] {
+export circuit insertCardIntoHand(gameId: Bytes<32>, playerId: Uint<64>, card: JubjubPoint): [] {
     const gid = disclose(gameId);
     const cardKey = makeCardKey(gid, disclose(card));
     
@@ -93,7 +93,7 @@ export circuit insertCardIntoHand(gameId: Bytes<32>, playerId: Uint<64>, card: N
 }
 
 // Remove card without decrementing counter (for book removal)
-export circuit removeCardFromHandForBook(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: NativePoint): [] {
+export circuit removeCardFromHandForBook(gameId: Bytes<32>, playerId: Uint<64>, semiMaskedPoint: JubjubPoint): [] {
     const gid = disclose(gameId);
     const cardKey = makeCardKey(gid, disclose(semiMaskedPoint));
     
@@ -117,7 +117,7 @@ export circuit removeCardFromHandForBook(gameId: Bytes<32>, playerId: Uint<64>, 
     return [];
 }
 
-export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, card: NativePoint): Boolean {
+export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, card: JubjubPoint): Boolean {
     const gid = disclose(gameId);
     const cardKey = makeCardKey(gid, disclose(card));
     
@@ -136,7 +136,7 @@ export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, card: N
     return false;
 }
 
-export circuit doesPlayerHaveCardN(gameId: Bytes<32>, playerId: Uint<64>, card: NativePoint): Uint<8> {
+export circuit doesPlayerHaveCardN(gameId: Bytes<32>, playerId: Uint<64>, card: JubjubPoint): Uint<8> {
     const gid = disclose(gameId);
     const cardKey = makeCardKey(gid, disclose(card));
     

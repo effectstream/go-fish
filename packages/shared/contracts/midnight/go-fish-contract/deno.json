@@ -7,11 +7,11 @@
         "./contract": "./src/managed/contract/index.js"
     },
     "tasks": {
-        "compact": "rm -rf src/managed/contract src/managed/compiler src/managed/keys src/managed/zkir && compact compile +0.29.0 src/game.compact src/managed",
+        "compact": "rm -rf src/managed/contract src/managed/compiler src/managed/keys src/managed/zkir && compact compile +0.30.0 src/game.compact src/managed",
         "contract:compile": "deno task compact"
     },
     "imports": {
-        "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.14.0",
-        "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v2@2.0.0"
+        "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.15.0",
+        "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v3@3.0.0"
     }
 }

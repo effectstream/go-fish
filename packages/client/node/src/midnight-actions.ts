@@ -373,7 +373,7 @@ export async function initializeActionContract(): Promise<void> {
     // Initialize the static deck mappings (required before any game can be created)
     // This sets up reverseDeckCurveToCard and deckCurveToCard for all 21 cards
     console.log('[MidnightActions] Initializing static deck mappings...');
-    const initDeckResult = actionContract.impureCircuits.init_deck(actionContext);
+    const initDeckResult = actionContract.provableCircuits.init_deck(actionContext);
     actionContext = initDeckResult.context;
     console.log('[MidnightActions] Static deck initialized');
 
@@ -502,7 +502,7 @@ export async function getPlayerHand(
         const cardIndex = rank + suit * 7;
 
         try {
-          const checkResult: any = actionContract.impureCircuits.doesPlayerHaveSpecificCard(
+          const checkResult: any = actionContract.provableCircuits.doesPlayerHaveSpecificCard(
             actionContext,
             gameId,
             BigInt(playerId),
@@ -642,7 +642,7 @@ export async function ensureGameReplayedIfNeeded(
     // If phase is 0 we must still replay dealCards even though the game "exists".
     let currentPhase = -1; // -1 = game not in context at all
     try {
-      const phaseResult = actionContract.impureCircuits.getGamePhase(actionContext, gameId);
+      const phaseResult = actionContract.provableCircuits.getGamePhase(actionContext, gameId);
       actionContext = phaseResult.context;
       currentPhase = Number(phaseResult.result);
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: game in context with phase=${currentPhase}`);
@@ -722,7 +722,7 @@ export async function ensureGameReplayedIfNeeded(
         ),
         costModel: CostModel.initialCostModel(),
       };
-      const initDeckResult = actionContract.impureCircuits.init_deck(actionContext);
+      const initDeckResult = actionContract.provableCircuits.init_deck(actionContext);
       actionContext = initDeckResult.context;
       // Clear the "correctly replayed" set since we just reset all game state
       gamesReplayedWithSeeds.clear();
@@ -766,14 +766,14 @@ export async function ensureGameReplayedIfNeeded(
     if (currentPhase < 0) {
       // Game not in context at all — replay applyMask for both players first (P1 before P2)
       try {
-        const r1 = actionContract.impureCircuits.applyMask(actionContext, gameId, BigInt(canonicalP1));
+        const r1 = actionContract.provableCircuits.applyMask(actionContext, gameId, BigInt(canonicalP1));
         actionContext = r1.context;
         console.log(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP1} replayed`);
       } catch (e: unknown) {
         console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP1} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       try {
-        const r2 = actionContract.impureCircuits.applyMask(actionContext, gameId, BigInt(canonicalP2));
+        const r2 = actionContract.provableCircuits.applyMask(actionContext, gameId, BigInt(canonicalP2));
         actionContext = r2.context;
         console.log(`[MidnightActions] ensureGameReplayedIfNeeded: applyMask P${canonicalP2} replayed`);
       } catch (e: unknown) {
@@ -784,14 +784,14 @@ export async function ensureGameReplayedIfNeeded(
     }
     // dealCards P1 before P2 (canonical order)
     try {
-      const r3 = actionContract.impureCircuits.dealCards(actionContext, gameId, BigInt(canonicalP1));
+      const r3 = actionContract.provableCircuits.dealCards(actionContext, gameId, BigInt(canonicalP1));
       actionContext = r3.context;
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP1} replayed`);
     } catch (e: unknown) {
       console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP1} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     try {
-      const r4 = actionContract.impureCircuits.dealCards(actionContext, gameId, BigInt(canonicalP2));
+      const r4 = actionContract.provableCircuits.dealCards(actionContext, gameId, BigInt(canonicalP2));
       actionContext = r4.context;
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} replayed`);
     } catch (e: unknown) {
@@ -868,7 +868,7 @@ export async function getPlayerHandWithSecret(
           cardCount++;
           const cardIndex = rank + suit * 7;
           try {
-            const checkResult: any = actionContract.impureCircuits.doesPlayerHaveSpecificCard(
+            const checkResult: any = actionContract.provableCircuits.doesPlayerHaveSpecificCard(
               actionContext,
               gameId,
               BigInt(playerId),
@@ -917,7 +917,7 @@ export async function askForCard(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] askForCard(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${rank})`);
 
-    const result = actionContract.impureCircuits.askForCard(
+    const result = actionContract.provableCircuits.askForCard(
       actionContext,
       gameId,
       BigInt(playerId),
@@ -948,7 +948,7 @@ export async function goFish(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] goFish(gameId: ${lobbyId}, playerId: ${playerId})`);
 
-    const result = actionContract.impureCircuits.goFish(
+    const result = actionContract.provableCircuits.goFish(
       actionContext,
       gameId,
       BigInt(playerId)
@@ -1011,7 +1011,7 @@ export async function applyMask(
 
     console.log(`[MidnightActions] applyMask(gameId: ${lobbyId}, playerId: ${playerId})`);
 
-    const result = actionContract.impureCircuits.applyMask(
+    const result = actionContract.provableCircuits.applyMask(
       actionContext,
       gameId,
       BigInt(playerId)
@@ -1075,7 +1075,7 @@ export async function dealCards(
 
     console.log(`[MidnightActions] dealCards(gameId: ${lobbyId}, playerId: ${playerId})`);
 
-    const result = actionContract.impureCircuits.dealCards(
+    const result = actionContract.provableCircuits.dealCards(
       actionContext,
       gameId,
       BigInt(playerId)
@@ -1085,7 +1085,7 @@ export async function dealCards(
     // Query the phase from the action context immediately after dealCards
     // to verify the state was actually updated
     try {
-      const phaseCheck = actionContract.impureCircuits.getGamePhase(actionContext, gameId);
+      const phaseCheck = actionContract.provableCircuits.getGamePhase(actionContext, gameId);
       console.log(`[MidnightActions] dealCards - phase in action context BEFORE sync: ${phaseCheck.result}`);
       actionContext = phaseCheck.context;
     } catch (e) {
@@ -1121,7 +1121,7 @@ export async function respondToAsk(
 
     // First verify game phase is correct
     try {
-      const phaseCheck = actionContract.impureCircuits.getGamePhase(actionContext, gameId);
+      const phaseCheck = actionContract.provableCircuits.getGamePhase(actionContext, gameId);
       actionContext = phaseCheck.context;
       console.log(`[MidnightActions] respondToAsk - current phase: ${phaseCheck.result}`);
 
@@ -1146,7 +1146,7 @@ export async function respondToAsk(
 
     let result;
     try {
-      result = actionContract.impureCircuits.respondToAsk(
+      result = actionContract.provableCircuits.respondToAsk(
         actionContext,
         gameId,
         BigInt(playerId)
@@ -1206,7 +1206,7 @@ export async function afterGoFish(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drewRequestedCard: ${drewRequestedCard})`);
 
-    const result = actionContract.impureCircuits.afterGoFish(
+    const result = actionContract.provableCircuits.afterGoFish(
       actionContext,
       gameId,
       BigInt(playerId),
@@ -1245,7 +1245,7 @@ export async function skipDrawDeckEmpty(
     console.log(`[MidnightActions] skipDrawDeckEmpty(gameId: ${lobbyId}, playerId: ${playerId})`);
 
     try {
-      const result = actionContract.impureCircuits.skipDrawDeckEmpty(
+      const result = actionContract.provableCircuits.skipDrawDeckEmpty(
         actionContext,
         gameId,
         BigInt(playerId)
@@ -1280,7 +1280,7 @@ async function checkAndScoreBooksInternal(gameId: Uint8Array, playerId: 1 | 2): 
   // Check all 7 ranks for possible books (simplified deck)
   for (let rank = 0; rank < 7; rank++) {
     try {
-      const result: any = actionContract.impureCircuits.checkAndScoreBook(
+      const result: any = actionContract.provableCircuits.checkAndScoreBook(
         actionContext,
         gameId,
         BigInt(playerId),
@@ -1332,7 +1332,7 @@ export async function checkAndScoreBooks(
     // Check all 7 ranks for possible books (simplified deck)
     for (let rank = 0; rank < 7; rank++) {
       try {
-        const result: any = actionContract.impureCircuits.checkAndScoreBook(
+        const result: any = actionContract.provableCircuits.checkAndScoreBook(
           actionContext,
           gameId,
           BigInt(playerId),

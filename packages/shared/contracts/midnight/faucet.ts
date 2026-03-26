@@ -19,7 +19,7 @@ import {
   nativeToken,
   shieldedToken,
   ZswapSecretKeys,
-} from "@midnight-ntwrk/ledger-v7";
+} from "@midnight-ntwrk/ledger-v8";
 import { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 import type { DefaultV1Configuration } from "@midnight-ntwrk/wallet-sdk-shielded/v1";
 
@@ -619,7 +619,7 @@ export async function registerNightForDust(
 
     log.info("Submitting dust registration transaction...");
     const txId = await walletResult.wallet.submitTransaction(
-      await walletResult.wallet.finalizeTransaction(recipe),
+      await walletResult.wallet.finalizeRecipe(recipe as any),
     );
     log.info(`Dust registration submitted with tx id: ${txId}`);
 
@@ -700,8 +700,6 @@ const transfer = async (
   try {
     const ttl = new Date(Date.now() + TTL_DURATION_MS);
     const recipe = await walletResult.wallet.transferTransaction(
-      walletResult.walletZswapSecretKeys,
-      walletResult.walletDustSecretKey,
       [{
         type: "unshielded",
         outputs: [{
@@ -710,36 +708,24 @@ const transfer = async (
           receiverAddress,
         }],
       }],
-      ttl,
+      {
+        shieldedSecretKeys: walletResult.walletZswapSecretKeys,
+        dustSecretKey: walletResult.walletDustSecretKey,
+      },
+      { ttl },
     );
     console.log("✓ Transfer transaction created");
 
     const signSegment = (payload: Uint8Array) =>
       walletResult.unshieldedKeystore.signData(payload);
 
-    let signedRecipe = recipe as typeof recipe;
-    if (recipe.type === "TransactionToProve") {
-      const signedTx = await walletResult.wallet.signTransaction(
-        recipe.transaction,
-        signSegment,
-      );
-      signedRecipe = { ...recipe, transaction: signedTx };
-    } else if (recipe.type === "BalanceTransactionToProve") {
-      const signedTx = await walletResult.wallet.signTransaction(
-        recipe.transactionToProve,
-        signSegment,
-      );
-      signedRecipe = { ...recipe, transactionToProve: signedTx };
-    } else if (recipe.type === "NothingToProve") {
-      const signedTx = await walletResult.wallet.signTransaction(
-        recipe.transaction as any,
-        signSegment,
-      );
-      signedRecipe = { ...recipe, transaction: signedTx };
-    }
+    const signedRecipe = await walletResult.wallet.signRecipe(
+      recipe as any,
+      signSegment,
+    );
     console.log("✓ Transfer transaction signed");
 
-    const finalizedTx = await walletResult.wallet.finalizeTransaction(
+    const finalizedTx = await walletResult.wallet.finalizeRecipe(
       signedRecipe as any,
     );
     console.log("✓ Transfer transaction finalized");

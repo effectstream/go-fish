@@ -156,13 +156,14 @@ const getShuffleSeed = (gameIdHex: string | null, index: number) => {
 };
 
 /**
- * The scalar field order of the Jubjub embedded curve (EmbeddedFr).
- * This is the modulus for ecMul scalars in Midnight's NativePoint operations.
+ * The Jubjub prime-order subgroup order r.
+ * Even though Compact's Field type is BLS12-381 Fr, std_ecMul performs point
+ * multiplication on the Jubjub curve whose subgroup has order JUBJUB_R.
+ * Since BLS12_Fr = 8 * JUBJUB_R + remainder, ecMul(P, s) == ecMul(P, s mod JUBJUB_R).
+ * Therefore field inversion for the ecMul round-trip assert MUST be computed mod JUBJUB_R.
  * Hex: 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7
- * Valid ecMul scalar range: [0, JUBJUB_SCALAR_FIELD_ORDER - 1]
  */
-const JUBJUB_SCALAR_FIELD_ORDER =
-  6554484396890773809930967563523245729705921265872317281365359162392183254199n;
+const JUBJUB_SCALAR_FIELD_ORDER = 6554484396890773809930967563523245729705921265872317281365359162392183254199n;
 
 /**
  * Calculates the modular multiplicative inverse of a modulo n.
