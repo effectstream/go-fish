@@ -867,12 +867,14 @@ export async function onChainDealCards(
       return { success: true };
     } catch (err: any) {
       const msg: string = err?.message || String(err);
+      console.warn(`[MidnightOnChain] dealCards error for lobby=${lobbyId} player=${playerId}: ${msg}`);
       const isDelegated = msg.includes("GoFish: delegated") ||
         msg.includes("EffectStream") || msg.includes("Timeout") ||
         msg.includes("timed out") || msg.includes("NetworkError");
       // "Already dealt" means a previous tx was already accepted on-chain — notify anyway.
       const isAlreadyDealt = msg.includes("already dealt") ||
-        msg.includes("Player has already dealt");
+        msg.includes("Player has already dealt") ||
+        msg.includes("Both players have already dealt");
       if (isDelegated || isAlreadyDealt) {
         console.log("[MidnightOnChain] dealCards threw after delegation or already-dealt — notifying backend anyway");
         await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");

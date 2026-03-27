@@ -555,46 +555,64 @@ export class GameScene {
       return false;
     }
 
-    this.hud.showNotification('Setting Up', 'Dealing cards...', 30000);
+    // Attempt dealCards with inline retry for "mask not yet on-chain" failures.
+    // The batcher can take 30-60s to finalize applyMask transactions; we poll
+    // until the on-chain state accepts the deal or we give up after 3 minutes.
     const pid = this.playerId as 1 | 2;
     const secretHex = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid).toString(16).padStart(64, '0');
     const seedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
     const seedHex = Array.from(seedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-    const dealResult = await MidnightService.dealCards(this.lobbyId, pid, secretHex, seedHex);
 
-    if (dealResult.success) {
-      console.log('[GameScene] Cards dealt successfully');
-      return true;
-    }
+    const dealDeadlineMs = Date.now() + 3 * 60 * 1000; // 3 minute total deadline
+    let lastErr = '';
+    while (Date.now() < dealDeadlineMs) {
+      this.hud.showNotification('Setting Up', 'Dealing cards...', 30000);
+      const dealResult = await MidnightService.dealCards(this.lobbyId, pid, secretHex, seedHex);
 
-    const err = dealResult.errorMessage ?? '';
-    if (err.includes('already dealt') || err.includes('has already dealt')) {
-      console.log('[GameScene] Cards already dealt (detected via error) - continuing');
-      return true;
-    }
-    if (err.includes('must apply mask')) {
-      this.scheduleSetupRetry(3000);
-      return false;
-    }
-    if (err.includes('timed out') || err.includes('NetworkError') || err.includes('fetch') ||
-        err.includes('EffectStream processing validation failed') || err.includes('Timeout')) {
-      const confirmed = await this.pollForSetupStatus('hasDealt', 30000);
-      if (confirmed) {
-        console.log('[GameScene] Cards were dealt despite timeout');
+      if (dealResult.success) {
+        console.log('[GameScene] Cards dealt successfully');
         return true;
       }
-      this.hud.showNotification('Setting Up', 'Retrying deal...', 10000);
-      this.scheduleSetupRetry(10000);
-      return false;
-    }
-    if (err.includes('unreachable')) {
-      this.hud.showNotification('Setting Up', 'Waiting for blockchain sync...', 10000);
-      this.scheduleSetupRetry(10000);
-      return false;
+
+      lastErr = dealResult.errorMessage ?? '';
+      console.log(`[GameScene] dealCards attempt failed: ${lastErr}`);
+
+      if (lastErr.includes('already dealt') || lastErr.includes('has already dealt') ||
+          lastErr.includes('Both players have already dealt')) {
+        console.log('[GameScene] Cards already dealt (detected via error) - continuing');
+        return true;
+      }
+      if (lastErr.includes('timed out') || lastErr.includes('NetworkError') || lastErr.includes('fetch') ||
+          lastErr.includes('EffectStream processing validation failed') || lastErr.includes('Timeout')) {
+        const confirmed = await this.pollForSetupStatus('hasDealt', 30000);
+        if (confirmed) {
+          console.log('[GameScene] Cards were dealt despite timeout');
+          return true;
+        }
+        // Network issue — retry in 10s (stays in while loop)
+        this.hud.showNotification('Setting Up', 'Retrying deal...', 10000);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
+      }
+      if (lastErr.includes('must apply mask') || lastErr.includes('apply mask before dealing')) {
+        // Masks not yet visible on-chain — wait and retry without resetting phase
+        console.log('[GameScene] Masks not yet on-chain, waiting 5s before retry...');
+        this.hud.showNotification('Setting Up', 'Waiting for blockchain confirmation...', 10000);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
+      if (lastErr.includes('unreachable')) {
+        this.hud.showNotification('Setting Up', 'Waiting for blockchain sync...', 10000);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
+      }
+
+      // Unknown error — fall back to full retry
+      break;
     }
 
-    console.log(`[GameScene] Deal failed: ${err}, will retry in 5s`);
-    this.hud.showNotification('Error', err || 'Deal failed', 5000);
+    console.log(`[GameScene] Deal failed: ${lastErr}, will retry full setup in 5s`);
+    this.hud.showNotification('Error', lastErr || 'Deal failed', 5000);
     this.scheduleSetupRetry(5000);
     return false;
   }

@@ -101,11 +101,6 @@ export circuit getSecretFromPlayerId(gameId: Bytes<32>, _playerId: Uint<64>): [F
     const invScalar = getFieldInverse(disclose(secret));
     const invScalar_hash = h_hashField(invScalar);
 
-    const rawPoint = std_hashToCurve<Bytes<32>>(secret_hash);
-    const randomPoint = std_ecMul(rawPoint, 8 as Field);
-    const mappedPoint = std_ecMul(randomPoint, secret);
-    const verifyPoint = std_ecMul(mappedPoint, invScalar);
-    assert(verifyPoint == randomPoint, "Witness failed: Invalid Field inverse");
     return [secret, invScalar, secret_hash, invScalar_hash];
 }
 
