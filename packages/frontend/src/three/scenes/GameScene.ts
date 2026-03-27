@@ -546,13 +546,18 @@ export class GameScene {
     const postSyncStatus = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
     console.log('[GameScene] Post-sync setup status:', postSyncStatus);
 
-    // Player 2 must wait for Player 1 to deal first
+    // Player 2 must wait for Player 1 to deal first (enforced by contract)
     if (this.playerId === 2 && !postSyncStatus.opponentHasDealt) {
-      console.log('[GameScene] Player 2 waiting for Player 1 to deal first... will retry in 2s');
+      console.log('[GameScene] Player 2 waiting for Player 1 to deal first... will retry in 5s');
       this.hud.showNotification('Setting Up', 'Waiting for Player 1 to deal...', 30000);
-      this.setupPhase = 'waiting_for_opponent'; // Allow re-entry to syncing step
-      this.scheduleSetupRetry(2000);
-      return false;
+      // Stay in 'dealing' phase — do NOT reset to 'waiting_for_opponent', which would
+      // re-trigger the 8s indexer sync wait on every retry cycle.
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      const refreshedStatus = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
+      if (!refreshedStatus.opponentHasDealt) {
+        this.scheduleSetupRetry(100);
+        return false;
+      }
     }
 
     // Attempt dealCards with inline retry for "mask not yet on-chain" failures.
@@ -563,7 +568,7 @@ export class GameScene {
     const seedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
     const seedHex = Array.from(seedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
 
-    const dealDeadlineMs = Date.now() + 3 * 60 * 1000; // 3 minute total deadline
+    const dealDeadlineMs = Date.now() + 10 * 60 * 1000; // 10 minute deadline (batcher retry can take 90s+)
     let lastErr = '';
     while (Date.now() < dealDeadlineMs) {
       this.hud.showNotification('Setting Up', 'Dealing cards...', 30000);

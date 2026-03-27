@@ -1049,6 +1049,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     // Update local state tracking
     if (action === "mask_applied") {
       markMaskApplied(lobby_id, playerId);
+      console.log(`[API] notify_setup: setupStateMap now has mask=true for lobby=${lobby_id} player=${playerId}`);
       // Replay applyMask on local actionContract so getPlayerHandWithSecret works later.
       // IMPORTANT: the contract requires P1 to act before P2. Always replay P1 first.
       // Pass shuffle seeds so the local simulation's shuffle matches the on-chain transaction.

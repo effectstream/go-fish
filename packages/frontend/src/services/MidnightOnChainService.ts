@@ -89,8 +89,18 @@ console.log(
     : "[MidnightOnChain] Proof mode: WASM in-browser (default)"
 );
 
-// Backend API URL for notifying state changes
-const BACKEND_API_URL = "http://localhost:9996";
+// Backend API URL — use same-origin (empty string) on localhost so the Vite dev
+// server proxy routes to port 9996; use the api- subdomain on deployed envs.
+// This must match apiConfig.ts so notify_setup reaches the same server that
+// getSetupStatus queries. A hardcoded "http://localhost:9996" breaks when Player 2
+// is on a different machine — their request goes to their own localhost, not the server.
+function getBackendApiUrl(): string {
+  const hostname = window.location.hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return '';
+  const protocol = window.location.protocol;
+  return `${protocol}//api-${hostname}`;
+}
+const BACKEND_API_URL = getBackendApiUrl();
 
 /**
  * Notify the backend about a successful setup action

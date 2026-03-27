@@ -23,7 +23,6 @@ import type {
 import {
   buildWalletFacade,
   syncAndWaitForFunds,
-  waitForDustFunds,
   type NetworkUrls as MidnightNetworkUrls,
 } from "@paimaexample/midnight-contracts/wallet-info";
 import type { WalletResult } from "@paimaexample/midnight-contracts/types";
@@ -86,7 +85,6 @@ export class GoFishBalancingAdapter
   private walletResult: WalletResult | null = null;
   private isInitialized = false;
   private initializationPromise: Promise<void> | null = null;
-  private hasFunds = false;
   private walletAddress: string | null = null;
   private readonly walletSeed: string;
 
@@ -122,17 +120,18 @@ export class GoFishBalancingAdapter
 
   private async ensureFunds(): Promise<void> {
     if (!this.walletResult) return;
-    if (this.hasFunds) {
-      try {
-        const dust = await waitForDustFunds(this.walletResult.wallet, 5_000);
-        if (dust > 0n) this.hasFunds = true;
-      } catch { /* ignore */ }
-      return;
-    }
+    // Always use syncAndWaitForFunds so the wallet syncs its UTXOs after each
+    // transaction. Without this, the wallet may attempt to spend already-spent
+    // DUST notes from the previous transaction, causing "insufficient funds" when
+    // two players submit back-to-back (e.g. applyMask for player 1 then player 2).
     try {
-      const balances = await syncAndWaitForFunds(this.walletResult.wallet, { timeoutMs: 60_000 });
-      if (balances.dustBalance > 0n) this.hasFunds = true;
-      console.log(`⚡ [balancing] dust balance: ${balances.dustBalance}`);
+      const balances = await syncAndWaitForFunds(this.walletResult.wallet, { timeoutMs: 120_000 });
+      const hasDust = balances.dustBalance > 0n;
+      console.log(`⚡ [balancing] dust balance after sync: ${balances.dustBalance}`);
+      if (!hasDust) {
+        console.warn("⚠️ [balancing] no DUST after 120s sync — proceeding anyway");
+      }
+      // hasFunds field removed — syncAndWaitForFunds is always called
     } catch (err) {
       console.warn("⚠️ [balancing] ensureFunds failed:", err);
     }
@@ -226,7 +225,20 @@ export class GoFishBalancingAdapter
       if (derivedTxHash) console.log(`⚡ [balancing] derived txHash=${derivedTxHash}`);
     } catch { /* ignore */ }
 
-    const submittedTxId = await wallet.submitTransaction(finalizedTx);
+    // submitTransaction can hang indefinitely if the Midnight node rejects the tx
+    // (e.g. duplicate nonce, TTL conflict from back-to-back transactions). Apply a
+    // 90s timeout so the batcher doesn't get stuck and can retry on the next poll.
+    const submitTimeoutMs = 90_000;
+    let submitTimerId: ReturnType<typeof setTimeout> | undefined;
+    const submittedTxId = await Promise.race([
+      wallet.submitTransaction(finalizedTx),
+      new Promise<never>((_, reject) => {
+        submitTimerId = setTimeout(
+          () => reject(new Error(`[balancing] submitTransaction timed out after ${submitTimeoutMs}ms`)),
+          submitTimeoutMs,
+        );
+      }),
+    ]).finally(() => clearTimeout(submitTimerId));
     const txHash = derivedTxHash ?? submittedTxId?.toString();
     console.log(`✅ [balancing] circuit=${data.circuitId} submittedId=${submittedTxId} txHash=${txHash}`);
 
