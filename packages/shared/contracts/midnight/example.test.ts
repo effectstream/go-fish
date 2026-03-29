@@ -13,6 +13,9 @@ import {
 	sampleContractAddress,
 	createConstructorContext,
 	CostModel,
+	sampleSigningKey,
+	emptyZswapLocalState,
+	signatureVerifyingKey,
 } from '@midnight-ntwrk/compact-runtime';
 import { Contract, ledger, type Witnesses } from './go-fish-contract/src/managed/contract/index.js';
 
@@ -3633,6 +3636,117 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	}
 
 	// ============================================
+	// ============================================
+	// Q. CALLER AUTHENTICATION TESTS (ownPublicKey)
+	// ============================================
+	logHeader('Q. CALLER AUTHENTICATION TESTS');
+
+	{
+		// Create two different "wallets" with different signing keys
+		const sk1 = sampleSigningKey();
+		const sk2 = sampleSigningKey();
+		const pk1 = signatureVerifyingKey(sk1);
+		const pk2 = signatureVerifyingKey(sk2);
+
+		logInfo(`P1 public key: ${pk1.slice(0, 16)}...`);
+		logInfo(`P2 public key: ${pk2.slice(0, 16)}...`);
+
+		// Helper: set the caller identity on the circuit context
+		const setCallerIdentity = (pk: string) => {
+			sim.circuitContext = {
+				...sim.circuitContext,
+				currentZswapLocalState: emptyZswapLocalState(pk),
+			};
+		};
+
+		// Fresh game with two distinct player identities
+		sim.reset();
+		setCallerPlayer(null); // cooperative witness mode
+		const gid = freshGame();
+
+		// Q1: P1 registers with their own public key
+		logSection('Q1: P1 registers identity via applyMask');
+		setCallerIdentity(pk1);
+		try {
+			const r = provableCircuits.applyMask(sim.circuitContext, gid, 1n);
+			sim.circuitContext = r.context;
+			recordTest('Q1 P1 registers identity', true, null, 'P1 registered with own public key');
+		} catch (e: any) {
+			recordTest('Q1 P1 registers identity', false, e);
+		}
+
+		// Q2: P2 registers with their own public key
+		logSection('Q2: P2 registers identity via applyMask');
+		setCallerIdentity(pk2);
+		try {
+			const r = provableCircuits.applyMask(sim.circuitContext, gid, 2n);
+			sim.circuitContext = r.context;
+			recordTest('Q2 P2 registers identity', true, null, 'P2 registered with own public key');
+		} catch (e: any) {
+			recordTest('Q2 P2 registers identity', false, e);
+		}
+
+		// Q3: P1 tries to register as P2 (should fail — P2 mask already applied)
+		logSection('Q3: P1 tries to register as P2');
+		setCallerIdentity(pk1);
+		expectAssert('Q3 P1 cannot re-register as P2', 'Player has already applied their mask', () => {
+			const r = provableCircuits.applyMask(sim.circuitContext, gid, 2n);
+			sim.circuitContext = r.context;
+		});
+
+		// Q4: P1 deals (with P1's identity — should work)
+		logSection('Q4: P1 deals with correct identity');
+		setCallerIdentity(pk1);
+		try {
+			const r = provableCircuits.dealCards(sim.circuitContext, gid, 1n);
+			sim.circuitContext = r.context;
+			recordTest('Q4 P1 deals with own identity', true, null, 'P1 dealt successfully');
+		} catch (e: any) {
+			recordTest('Q4 P1 deals with own identity', false, e);
+		}
+
+		// Q5: P2 tries to deal as P1 (should fail — wrong identity)
+		logSection('Q5: P2 tries to deal as P1');
+		setCallerIdentity(pk2);
+		expectAssert('Q5 P2 cannot deal as P1', 'Caller is not player 1', () => {
+			const r = provableCircuits.dealCards(sim.circuitContext, gid, 1n);
+			sim.circuitContext = r.context;
+		});
+
+		// Q6: P2 deals as P2 (correct identity — should work)
+		logSection('Q6: P2 deals with correct identity');
+		setCallerIdentity(pk2);
+		try {
+			const r = provableCircuits.dealCards(sim.circuitContext, gid, 2n);
+			sim.circuitContext = r.context;
+			recordTest('Q6 P2 deals with own identity', true, null, 'P2 dealt successfully');
+		} catch (e: any) {
+			recordTest('Q6 P2 deals with own identity', false, e);
+		}
+
+		// Q7: P2 tries to askForCard as P1 (should fail — wrong identity)
+		logSection('Q7: P2 tries to ask as P1');
+		setCallerIdentity(pk2);
+		expectAssert('Q7 P2 cannot ask as P1', 'Caller is not player 1', () => {
+			const r = provableCircuits.askForCard(sim.circuitContext, gid, 1n, 0n, now());
+			sim.circuitContext = r.context;
+		});
+
+		// Q8: A third party tries to act as P1
+		logSection('Q8: Third party cannot impersonate P1');
+		const sk3 = sampleSigningKey();
+		const pk3 = signatureVerifyingKey(sk3);
+		setCallerIdentity(pk3);
+		expectAssert('Q8 third party cannot act as P1', 'Caller is not player 1', () => {
+			const r = provableCircuits.askForCard(sim.circuitContext, gid, 1n, 0n, now());
+			sim.circuitContext = r.context;
+		});
+
+		// Reset identity for remaining tests
+		sim.reset();
+		setCallerPlayer(null);
+	}
+
 	// PRINT SUMMARY
 	// ============================================
 	logHeader('📊 TEST SUMMARY');
@@ -3697,11 +3811,12 @@ function checkAndScoreBooks(hand: bigint[], books: number[]): number[] {
 }
 
 function isGameOver(sim: GoFishSimulator, circuits: any, gameId: Uint8Array): boolean {
-	// Game ends when all 13 books are made
-	const totalBooks = sim.player1Books.length + sim.player2Books.length;
-	if (totalBooks >= 13) return true;
-	
-	// Or deck is empty and a player has no cards
+	// Use contract state — check isGameOver circuit directly
+	const r = circuits.isGameOver(sim.circuitContext, gameId);
+	sim.circuitContext = r.context;
+	if (r.result === true) return true;
+
+	// Also check: deck empty and a player has no cards
 	const r1 = circuits.get_top_card_index(sim.circuitContext, gameId);
 	sim.circuitContext = r1.context;
 	const topIdx = Number(r1.result);
@@ -3709,7 +3824,7 @@ function isGameOver(sim: GoFishSimulator, circuits: any, gameId: Uint8Array): bo
 	sim.circuitContext = r2.context;
 	const deckSize = Number(r2.result);
 	const deckEmpty = topIdx >= deckSize;
-	
+
 	if (deckEmpty && (sim.player1Hand.length === 0 || sim.player2Hand.length === 0)) {
 		return true;
 	}
@@ -3764,17 +3879,29 @@ async function runGameSimulation(sim: GoFishSimulator) {
 		s15_scorePassed: true,
 	};
 
-	// S1: deck + hands + (books_scored * 3) = 21 invariant check (idempotent — read-only queries)
+	// S1: deck + hands + (books_scored * 3) = 21 invariant check
+	// Uses CONTRACT state for all values — no local tracking dependency.
 	const checkInvariantS1 = () => {
 		const topR = circuits.get_top_card_index(sim.circuitContext, gameId);
 		sim.circuitContext = topR.context;
 		const deckRemaining = 21 - Number(topR.result);
-		const booksRemoved = (sim.player1Books.length + sim.player2Books.length) * 3;
-		const total = deckRemaining + sim.player1Hand.length + sim.player2Hand.length + booksRemoved;
+
+		// Get hand sizes from contract
+		const hsR = circuits.getHandSizes(sim.circuitContext, gameId);
+		sim.circuitContext = hsR.context;
+		const contractP1Size = Number(hsR.result[0]);
+		const contractP2Size = Number(hsR.result[1]);
+
+		// Get scores from contract
+		const scR = circuits.getScores(sim.circuitContext, gameId);
+		sim.circuitContext = scR.context;
+		const booksRemoved = (Number(scR.result[0]) + Number(scR.result[1])) * 3;
+
+		const total = deckRemaining + contractP1Size + contractP2Size + booksRemoved;
 		simTests.s1_invariantChecks++;
 		if (total !== 21) {
 			simTests.s1_invariantPassed = false;
-			log(`  ❌ S1 INVARIANT FAILED turn ${turnCount}: deck=${deckRemaining} + P1=${sim.player1Hand.length} + P2=${sim.player2Hand.length} + books=${booksRemoved} = ${total}`);
+			log(`  ❌ S1 INVARIANT FAILED turn ${turnCount}: deck=${deckRemaining} + P1=${contractP1Size} + P2=${contractP2Size} + books=${booksRemoved} = ${total}`);
 		}
 	};
 
@@ -3953,61 +4080,54 @@ async function runGameSimulation(sim: GoFishSimulator) {
 			throw e;
 		}
 
-		// Check for books after getting cards (local tracking)
-		const newBooks = checkAndScoreBooks(
-			currentPlayer === 1 ? sim.player1Hand : sim.player2Hand,
-			currentBooks
-		);
-		if (newBooks.length > 0) {
-			// S8: Snapshot hand size from CONTRACT before scoring (local hand already modified by checkAndScoreBooks)
+		// Check for books: try each rank via the CONTRACT (not local tracking).
+		// The contract handles dual masked/unmasked forms correctly.
+		{
 			const hsBeforeR = circuits.get_player_hand_size(sim.circuitContext, gameId, BigInt(currentPlayer));
 			sim.circuitContext = hsBeforeR.context;
 			const handBefore = Number(hsBeforeR.result);
 
-			// Also score in contract
-			for (const rank of newBooks) {
+			let booksThisTurn = 0;
+			for (let rank = 0; rank < 7; rank++) {
 				try {
 					const r = provableCircuits.checkAndScoreBook(sim.circuitContext, gameId, BigInt(currentPlayer), BigInt(rank));
 					sim.circuitContext = r.context;
-
-					// S7: checkAndScoreBook returned true
 					if (r.result === true) {
 						simTests.s7_bookScored++;
+						booksThisTurn++;
+						if (currentPlayer === 1) sim.player1Books.push(rank);
+						else sim.player2Books.push(rank);
 					}
-				} catch (e) {
-					// May already be scored or not have all cards
+				} catch {
+					// Not enough cards or already scored — expected
 				}
 			}
-			refreshHands(); // also runs S1, S2
 
-			// S8: Verify hand reduced by 3 per book (read from contract after scoring)
-			const hsAfterR = circuits.get_player_hand_size(sim.circuitContext, gameId, BigInt(currentPlayer));
-			sim.circuitContext = hsAfterR.context;
-			const handAfter = Number(hsAfterR.result);
-			const expectedReduction = newBooks.length * 3;
-			simTests.s8_bookHandReduction++;
-			if (handBefore - handAfter !== expectedReduction) {
-				simTests.s8_bookHandPassed = false;
-				log(`  ❌ S8 FAIL turn ${turnCount}: hand ${handBefore}→${handAfter}, expected -${expectedReduction}`);
+			if (booksThisTurn > 0) {
+				refreshHands(); // also runs S1, S2
+
+				// S8: Verify hand reduced by 3 per book
+				const hsAfterR = circuits.get_player_hand_size(sim.circuitContext, gameId, BigInt(currentPlayer));
+				sim.circuitContext = hsAfterR.context;
+				const handAfter = Number(hsAfterR.result);
+				const expectedReduction = booksThisTurn * 3;
+				simTests.s8_bookHandReduction++;
+				if (handBefore - handAfter !== expectedReduction) {
+					simTests.s8_bookHandPassed = false;
+					log(`  ❌ S8 FAIL turn ${turnCount}: hand ${handBefore}→${handAfter}, expected -${expectedReduction}`);
+				}
+
+				// S15: Verify scores
+				const scR = circuits.getScores(sim.circuitContext, gameId);
+				sim.circuitContext = scR.context;
+				simTests.s15_scoreChecks++;
+				const contractP1 = Number(scR.result[0]);
+				const contractP2 = Number(scR.result[1]);
+				if (contractP1 !== sim.player1Books.length || contractP2 !== sim.player2Books.length) {
+					simTests.s15_scorePassed = false;
+					log(`  ❌ S15 FAIL turn ${turnCount}: contract=[${contractP1},${contractP2}] local=[${sim.player1Books.length},${sim.player2Books.length}]`);
+				}
 			}
-
-			// S15: getScores matches local book count
-			const scR = circuits.getScores(sim.circuitContext, gameId);
-			sim.circuitContext = scR.context;
-			const contractP1 = Number(scR.result[0]);
-			const contractP2 = Number(scR.result[1]);
-			simTests.s15_scoreChecks++;
-			if (contractP1 !== sim.player1Books.length || contractP2 !== sim.player2Books.length) {
-				simTests.s15_scorePassed = false;
-				log(`  ❌ S15 FAIL turn ${turnCount}: contract=[${contractP1},${contractP2}] local=[${sim.player1Books.length},${sim.player2Books.length}]`);
-			}
-		}
-
-		// Update books
-		if (currentPlayer === 1) {
-			sim.player1Books = currentBooks;
-		} else {
-			sim.player2Books = currentBooks;
 		}
 	}
 
