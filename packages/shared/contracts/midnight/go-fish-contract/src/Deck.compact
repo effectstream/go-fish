@@ -92,7 +92,13 @@ export circuit init_deck(gameId: Bytes<32>): [] {
     return [];
 }
 
-// Use this function to get the secret and inverse scalar for a player in a game
+// Get the secret and inverse scalar for a player in a game.
+// Verifies via ec_mul round-trip: ecMul(ecMul(point, secret), inverse) == point.
+// This works for both real secrets and ZKIR-guard dummy secrets (any valid secret+inverse pair).
+// OPT-F (hash-based verification) was attempted but breaks the player-isolated witness model:
+// the dummy secret's hash doesn't match the registered hash, causing the assert to fail.
+// The ec_mul round-trip is mathematically valid for any secret+inverse pair regardless of
+// whether it's the "real" registered secret or a dummy.
 export circuit getSecretFromPlayerId(gameId: Bytes<32>, _playerId: Uint<64>): [Field, Field, Bytes<32>, Bytes<32>] {
     const gid = disclose(gameId);
     const playerId = disclose(_playerId);
@@ -221,58 +227,39 @@ circuit getPointFromValue(value: Field): JubjubPoint {
     return std_ecMul(raw_point, 8 as Field);
 }
 
-circuit applyMaskToPoint(gameId: Bytes<32>, _point: JubjubPoint, _playerIndex: Uint<64>): JubjubPoint {
-    const point = disclose(_point);
-    const playerIndex = disclose(_playerIndex);
-    const gid = disclose(gameId);
-    const disclosed_playerIndex = disclose(playerIndex);
-    const secret = player_secret_key(gid, disclosed_playerIndex);
-    return std_ecMul(disclose(point), disclose(secret));
-}
-
 export circuit shuffle_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
     const gid = disclose(gameId);
-    const seed = shuffle_seed(gid, playerIndex);
-    
-    // CHANGED: 21 Indices (0..20) for 7 ranks * 3 suits
+    const secret = player_secret_key(gid, playerIndex);
+
     const INDICES_21: Vector<21, Uint<64>> = [
         0, 1, 2, 3, 4, 5, 6,
         7, 8, 9, 10, 11, 12, 13,
         14, 15, 16, 17, 18, 19, 20
     ];
 
+    // Read + mask with pre-computed secret (no per-card witness calls)
     const cardKeys = map((idx) => makeDeckCardKey(gid, disclose(idx as Field)), INDICES_21);
-    const cards = map((key) => make_weighted_masked_card(gid, key, playerIndex), cardKeys);
+    const cards = map((key) => {
+        const point = gameDeck.lookup(disclose(key)) as JubjubPoint;
+        return std_ecMul(disclose(point), disclose(secret));
+    }, cardKeys);
+
     const sorted_cards = get_sorted_deck_witness(cards);
-    
-    // Compress cards to Field elements
-    const original_hashes = map((c) => h_hashCurvePoint(c), cards);
-    const sorted_hashes = map((c) => h_hashCurvePoint(c), sorted_cards);
 
-    // Generate random challenge 'gamma' (Fiat-Shamir)
-    const h1: Bytes<32> = h_hashVector2(original_hashes);
-    const h2: Bytes<32> = h_hashVector2(sorted_hashes);
-    const _gamma = h_hashVector([h1, h2]);
-    const gamma: Field = _gamma as Field;
+    // Coordinate-based grand product — no hashing of card points.
+    // Before: 42 h_hashCurvePoint + 2 h_hashVector2 + 1 h_hashVector = 45 transient hashes
+    // After:  jubjubPointX (free field extraction) + 1 h_hashField for Fiat-Shamir
+    const xsum = fold((acc, c) => acc + jubjubPointX(c), 0 as Field, cards);
+    const gamma: Field = h_hashField(xsum) as Field;
 
-    // Compute Grand Products
-    const prod_original = fold((acc, h) => acc * ((h as Field) + gamma), 1 as Field, original_hashes);
-    const prod_sorted   = fold((acc, h) => acc * ((h as Field) + gamma), 1 as Field, sorted_hashes);
+    const prod_original = fold((acc, c) => acc * (jubjubPointX(c) + gamma), 1 as Field, cards);
+    const prod_sorted   = fold((acc, c) => acc * (jubjubPointX(c) + gamma), 1 as Field, sorted_cards);
 
     assert(prod_original == prod_sorted, "Witness failed: Cheating detected (cards modified)");
 
-    // CHANGED: Loop 0..21
     for (const i of 0..21) {
-        const deckKey = cardKeys[i];
-        gameDeck.insert(disclose(deckKey), disclose(sorted_cards[i]));
+        gameDeck.insert(disclose(cardKeys[i]), disclose(sorted_cards[i]));
     }
-}
-
-circuit make_weighted_masked_card(gameId: Bytes<32>, deckKey: Bytes<32>, playerIndex: Uint<64>): JubjubPoint {
-    const gid = disclose(gameId);
-    const original_point = gameDeck.lookup(disclose(deckKey)) as JubjubPoint;
-    const masked_point = applyMaskToPoint(gid, original_point, playerIndex);
-    return masked_point;
 }
 
 }

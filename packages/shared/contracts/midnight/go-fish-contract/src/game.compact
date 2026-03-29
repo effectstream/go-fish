@@ -66,7 +66,10 @@ export circuit applyMask(gameId: Bytes<32>, playerId: Uint<64>): [] {
     
     // RULE: Player hasn't already applied their mask
     assert(!go_fish_hasMaskApplied(gid, playerId), "Player has already applied their mask");
-    
+
+    // AUTH: Register caller's public key on first move
+    go_fish_registerPlayer(gid, playerId);
+
     deck_apply_mask_to_deck(gid, playerId);
     go_fish_markMaskApplied(gid, playerId);
     return [];
@@ -84,6 +87,9 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
 
     // RULE: Game must exist
     assert(go_fish_doesGameExist(gid), "Game does not exist");
+
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, playerId);
 
     // RULE 1: Must be in Setup phase
     const currentPhase = go_fish_getPhase(gid);
@@ -171,43 +177,29 @@ export circuit partial_decryption(gameId: Bytes<32>, point: JubjubPoint, playerI
     return deck_partial_decryption(disclose(gameId), point, playerId);
 }
 
-// Transfer a single card from one player to another (internal use)
-circuit moveCardFromPlayerToPlayerCardInHand(gameId: Bytes<32>, fromPlayerId: Uint<64>, _semiMaskedPoint: JubjubPoint): [] {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(fromPlayerId);
-    const semiMaskedPoint = disclose(_semiMaskedPoint);
-    
-    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
- 
-    // if (disclosed_playerId == 1 as Uint<64>) {
-        assert(hand_doesPlayerHaveCard(gid, disclosed_playerId as Uint<64>, disclose(semiMaskedPoint)), "Card not in player1 hand");
-        hand_removeCardFromHand(gid, disclosed_playerId, disclose(semiMaskedPoint));
-        
-        // Look up the fully encrypted card from the semi-masked point
-        const fullyMaskedPoint = deck_lookupFullyMasked(gid, disclose(semiMaskedPoint));
-
-        // Fetch both secrets unconditionally, select with ternary — keeps ec_mul unconditional in ZKIR.
-        const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
-        const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
-        const invScalar: Field = (disclosed_playerId == 1 as Uint<64>) ? invScalar1 : invScalar2;
-        const opponentMaskedPoint = std_ecMul(fullyMaskedPoint, invScalar);
-        const opponentPlayerId = disclosed_playerId == 1 as Uint<64> ? 2 as Uint<64> : 1 as Uint<64>;
-        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(opponentMaskedPoint));
-   
-}
-
 // Transfer all cards of a rank from opponent to current player
 circuit transferAllCardsOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(fromPlayerId);
     const disclosed_rank = disclose(targetRank);
-    // CHANGED: Rank < 7
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
 
-    // Try each suit exactly once (0..3 yields 0,1,2 in Compact ranges).
     for (const suit of 0..3) {
         transferCardOfRank(gid, fromPlayerId, targetRank, suit as Uint<32>);
+    }
+}
+
+// OPT-A: Variant that accepts pre-computed secrets (avoids re-deriving per suit)
+circuit transferAllCardsOfRank_withSecrets(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>, secret1: Field, secret2: Field): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(fromPlayerId);
+    const disclosed_rank = disclose(targetRank);
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    for (const suit of 0..3) {
+        transferCardOfRank_withSecrets(gid, fromPlayerId, targetRank, suit as Uint<32>, secret1, secret2);
     }
 }
 
@@ -217,45 +209,63 @@ circuit transferCardOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank
     const disclosed_playerId = disclose(fromPlayerId);
     const disclosed_rank = disclose(targetRank);
     const disclosed_suit = disclose(cardSuit);
-    
+
     const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.WaitForResponse || 
-           currentPhase == go_fish_GamePhase.WaitForTransfer, 
+    assert(currentPhase == go_fish_GamePhase.WaitForResponse ||
+           currentPhase == go_fish_GamePhase.WaitForTransfer,
            "Can only transfer cards during response/transfer phase");
-    
+
     const currentTurn = go_fish_getCurrentTurn(gid);
     assert(disclosed_playerId != currentTurn, "Cannot transfer cards from current player - must be opponent");
-    
-    // CHANGED: Rank < 7
+
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
     assert(disclosed_suit >= 0 && disclosed_suit < 3, "Invalid card suit");
-    
-    // CHANGED: Multiply by 7 (number of ranks)
+
     const cardIndex = (disclosed_rank + (disclosed_suit * 7 as Uint<32>)) as Uint<32>;
     const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as JubjubPoint;
-    
-    // EC-MUL GUARD BUG FIX: eliminate deck_lookupFullyMasked entirely.
-    // opponentMaskedPoint = baseCard * opponentSecret (derived directly from baseCard).
-    // This avoids a conditional ledger read whose guard would propagate to the ec_mul input,
-    // causing the proof server to panic with "Point should be part of the subgroup".
-    //
-    // Math: fromPlayer's maskedCard = baseCard * fromPlayerSecret
-    //       toPlayer's maskedCard   = baseCard * toPlayerSecret
-    // Both ec_muls (maskedCard and opponentMaskedPoint) use baseCard — always a valid subgroup
-    // point — and secrets fetched unconditionally via ternary-select. No map lookup needed.
+
     const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
     const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
     const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
-    const opponentSecret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret2 : secret1;
     const maskedCard = std_ecMul(baseCard, secret);
     const opponentPlayerId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
-    const opponentMaskedPoint = std_ecMul(baseCard, opponentSecret);
 
     const hasCard = hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard));
 
     if (hasCard) {
         hand_removeCardFromHand(gid, disclosed_playerId, disclose(maskedCard));
-        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(opponentMaskedPoint));
+        // OPT-H: Insert UNMASKED base point
+        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(baseCard));
+        return true;
+    }
+
+    return false;
+}
+
+// OPT-A + OPT-H: Pre-computed secrets, UNMASKED transfer.
+// Inserts the raw baseCard point into opponent's hand — no opponent secret needed.
+circuit transferCardOfRank_withSecrets(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>, cardSuit: Uint<32>, secret1: Field, secret2: Field): Boolean {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(fromPlayerId);
+    const disclosed_rank = disclose(targetRank);
+    const disclosed_suit = disclose(cardSuit);
+
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
+    assert(disclosed_suit >= 0 && disclosed_suit < 3, "Invalid card suit");
+
+    const cardIndex = (disclosed_rank + (disclosed_suit * 7 as Uint<32>)) as Uint<32>;
+    const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as JubjubPoint;
+
+    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
+    const maskedCard = std_ecMul(baseCard, secret);
+    const opponentPlayerId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+
+    const hasCard = hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard));
+
+    if (hasCard) {
+        hand_removeCardFromHand(gid, disclosed_playerId, disclose(maskedCard));
+        // OPT-H: Insert UNMASKED base point — no opponent secret needed
+        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(baseCard));
         return true;
     }
 
@@ -274,6 +284,9 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     // Game must exist
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, askingPlayerId);
+
     // RULE 1: Must be in TurnStart phase
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.TurnStart, "Can only ask for cards at turn start");
@@ -282,27 +295,28 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     const currentTurn = go_fish_getCurrentTurn(gid);
     assert(disclosed_playerId == currentTurn, "Not your turn - only current player can ask for cards");
 
-    // RULE 3: Asking player must have at least one card of the requested rank
-    const hasCard = doesPlayerHaveCard(gid, askingPlayerId, targetRank);
-    assert(hasCard, "Cannot ask for a rank you don't have in your hand");
-
-    // RULE 4: Valid rank (0-6)
-    // CHANGED: Rank < 7
+    // RULE 3: Valid rank (0-6)
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
 
-    // RULE 5: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
-    // 120s window accounts for ZK proof generation time on devnet/testnet
+    // RULE 4: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
     assert(
         blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
     );
 
+    // OPT-B: Fetch secrets once, use countCardsOfRank_withSecrets for both the "has card" check
+    // and the pre-draw count. Replaces the previous doesPlayerHaveCard + countCardsOfRank calls
+    // which each independently computed secrets (18 ec_mul → 9 ec_mul).
+    const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
+    const currentCount = countCardsOfRank_withSecrets(gid, askingPlayerId, targetRank, secret1, secret2);
+
+    // RULE 5: Asking player must have at least one card of the requested rank
+    assert(currentCount > 0 as Uint<8>, "Cannot ask for a rank you don't have in your hand");
+
     // Store the asked rank and asking player for the response phase
     go_fish_setLastAskedRank(gid, targetRank);
     go_fish_setLastAskingPlayer(gid, askingPlayerId);
-
-    // Record how many cards of this rank the asking player currently has
-    const currentCount = countCardsOfRank(gid, askingPlayerId, targetRank);
     go_fish_setPreDrawRankCount(gid, currentCount);
 
     // Record the timestamp of this move for timeout tracking
@@ -321,6 +335,9 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     // Game must exist
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, respondingPlayerId);
+
     // RULE 1: Must be in WaitForResponse phase
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.WaitForResponse, "Not waiting for a response");
@@ -331,7 +348,6 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     assert(disclosed_respondingId == 1 as Uint<64> || disclosed_respondingId == 2 as Uint<64>, "Invalid player index");
 
     // RULE 3: Timestamp must not be in the future
-    // 120s window accounts for ZK proof generation time on devnet/testnet
     assert(
         blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
@@ -339,27 +355,60 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
 
     // Get the rank being asked for
     const targetRank = go_fish_getLastAskedRank(gid);
-    
+
+    // OPT-A: Fetch both players' secrets ONCE.
+    const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
+
     // Count how many cards the responding player has of this rank
-    const respondingCardCount = countCardsOfRank(gid, respondingPlayerId, targetRank);
+    const respondingCardCount = countCardsOfRank_withSecrets(gid, respondingPlayerId, targetRank, secret1, secret2);
 
-    // EC-MUL GUARD BUG FIX: call transferAllCardsOfRank unconditionally so the ec_mul ops
-    // inside transferCardOfRank (masking the base card points) are never guarded in the ZKIR.
-    // transferCardOfRank already checks hand_doesPlayerHaveCard before moving any card, so
-    // calling it when the player has none of the rank is safe — it simply does nothing.
-    transferAllCardsOfRank(gid, respondingPlayerId, targetRank);
+    // EC-MUL GUARD BUG FIX: call transferAllCardsOfRank unconditionally
+    transferAllCardsOfRank_withSecrets(gid, respondingPlayerId, targetRank, secret1, secret2);
 
-    // Record the timestamp — the turn clock now runs against the drawing player
+    // OPT-I: UNCONDITIONAL draw — compute partial decryption for the asking player.
+    // The responding player removes their OWN mask. The result (baseCard * askingPlayerSecret)
+    // is in the same format as dealt cards. ec_mul is unconditional (ZKIR guard safe).
+    // If the deck is empty, we use a fallback point so ec_mul still has valid inputs.
+    const topIndex = deck_getTopCardIndex(gid);
+    const deckSize = deck_getDeckSize(gid);
+    const deckHasCards = topIndex as Uint<64> < deckSize;
+
+    // Read a deck card unconditionally (fallback to index 0 if deck empty — result discarded)
+    const readIndex: Uint<32> = deckHasCards ? topIndex : 0 as Uint<32>;
+    const fullyMaskedPoint = deck_getDeckCard(gid, readIndex as Field);
+
+    // Responding player removes OWN mask — uses own invScalar (no opponent secret needed)
+    const respondingInv: Field = (disclosed_respondingId == 1 as Uint<64>) ? invScalar1 : invScalar2;
+    const drawnCardForAsker = std_ecMul(fullyMaskedPoint, respondingInv);
+
+    // Record the timestamp
     go_fish_setLastMoveAt(gid, now);
 
     if (respondingCardCount > 0 as Uint<8>) {
-        // Cards were transferred above; clear request state and give asker another turn
+        // Had cards — transfer already applied, drawn card discarded
         go_fish_clearLastAskedRank(gid);
         go_fish_setPhase(gid, go_fish_GamePhase.TurnStart);
         return [true, respondingCardCount];
+    } else if (deckHasCards) {
+        // Go Fish — insert drawn card into asking player's hand, advance deck
+        hand_insertCardIntoHand(gid, disclose(askingPlayerId), disclose(drawnCardForAsker));
+
+        // Store semi-masked mapping for state recovery
+        deck_storeSemiMaskedMapping(gid, disclose(drawnCardForAsker), disclose(fullyMaskedPoint));
+
+        // V3: Store drawn card for afterGoFish verification
+        go_fish_setLastDrawnCard(gid, drawnCardForAsker);
+
+        // Advance deck top index
+        deck_gameTopCardIndex.insert(gid, topIndex + 1 as Uint<32>);
+
+        go_fish_setPhase(gid, go_fish_GamePhase.WaitForDrawCheck);
+        return [false, 0 as Uint<8>];
     } else {
-        // Go Fish! - responding player doesn't have the card
-        go_fish_setPhase(gid, go_fish_GamePhase.WaitForDraw);
+        // Go Fish but deck empty — switch turn
+        go_fish_clearLastAskedRank(gid);
+        go_fish_switchTurn(gid);
         return [false, 0 as Uint<8>];
     }
 }
@@ -368,7 +417,8 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
 // DRAWING CARDS
 // ============================================
 
-export circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): JubjubPoint {
+// Internal only — used by dealCard during setup. No longer exported.
+circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): JubjubPoint {
     const gid = disclose(gameId);
     const toPlayerId = disclose(_toPlayerId);
     const disclosed_playerId = disclose(toPlayerId);
@@ -396,49 +446,17 @@ export circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): 
     return semi_encrypted_point;
 }
 
-export circuit goFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): JubjubPoint {
+// V3: afterGoFish no longer takes drewRequestedCard as parameter.
+// Instead, it decrypts the stored drawn card point and verifies the rank programmatically.
+export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
 
     // Game must exist
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
-    // RULE 1: Must be in draw phase or turn start
-    const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.WaitForDraw ||
-           currentPhase == go_fish_GamePhase.TurnStart, "Not in draw phase");
-
-    // RULE 2: Must be the current player's turn
-    const currentTurn = go_fish_getCurrentTurn(gid);
-    assert(disclosed_playerId == currentTurn, "Not your turn - only current player can draw");
-
-    // RULE 3: Deck must not be empty
-    const topIndex = deck_getTopCardIndex(gid);
-    const deckSize = deck_getDeckSize(gid);
-    assert(topIndex as Uint<64> < deckSize, "Cannot draw - deck is empty");
-
-    // RULE 4: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
-    // 120s window accounts for ZK proof generation time on devnet/testnet
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
-
-    const card = getTopCardForOpponent(gid, disclosed_playerId);
-
-    // Record the timestamp of this move for timeout tracking
-    go_fish_setLastMoveAt(gid, now);
-
-    go_fish_setPhase(gid, go_fish_GamePhase.WaitForDrawCheck);
-    return card;
-}
-
-export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedCard: Boolean, now: Uint<64>): [] {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(playerId);
-
-    // Game must exist
-    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, playerId);
 
     // RULE 1: Must be waiting for draw check
     const currentPhase = go_fish_getPhase(gid);
@@ -448,8 +466,7 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
     const currentTurn = go_fish_getCurrentTurn(gid);
     assert(disclosed_playerId == currentTurn, "Only current player can call afterGoFish");
 
-    // RULE 3: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
-    // 120s window accounts for ZK proof generation time on devnet/testnet
+    // RULE 3: Timestamp
     assert(
         blockTimeLt(disclose(now + 120 as Uint<64>)),
         "Claimed timestamp is too far in the future"
@@ -457,26 +474,37 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, drewRequestedC
 
     const lastRank = go_fish_getLastAskedRank(gid);
 
-    // EC-MUL GUARD BUG FIX: call countCardsOfRank unconditionally so the std_ecMul ops inside
-    // it are never guarded in the compiled ZKIR. If countCardsOfRank were inside the
-    // `if (drewRequestedCard)` branch, the inactive branch (drewRequestedCard == false) would
-    // feed (0, 0) into ec_mul, causing the proof server to panic with
-    // "Point should be part of the subgroup". Calling it here unconditionally forces the
-    // Compact compiler to emit unguarded public_input ops for all three ec_mul base points.
+    // V3: Decrypt the drawn card point to determine its rank.
+    // The drawn card was stored by respondToAsk as baseCard * playerSecret.
+    // The caller decrypts using partial_decryption (own secret only).
+    const drawnCardPoint = go_fish_getLastDrawnCard(gid);
+    const decryptedPoint = deck_partial_decryption(gid, drawnCardPoint, playerId);
+
+    // Check if the decrypted point matches any of the 3 base cards of the asked rank.
+    // Card index = rank + suit*7, so the 3 cards of lastRank are at indices: rank, rank+7, rank+14.
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(lastRank) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(lastRank + 7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(lastRank + 14 as Uint<32>) as JubjubPoint;
+
+    // Compare decrypted point against base cards using coordinate comparison
+    // (Compact 0.30.0 JubjubPoint == bug — compare coordinates instead)
+    const drewRequestedCard =
+        (jubjubPointX(decryptedPoint) == jubjubPointX(baseCard1) && jubjubPointY(decryptedPoint) == jubjubPointY(baseCard1)) ||
+        (jubjubPointX(decryptedPoint) == jubjubPointX(baseCard2) && jubjubPointY(decryptedPoint) == jubjubPointY(baseCard2)) ||
+        (jubjubPointX(decryptedPoint) == jubjubPointX(baseCard3) && jubjubPointY(decryptedPoint) == jubjubPointY(baseCard3));
+
+    // EC-MUL GUARD BUG FIX: countCardsOfRank unconditionally
     const currentCount = countCardsOfRank(gid, playerId, lastRank);
 
-    if (disclose(drewRequestedCard)) {
-        // Verify delta using the pre-computed count
+    if (drewRequestedCard) {
         const prevCount = go_fish_getPreDrawRankCount(gid);
-        assert(currentCount == (prevCount + 1 as Uint<8>), "Cheating: You did not draw the requested card");
+        assert(currentCount == (prevCount + 1 as Uint<8>), "Cheating: card count mismatch");
 
         go_fish_clearLastAskedRank(gid);
-        // Record the timestamp before transitioning phase
         go_fish_setLastMoveAt(gid, now);
         go_fish_setPhase(gid, go_fish_GamePhase.TurnStart);
     } else {
         go_fish_clearLastAskedRank(gid);
-        // Record the timestamp before switching turn
         go_fish_setLastMoveAt(gid, now);
         go_fish_switchTurn(gid);
     }
@@ -511,10 +539,14 @@ export circuit doesPlayerHaveCard(gameId: Bytes<32>, playerId: Uint<64>, _target
     const card1 = std_ecMul(baseCard1, secret);
     const card2 = std_ecMul(baseCard2, secret);
     const card3 = std_ecMul(baseCard3, secret);
+    // OPT-H: Dual check — masked (dealt/drawn) + unmasked (transferred)
     return (
         hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card1)) ||
         hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card2)) ||
-        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card3))
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(card3)) ||
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(baseCard1)) ||
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(baseCard2)) ||
+        hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(baseCard3))
     );
 }
 
@@ -543,9 +575,41 @@ circuit countCardsOfRank(gameId: Bytes<32>, playerId: Uint<64>, targetRank: Uint
     const card2 = std_ecMul(baseCard2, secret);
     const card3 = std_ecMul(baseCard3, secret);
 
-    const c1: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card1));
-    const c2: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card2));
-    const c3: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card3));
+    // OPT-H: Dual check — masked (dealt/drawn) + unmasked (transferred)
+    const c1: Uint<8> = (hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card1))
+                        + hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard1))) as Uint<8>;
+    const c2: Uint<8> = (hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card2))
+                        + hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard2))) as Uint<8>;
+    const c3: Uint<8> = (hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card3))
+                        + hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard3))) as Uint<8>;
+    return (c1 + c2 + c3) as Uint<8>;
+}
+
+// OPT-A + OPT-H: Pre-computed secrets, dual check (masked + unmasked)
+circuit countCardsOfRank_withSecrets(gameId: Bytes<32>, playerId: Uint<64>, targetRank: Uint<32>, secret1: Field, secret2: Field): Uint<8> {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    const disclosed_rank = disclose(targetRank);
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
+
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as JubjubPoint;
+
+    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
+
+    const card1 = std_ecMul(baseCard1, secret);
+    const card2 = std_ecMul(baseCard2, secret);
+    const card3 = std_ecMul(baseCard3, secret);
+
+    // OPT-H: Check both masked (dealt/drawn) and unmasked (transferred) forms.
+    // A card exists in at most one form, so c_m + c_u is 0 or 1.
+    const c1: Uint<8> = (hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card1))
+                        + hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard1))) as Uint<8>;
+    const c2: Uint<8> = (hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card2))
+                        + hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard2))) as Uint<8>;
+    const c3: Uint<8> = (hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(card3))
+                        + hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard3))) as Uint<8>;
     return (c1 + c2 + c3) as Uint<8>;
 }
 
@@ -560,42 +624,59 @@ export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRa
     
     // Game must exist
     assert(go_fish_doesGameExist(gid), "Game does not exist");
-    
+
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, playerId);
+
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-    // CHANGED: Rank < 7
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
-    
+
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase != go_fish_GamePhase.Setup, "Cannot score books during setup");
     assert(currentPhase != go_fish_GamePhase.GameOver, "Game is already over");
-    
-    // EC-MUL GUARD BUG FIX: call countCardsOfRank unconditionally first (forces ec_muls unguarded
-    // inside that call), then for removal reuse the same masked card computation inline.
-    // The Compact compiler guards public_input reads for any value whose primary use is conditional.
-    // Pattern: unconditional function call that uses the masked card value forces unguarded ec_mul.
-    const cardCount = countCardsOfRank(gid, playerId, targetRank);
 
-    // CHANGED: Offsets to +7 and +14
-    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as JubjubPoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as JubjubPoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as JubjubPoint;
-
-    // Fetch both secrets unconditionally, select with ternary — ec_mul stays unconditional in ZKIR.
+    // OPT-C: Fetch secrets once, compute masked cards once, reuse for both counting and removal.
+    // Previously countCardsOfRank computed secrets+maskedCards, then the inline block recomputed
+    // them identically (18 ec_mul → 9 ec_mul).
     const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
     const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
     const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
 
-    // UNCONDITIONAL ec_mul calls — the countCardsOfRank call above performs these same lookups
-    // and ec_muls unconditionally (its pattern is verified clean), so the compiler cannot guard
-    // the transcript reads for the same slots here.
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as JubjubPoint;
+
+    // UNCONDITIONAL ec_mul — computed once, used for both counting and removal
     const maskedCard1 = std_ecMul(baseCard1, secret);
     const maskedCard2 = std_ecMul(baseCard2, secret);
     const maskedCard3 = std_ecMul(baseCard3, secret);
 
+    // OPT-H: Dual check — each card might be masked (dealt/drawn) or unmasked (transferred)
+    const c1m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(maskedCard1));
+    const c1u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard1));
+    const c2m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(maskedCard2));
+    const c2u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard2));
+    const c3m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(maskedCard3));
+    const c3u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard3));
+    const cardCount = (c1m + c1u + c2m + c2u + c3m + c3u) as Uint<8>;
+
     if (cardCount == 3 as Uint<8>) {
-        hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard1);
-        hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard2);
-        hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard3);
+        // Remove each card from whichever form it's in
+        if (c1m > 0 as Uint<8>) {
+            hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard1);
+        } else {
+            hand_removeCardFromHandForBook(gid, disclosed_playerId, baseCard1);
+        }
+        if (c2m > 0 as Uint<8>) {
+            hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard2);
+        } else {
+            hand_removeCardFromHandForBook(gid, disclosed_playerId, baseCard2);
+        }
+        if (c3m > 0 as Uint<8>) {
+            hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard3);
+        } else {
+            hand_removeCardFromHandForBook(gid, disclosed_playerId, baseCard3);
+        }
 
         go_fish_addScore(gid, playerId);
         return true;
@@ -672,15 +753,18 @@ export circuit switchTurn(gameId: Bytes<32>, playerId: Uint<64>): [] {
     
     // Game must exist
     assert(go_fish_doesGameExist(gid), "Game does not exist");
-    
+
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, playerId);
+
     const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.TurnStart, 
+    assert(currentPhase == go_fish_GamePhase.TurnStart,
            "Can only switch turn during TurnStart phase");
-    
+
     const currentTurn = go_fish_getCurrentTurn(gid);
-    assert(disclosed_playerId == currentTurn, 
+    assert(disclosed_playerId == currentTurn,
            "Only current player can switch turns");
-    
+
     return go_fish_switchTurn(gid);
 }
 
@@ -711,7 +795,36 @@ export circuit doesPlayerHaveSpecificCard(gameId: Bytes<32>, playerId: Uint<64>,
     const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
 
     const maskedCard = std_ecMul(baseCard, secret);
-    return hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard));
+    // OPT-H: Dual check — masked (dealt/drawn) + unmasked (transferred)
+    return hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard))
+        || hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(baseCard));
+}
+
+// OPT-G: Batch hand discovery — checks all 21 cards in a single circuit call.
+// Fetches secrets once (saves 6 ec_mul × 20 = 120 ec_mul vs calling doesPlayerHaveSpecificCard 21 times).
+export circuit discoverHand(gameId: Bytes<32>, playerId: Uint<64>): Vector<21, Boolean> {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    // Fetch secrets ONCE
+    const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
+    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
+
+    const INDICES_21: Vector<21, Uint<32>> = [
+        0, 1, 2, 3, 4, 5, 6,
+        7, 8, 9, 10, 11, 12, 13,
+        14, 15, 16, 17, 18, 19, 20
+    ];
+
+    // Check all 21 cards: masked (dealt/drawn) OR unmasked (transferred)
+    return map((idx) => {
+        const baseCard = deck_reverseDeckCurveToCard.lookup(idx) as JubjubPoint;
+        const maskedCard = std_ecMul(disclose(baseCard), disclose(secret));
+        return hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard))
+            || hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(baseCard));
+    }, INDICES_21);
 }
 
 // Test helper
@@ -771,6 +884,9 @@ export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [
     // Game must exist and be in progress
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
+    // AUTH: Verify caller is the registered player
+    go_fish_assertCallerIsPlayer(gid, claimingPlayerId);
+
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase != go_fish_GamePhase.Setup, "Game has not started yet");
     assert(currentPhase != go_fish_GamePhase.GameOver, "Game is already over");
@@ -787,7 +903,8 @@ export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [
         "Timeout period has not elapsed yet"
     );
 
-    // End the game — the claiming player wins by default
-    go_fish_endGame(gid);
+    // V4: End the game — the claiming player wins by default (timeout)
+    go_fish_endGameWithWinner(gid, claimingPlayerId);
     return [];
 }
+
