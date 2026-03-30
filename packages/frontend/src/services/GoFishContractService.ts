@@ -18,7 +18,7 @@ import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import { toHex, CompactTypeBoolean, CompactTypeUnsignedInteger, CostModel } from "@midnight-ntwrk/compact-runtime";
+import { toHex, CompactTypeBoolean, CompactTypeBytes, CompactTypeUnsignedInteger, CostModel } from "@midnight-ntwrk/compact-runtime";
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { getBrowserProofProvider } from "./midnightBrowserProofProvider";
 import { createInMemoryPrivateStateProvider } from "./midnightInMemoryPrivateStateProvider";
@@ -54,6 +54,19 @@ let _zkConfigProvider: FetchZkConfigProvider<string> | null = null;
 let _compiledContract: any = null;
 /** Cached joined contracts keyed by contractAddress+privateStateId */
 const _contractCache = new Map<string, any>();
+
+/**
+ * Evict a contract instance from the cache so the next call re-runs
+ * findDeployedContract and fetches fresh indexer state.
+ * Used before dealCards retries to ensure the circuit simulation sees
+ * the latest on-chain state (e.g. after opponent's applyMask lands).
+ */
+export function evictContractCache(lobbyId: string, playerId: 1 | 2): void {
+  const addr = _contractAddress;
+  if (!addr) return;
+  const key = `${addr}::privateState-${lobbyId}-${playerId}`;
+  _contractCache.delete(key);
+}
 
 function getZkConfigProvider(): FetchZkConfigProvider<string> {
   if (!_zkConfigProvider) {
@@ -392,15 +405,13 @@ export async function queryIsStaticDeckInitialized(): Promise<boolean | null> {
     const contractState = await provider.queryContractState(addr as any);
     if (!contractState) return null;
 
-    // _descriptor_5 = CompactTypeUnsignedInteger(255n, 1) — used for ledger array/map keys
+    // _descriptor_7 = CompactTypeUnsignedInteger(255n, 1) — used for ledger array/map keys
+    // Path mirrors _init_static_deck_0 queryLedgerState ops: [1n, 0n]
+    // (contract restructure moved staticDeckInitialized from [0n,2n] to [1n,0n])
     const keyType = new CompactTypeUnsignedInteger(255n, 1);
+    const key1 = { value: keyType.toValue(1n), alignment: keyType.alignment() };
     const key0 = { value: keyType.toValue(0n), alignment: keyType.alignment() };
-    const key2 = { value: keyType.toValue(2n), alignment: keyType.alignment() };
 
-    // Mirror the _init_static_deck_0 queryLedgerState ops exactly.
-    // dup(0) preserves the state on the stack so the final stack length matches the initial.
-    // idx([0n, 2n]) consumes the duplicate and pushes the cell at staticDeckInitialized.
-    // popeq emits the cell value as a GatherResult and pops it, restoring stack length.
     const results = contractState.query(
       [
         { dup: { n: 0 } },
@@ -409,8 +420,8 @@ export async function queryIsStaticDeckInitialized(): Promise<boolean | null> {
             cached: false,
             pushPath: false,
             path: [
+              { tag: 'value' as const, value: key1 },
               { tag: 'value' as const, value: key0 },
-              { tag: 'value' as const, value: key2 },
             ],
           },
         },
@@ -427,6 +438,81 @@ export async function queryIsStaticDeckInitialized(): Promise<boolean | null> {
     console.warn('[GoFishContractService] queryIsStaticDeckInitialized failed:', err);
     return null;
   }
+}
+
+/**
+ * Query whether a player has applied their mask on-chain.
+ * Reads maskAppliedP1 (path [2n,5n][gameId]) or maskAppliedP2 (path [2n,6n][gameId])
+ * directly from the indexer's contract state — no circuit simulation involved.
+ *
+ * Polls the indexer with retries because the Midnight indexer processes blocks
+ * asynchronously and may lag behind the node (batcher uses no-wait receipt).
+ * Returns true once confirmed, false if timed out, or null on persistent error.
+ */
+export async function queryHasMaskApplied(
+  lobbyId: string,
+  playerId: 1 | 2,
+  options: { pollIntervalMs?: number; timeoutMs?: number } = {},
+): Promise<boolean | null> {
+  const pollIntervalMs = options.pollIntervalMs ?? 2000;
+  const timeoutMs = options.timeoutMs ?? 90_000;
+  const deadline = Date.now() + timeoutMs;
+
+  const addr = await getContractAddress();
+  const keyType = new CompactTypeUnsignedInteger(255n, 1);
+  const gameId = lobbyIdToGameId(lobbyId);
+  // maskAppliedP1 = [2n,5n], maskAppliedP2 = [2n,6n]  (paths from compiled _hasMaskApplied_0)
+  const outerKey = { value: keyType.toValue(2n), alignment: keyType.alignment() };
+  const innerKey = { value: keyType.toValue(playerId === 1 ? 5n : 6n), alignment: keyType.alignment() };
+  const gameIdKey = { value: new CompactTypeBytes(32).toValue(gameId), alignment: new CompactTypeBytes(32).alignment() };
+
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt++;
+    try {
+      const provider = getPublicDataProvider();
+      const contractState = await provider.queryContractState(addr as any);
+      if (contractState) {
+        const results = contractState.query(
+          [
+            { dup: { n: 0 } },
+            { idx: { cached: false, pushPath: false, path: [
+              { tag: 'value' as const, value: outerKey },
+              { tag: 'value' as const, value: innerKey },
+            ]}},
+            { idx: { cached: false, pushPath: false, path: [
+              { tag: 'value' as const, value: gameIdKey },
+            ]}},
+            { popeq: { cached: false, result: undefined } },
+          ],
+          CostModel.initialCostModel(),
+        );
+
+        const gatherResults = (results as any)[1];
+        const first = Array.isArray(gatherResults) ? gatherResults[0] : null;
+        if (first && first.tag === 'read') {
+          const value = CompactTypeBoolean.fromValue(first.content.value);
+          console.log(`[GoFishContractService] queryHasMaskApplied(player=${playerId}) attempt=${attempt} value=${value}`);
+          if (value === true) return true;
+        } else {
+          console.log(`[GoFishContractService] queryHasMaskApplied(player=${playerId}) attempt=${attempt} no-read-result tag=${first?.tag}`);
+        }
+      } else {
+        console.log(`[GoFishContractService] queryHasMaskApplied(player=${playerId}) attempt=${attempt} no contractState`);
+      }
+    } catch (err) {
+      console.warn(`[GoFishContractService] queryHasMaskApplied(player=${playerId}) attempt=${attempt} error:`, err);
+    }
+
+    if (Date.now() + pollIntervalMs < deadline) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    } else {
+      break;
+    }
+  }
+
+  console.warn(`[GoFishContractService] queryHasMaskApplied(player=${playerId}) timed out after ${attempt} attempts`);
+  return false;
 }
 
 export async function callApplyMask(lobbyId: string, playerId: 1 | 2): Promise<void> {

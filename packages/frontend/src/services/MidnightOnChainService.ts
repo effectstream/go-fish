@@ -871,6 +871,17 @@ export async function onChainDealCards(
   // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using GoFishContractService for dealCards (WASM proving)...");
+    // Before attempting the circuit, verify BOTH masks are confirmed on-chain via
+    // a direct indexer query. The circuit simulation runs against a local state
+    // snapshot that may be stale even after cache eviction, so we gate on the
+    // real indexer state to avoid wasting time on a doomed circuit call.
+    const opponentId = playerId === 1 ? 2 : 1;
+    const opponentMaskOnChain = await GoFishContractService.queryHasMaskApplied(lobbyId, opponentId as 1 | 2);
+    console.log(`[MidnightOnChain] dealCards pre-check: opponent(player${opponentId}) maskOnChain=${opponentMaskOnChain}`);
+    if (opponentMaskOnChain !== true) {
+      return { success: false, errorMessage: "Player 2 must apply mask before dealing" };
+    }
+    GoFishContractService.evictContractCache(lobbyId, playerId);
     try {
       await GoFishContractService.callDealCards(lobbyId, playerId);
       await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
