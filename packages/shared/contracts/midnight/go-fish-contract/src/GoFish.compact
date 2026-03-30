@@ -6,7 +6,7 @@ export enum GamePhase {
     TurnStart,
     WaitForResponse,
     WaitForTransfer,
-    WaitForDraw,
+    WaitForDraw,          // OPT-I: No longer used (draw merged into respondToAsk), kept for enum stability
     WaitForDrawCheck,
     GameOver
 }
@@ -30,6 +30,55 @@ export ledger preDrawRankCount: Map<Bytes<32>, Uint<8>>;
 export ledger hasDealtP1: Map<Bytes<32>, Boolean>; // Track if player 1 has called dealCards
 export ledger hasDealtP2: Map<Bytes<32>, Boolean>; // Track if player 2 has called dealCards
 export ledger lastMoveAt: Map<Bytes<32>, Uint<64>>; // Block timestamp of the last move (for timeout)
+export ledger lastDrawnCard: Map<Bytes<32>, JubjubPoint>; // V3: Drawn card point (set by respondToAsk, verified by afterGoFish)
+export ledger winner: Map<Bytes<32>, Uint<64>>; // V4: Winner of game (0=none/tie, 1=P1, 2=P2)
+
+// Player authentication — binds playerId to caller's public key
+export ledger playerPubKey1: Map<Bytes<32>, ZswapCoinPublicKey>; // gameId → P1 public key
+export ledger playerPubKey2: Map<Bytes<32>, ZswapCoinPublicKey>; // gameId → P2 public key
+
+// Register the caller's public key for a player slot. Called during applyMask (first move).
+// playerId must already be disclosed by the caller.
+export circuit registerPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const pid = disclose(playerId);
+    const callerPk = ownPublicKey();
+    if (pid == 1 as Uint<64>) {
+        assert(!playerPubKey1.member(gid), "Player 1 already registered");
+        playerPubKey1.insert(gid, callerPk);
+    } else if (pid == 2 as Uint<64>) {
+        assert(!playerPubKey2.member(gid), "Player 2 already registered");
+        playerPubKey2.insert(gid, callerPk);
+    } else {
+        assert(false, "Invalid player index");
+    }
+    return [];
+}
+
+// Verify the caller is the registered player. Called in every state-mutating circuit.
+// playerId must already be disclosed by the caller.
+export circuit assertCallerIsPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const pid = disclose(playerId);
+    const callerPk = ownPublicKey();
+    // Check both players' registered keys unconditionally (ZKIR guard safe — no ec_mul)
+    // then assert the caller matches the specified player.
+    const p1Registered = playerPubKey1.member(gid);
+    const p2Registered = playerPubKey2.member(gid);
+
+    if (pid == 1 as Uint<64>) {
+        assert(p1Registered, "Player 1 not registered");
+        const expected = playerPubKey1.lookup(gid) as ZswapCoinPublicKey;
+        assert(callerPk == expected, "Caller is not player 1");
+    } else if (pid == 2 as Uint<64>) {
+        assert(p2Registered, "Player 2 not registered");
+        const expected = playerPubKey2.lookup(gid) as ZswapCoinPublicKey;
+        assert(callerPk == expected, "Caller is not player 2");
+    } else {
+        assert(false, "Invalid player index");
+    }
+    return [];
+}
 
 // Initialize a new game with the given gameId
 export circuit init_game(gameId: Bytes<32>): [] {
@@ -102,6 +151,19 @@ export circuit addScore(gameId: Bytes<32>, playerId: Uint<64>): [] {
     // CHANGED: Game ends at 7 books (7 ranks available)
     if (books + 1 as Uint<8> == 7 as Uint<8>) {
         phase.insert(gid, GamePhase.GameOver);
+        // V4: Record winner — player with more books wins
+        const s1 = scoreP1.lookup(gid) as Uint<8>;
+        const s2 = scoreP2.lookup(gid) as Uint<8>;
+        // After incrementing, one of them is the current player's new score
+        const finalS1: Uint<8> = (disclosed_playerId == 1 as Uint<64>) ? (s1 + 1 as Uint<8>) as Uint<8> : s1;
+        const finalS2: Uint<8> = (disclosed_playerId == 2 as Uint<64>) ? (s2 + 1 as Uint<8>) as Uint<8> : s2;
+        if (finalS1 > finalS2) {
+            winner.insert(gid, 1 as Uint<64>);
+        } else if (finalS2 > finalS1) {
+            winner.insert(gid, 2 as Uint<64>);
+        } else {
+            winner.insert(gid, 0 as Uint<64>); // tie
+        }
     }
     return [];
 }
@@ -173,7 +235,33 @@ export circuit endGame(gameId: Bytes<32>): [] {
     const gid = disclose(gameId);
     assert(gameExists.member(gid), "Game does not exist");
     phase.insert(gid, GamePhase.GameOver);
+    // V4: No specific winner (e.g., checkAndEndGame — both hands empty)
+    // Determine by score
+    const s1 = scoreP1.lookup(gid) as Uint<8>;
+    const s2 = scoreP2.lookup(gid) as Uint<8>;
+    if (s1 > s2) { winner.insert(gid, 1 as Uint<64>); }
+    else if (s2 > s1) { winner.insert(gid, 2 as Uint<64>); }
+    else { winner.insert(gid, 0 as Uint<64>); }
     return [];
+}
+
+// V4: End game with a specific winner (used by claimTimeoutWin)
+export circuit endGameWithWinner(gameId: Bytes<32>, winnerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    phase.insert(gid, GamePhase.GameOver);
+    winner.insert(gid, disclose(winnerId));
+    return [];
+}
+
+// V4: Get winner
+export circuit getWinner(gameId: Bytes<32>): Uint<64> {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    if (winner.member(gid)) {
+        return winner.lookup(gid) as Uint<64>;
+    }
+    return 0 as Uint<64>;
 }
 
 // Set the last asked rank (called by askForCard)
@@ -324,6 +412,21 @@ export circuit getScores(gameId: Bytes<32>): [Uint<8>, Uint<8>] {
 
 // Record the timestamp of the most recent move.
 // Called from every game-progressing circuit (askForCard, respondToAsk, goFish, afterGoFish).
+// V3: Store the drawn card point (set by respondToAsk when Go Fish occurs)
+export circuit setLastDrawnCard(gameId: Bytes<32>, card: JubjubPoint): [] {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    lastDrawnCard.insert(gid, disclose(card));
+    return [];
+}
+
+// V3: Get the drawn card point
+export circuit getLastDrawnCard(gameId: Bytes<32>): JubjubPoint {
+    const gid = disclose(gameId);
+    assert(gameExists.member(gid), "Game does not exist");
+    return lastDrawnCard.lookup(gid) as JubjubPoint;
+}
+
 export circuit setLastMoveAt(gameId: Bytes<32>, now: Uint<64>): [] {
     const gid = disclose(gameId);
     assert(gameExists.member(gid), "Game does not exist");
