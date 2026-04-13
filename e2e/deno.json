@@ -1,0 +1,11 @@
+{
+  "name": "@go-fish/e2e",
+  "exports": "./game-round.test.ts",
+  "tasks": {
+    "test": "deno test -A --no-check --unstable-raw-imports game-round.test.ts"
+  },
+  "imports": {
+    "ethers": "npm:ethers@5.7.2",
+    "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.15.0"
+  }
+}

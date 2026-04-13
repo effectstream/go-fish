@@ -9,47 +9,12 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const midnightContractsDir = path.resolve(__dirname, "../../../shared/contracts/midnight");
 const indexerConfigPath = path.join(midnightContractsDir, "indexer-standalone/config.yaml");
-
-// Check if we should skip Midnight infrastructure (when using TypeScript contract)
-const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
-
-// Check if batcher mode is enabled (run frontend in batcher mode, no Lace wallet needed)
-const useBatcherMode = Deno.env.get("USE_BATCHER_MODE") === "true";
-
-// Check if we should deploy the Midnight contract at startup (takes ~6 minutes)
-// Set DEPLOY_MIDNIGHT_CONTRACT=true to deploy, otherwise assumes contract is already deployed
-const deployMidnightContract = Deno.env.get("DEPLOY_MIDNIGHT_CONTRACT") === "true";
-
-// Check if Midnight infrastructure is already running (via midnight:setup)
-// Set SKIP_MIDNIGHT_INFRA=true to skip starting node/indexer/proof-server
-const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
-
-// Check if EVM/Hardhat is already running externally
-// Set SKIP_EVM_LAUNCH=true to skip launching Hardhat node and deployment
-// This is useful when multiple programs share a single Hardhat instance
-// Example: SKIP_EVM_LAUNCH=true USE_TYPESCRIPT_CONTRACT=true deno task dev
-const skipEvmLaunch = Deno.env.get("SKIP_EVM_LAUNCH") === "true";
-
-// Check if pglite database should be skipped (for shared infrastructure environments)
-// Set SKIP_PGLITE=true to skip launching pglite database
-const skipPglite = Deno.env.get("SKIP_PGLITE") === "true";
-
-// Suppress noisy infrastructure logs (hardhat-evmMain, effectstream-sync-block-merge, etc.)
-// Set QUIET_LOGS=true to hide these and keep only batcher/node/game-relevant output
-const quietLogs = Deno.env.get("QUIET_LOGS") === "true";
-
-// Debug logging
-console.log(`[Orchestrator] USE_TYPESCRIPT_CONTRACT=${useTypescriptContract}, USE_BATCHER_MODE=${useBatcherMode}, DEPLOY_MIDNIGHT_CONTRACT=${deployMidnightContract}, SKIP_MIDNIGHT_INFRA=${skipMidnightInfra}, SKIP_EVM_LAUNCH=${skipEvmLaunch}, SKIP_PGLITE=${skipPglite}`);
-
-// Path to GraphQL proxy (translates SDK v2.0.0 queries to indexer v3 schema)
-// Note: With SDK v3, this may no longer be needed
-const graphqlProxyScript = path.resolve(__dirname, "graphql-proxy.ts");
-
 // Path to cleanup script for indexer database
 const cleanupIndexerScript = path.resolve(__dirname, "cleanup-indexer-db.ts");
 
+
 // Midnight infrastructure processes (skipped when using TypeScript contract or SKIP_MIDNIGHT_INFRA=true)
-const midnightProcesses = (useTypescriptContract || skipMidnightInfra) ? [] : [
+const midnightProcesses = [
   /** MIDNIGHT-NODE-BLOCK */
   {
     name: "midnight-node",
@@ -133,30 +98,6 @@ const midnightProcesses = (useTypescriptContract || skipMidnightInfra) ? [] : [
   /** MIDNIGHT-PROOF-SERVER-BLOCK */
 ];
 
-// GraphQL proxy (translates SDK v2.0.0 queries to indexer v3 schema)
-// This is necessary because SDK v2.0.0 expects 'contractAction' but indexer v3 has 'contract'
-const graphqlProxyProcesses = useBatcherMode && !useTypescriptContract ? [
-  /** GRAPHQL-PROXY-BLOCK */
-  {
-    name: "graphql-proxy",
-    args: [
-      "run", "-A", "--unstable-detect-cjs",
-      graphqlProxyScript,
-    ],
-    env: {
-      INDEXER_HTTP_URL: "http://127.0.0.1:8088/api/v3/graphql",
-      INDEXER_WS_URL: "ws://127.0.0.1:8088/api/v3/graphql/ws",
-    },
-    waitToExit: false,
-    type: "system-dependency",
-    link: "http://localhost:8089",
-    stopProcessAtPort: [8089],
-    // Only depend on indexer if we're managing it here
-    dependsOn: skipMidnightInfra ? [] : ["midnight-indexer"],
-  },
-  /** GRAPHQL-PROXY-BLOCK */
-] : [];
-
 // Note: The old midnight-batcher (ts-batcher on port 8000) has been removed.
 // Midnight transactions are now handled by the Paima batcher (@go-fish/batcher on port 3336)
 // which uses MidnightAdapter for Midnight blockchain integration.
@@ -165,7 +106,7 @@ const graphqlProxyProcesses = useBatcherMode && !useTypescriptContract ? [
 // Only deploys if DEPLOY_MIDNIGHT_CONTRACT=true AND we're managing the infra (not SKIP_MIDNIGHT_INFRA)
 // Using MIDNIGHT_DEPLOY_VERIFIER_KEYS_LIMIT=1 for faster deployment (only 1 verifier key)
 // Note: If using SKIP_MIDNIGHT_INFRA, the contract was already deployed by midnight:setup
-const midnightContractDeployment = deployMidnightContract && useBatcherMode && !useTypescriptContract && !skipMidnightInfra ? [
+const midnightContractDeployment = [
   {
     name: "midnight-contract-deploy",
     args: [
@@ -180,53 +121,48 @@ const midnightContractDeployment = deployMidnightContract && useBatcherMode && !
     type: "system-dependency",
     dependsOn: ["midnight-proof-server", "midnight-indexer"],
   },
-] : [];
+];
 
-// Debug: log which processes will be launched
-console.log(`[Orchestrator] midnightProcesses: ${midnightProcesses.length} processes`);
-console.log(`[Orchestrator] graphqlProxyProcesses: ${graphqlProxyProcesses.length} processes`);
 
 const customProcesses = [
   // Midnight infrastructure (skipped when USE_TYPESCRIPT_CONTRACT=true)
   ...midnightProcesses,
   // Deploy Midnight contract after infrastructure is ready (only in batcher mode)
   ...midnightContractDeployment,
-  // GraphQL proxy for SDK v2 to indexer v3 translation (only when USE_BATCHER_MODE=true)
-  ...graphqlProxyProcesses,
 
   /** FRONTEND-BLOCK */
-  {
-    name: "install-frontend",
-    command: "npm",
-    cwd: "../../frontend/",
-    args: ["install"],
-    waitToExit: true,
-    type: "system-dependency",
-    dependsOn: [],
-  },
-  {
-    name: "serve-frontend",
-    command: "npm",
-    cwd: "../../frontend",
-    // Use batcher mode script when USE_BATCHER_MODE=true (no Lace wallet needed)
-    args: useBatcherMode ? ["run", "dev:batcher"] : ["run", "dev"],
-    waitToExit: false,
-    link: "http://localhost:3000",
-    type: "system-dependency",
-    dependsOn: useBatcherMode ? ["install-frontend", "batcher"] : ["install-frontend"],
-    logs: "none",
-  },
+  // {
+  //   name: "install-frontend",
+  //   command: "npm",
+  //   cwd: "../../frontend/",
+  //   args: ["install"],
+  //   waitToExit: true,
+  //   type: "system-dependency",
+  //   dependsOn: [],
+  // },
+  // {
+  //   name: "serve-frontend",
+  //   command: "npm",
+  //   cwd: "../../frontend",
+  //   // Use batcher mode script when USE_BATCHER_MODE=true (no Lace wallet needed)
+  //   args: useBatcherMode ? ["run", "dev:batcher"] : ["run", "dev"],
+  //   waitToExit: false,
+  //   link: "http://localhost:3000",
+  //   type: "system-dependency",
+  //   dependsOn: useBatcherMode ? ["install-frontend", "batcher"] : ["install-frontend"],
+  //   logs: "none",
+  // },
   /** FRONTEND-BLOCK */
 
   /** EXPLORER-BLOCK */
-  {
-    name: "explorer",
-    args: ["run", "-A", "--unstable-detect-cjs", "@paimaexample/explorer"],
-    waitToExit: false,
-    type: "system-dependency",
-    link: "http://localhost:10590",
-    stopProcessAtPort: [10590],
-  },
+  // {
+  //   name: "explorer",
+  //   args: ["run", "-A", "--unstable-detect-cjs", "@paimaexample/explorer"],
+  //   waitToExit: false,
+  //   type: "system-dependency",
+  //   link: "http://localhost:10590",
+  //   stopProcessAtPort: [10590],
+  // },
   /** EXPLORER-BLOCK */
 
   /** BATCHER-BLOCK */
@@ -241,9 +177,9 @@ const customProcesses = [
     // - If deploying contract: wait for deployment
     // - If midnight infra managed here: wait for proof server
     // - If midnight infra external (SKIP_MIDNIGHT_INFRA): no midnight dependencies
-    dependsOn: deployMidnightContract && useBatcherMode && !useTypescriptContract && !skipMidnightInfra
-      ? ["midnight-contract-deploy"]
-      : (useBatcherMode && !useTypescriptContract && !skipMidnightInfra ? ["midnight-proof-server"] : []),
+    dependsOn: 
+      // ["midnight-proof-server"],
+      ["midnight-contract-deploy"],
   },
   /** BATCHER-BLOCK */
 ];
@@ -254,8 +190,7 @@ const config = Value.Parse(OrchestratorConfig, {
   processes: {
     [ComponentNames.TMUX]: true,
     [ComponentNames.TUI]: true,
-    // Launch Dev DB & Collector (skip pglite if SKIP_PGLITE=true)
-    [ComponentNames.EFFECTSTREAM_PGLITE]: !skipPglite,
+    [ComponentNames.EFFECTSTREAM_PGLITE]: true,
     [ComponentNames.COLLECTOR]: true,
   },
 
@@ -263,12 +198,7 @@ const config = Value.Parse(OrchestratorConfig, {
   processesToLaunch: [
     // Launch EVM contracts (Hardhat node + deploy)
     // Skip if SKIP_EVM_LAUNCH=true (when using external Hardhat instance)
-    ...(skipEvmLaunch ? [] : launchEvm("@go-fish/evm-contracts").map(p => {
-      // QUIET_LOGS=true: suppress hardhat chain logs (evmMain, evmParallel, block-merge, etc.)
-      if (!quietLogs) return p;
-      const q: typeof p = { ...p, logs: "none" };
-      return q;
-    })),
+    ...launchEvm("@go-fish/evm-contracts"),
     ...customProcesses,
   ],
 });
@@ -279,15 +209,5 @@ if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
   config.processes[ComponentNames.TUI] = false;
   config.processes[ComponentNames.COLLECTOR] = false;
 }
-
-// Write runtime config file for the backend to read
-// This is needed because env vars don't always propagate through the orchestrator
-const runtimeConfig = {
-  useTypescriptContract: Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true",
-  useBatcherMode: Deno.env.get("USE_BATCHER_MODE") === "true",
-};
-const configPath = new URL("../runtime-config.json", import.meta.url);
-await Deno.writeTextFile(configPath, JSON.stringify(runtimeConfig, null, 2));
-console.log(`[Orchestrator] Runtime config written: useTypescriptContract=${runtimeConfig.useTypescriptContract}, useBatcherMode=${runtimeConfig.useBatcherMode}`);
 
 await start(config);

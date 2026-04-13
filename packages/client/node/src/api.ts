@@ -636,7 +636,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Get player's decrypted hand
-  server.get("/api/midnight/player_hand", async (request, reply) => {
+  server.get("/debug/midnight/player_hand", async (request, reply) => {
     const { lobby_id, player_id } = request.query as { lobby_id: string; player_id: string };
 
     if (!lobby_id || !player_id) {
@@ -655,7 +655,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   // Get player's real hand using their secret key (batcher mode)
   // The frontend passes its secret so the backend can run doesPlayerHaveSpecificCard
   // with the correct witness. The secret is never persisted — used only for this call.
-  server.post("/api/midnight/player_hand_with_secret", async (request, reply) => {
+  server.post("/debug/midnight/player_hand_with_secret", async (request, reply) => {
     const { lobby_id, player_id, player_secret, shuffle_seed, opponent_secret, opponent_shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;
@@ -691,7 +691,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Ask for card action
-  server.post("/api/midnight/ask_for_card", async (request, reply) => {
+  server.post("/debug/midnight/ask_for_card", async (request, reply) => {
     const { lobby_id, player_id, rank } = request.body as {
       lobby_id: string;
       player_id: number;
@@ -712,7 +712,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Go Fish action
-  server.post("/api/midnight/go_fish", async (request, reply) => {
+  server.post("/debug/midnight/go_fish", async (request, reply) => {
     const { lobby_id, player_id } = request.body as {
       lobby_id: string;
       player_id: number;
@@ -732,7 +732,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Apply Mask action (setup phase)
-  server.post("/api/midnight/apply_mask", async (request, reply) => {
+  server.post("/debug/midnight/apply_mask", async (request, reply) => {
     const { lobby_id, player_id, player_secret, shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;
@@ -754,7 +754,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Deal Cards action (setup phase)
-  server.post("/api/midnight/deal_cards", async (request, reply) => {
+  server.post("/debug/midnight/deal_cards", async (request, reply) => {
     const { lobby_id, player_id, player_secret, shuffle_seed } = request.body as {
       lobby_id: string;
       player_id: number;
@@ -776,7 +776,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Respond to ask action (opponent responds to card request)
-  server.post("/api/midnight/respond_to_ask", async (request, reply) => {
+  server.post("/debug/midnight/respond_to_ask", async (request, reply) => {
     const { lobby_id, player_id } = request.body as {
       lobby_id: string;
       player_id: number;
@@ -796,14 +796,14 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // After Go Fish action (complete the draw turn)
-  server.post("/api/midnight/after_go_fish", async (request, reply) => {
+  server.post("/debug/midnight/after_go_fish", async (request, reply) => {
     const { lobby_id, player_id, drew_requested_card } = request.body as {
       lobby_id: string;
       player_id: number;
-      drew_requested_card: boolean;
+      drew_requested_card?: boolean; // V3 contract no longer needs this — kept for backwards compat
     };
 
-    if (!lobby_id || !player_id || drew_requested_card === undefined) {
+    if (!lobby_id || !player_id) {
       return reply.code(400).send({ error: 'Missing required fields' });
     }
 
@@ -817,7 +817,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
   });
 
   // Skip draw when deck is empty - ends turn without drawing
-  server.post("/api/midnight/skip_draw_deck_empty", async (request, reply) => {
+  server.post("/debug/midnight/skip_draw_deck_empty", async (request, reply) => {
     const { lobby_id, player_id } = request.body as {
       lobby_id: string;
       player_id: number;

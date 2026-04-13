@@ -8,8 +8,10 @@
 import { main, suspend } from "effection";
 import { createNewBatcher, MidnightAdapter } from "@paimaexample/batcher";
 import { config, storage, BATCHER_DATA_DIR } from "./config.ts";
-import { effectstreaml2Adapter } from "./adapter-effectstreaml2.ts";
 import Fastify from "npm:fastify@^5.4.0";
+
+import { midnightBalancingAdapter } from "./adapter-midnight-balancing.ts";
+import { effectstreaml2Adapter } from "./adapter-effectstreaml2.ts";
 
 // Clear stale batcher data on startup to prevent processing old transactions
 // This is important because old transactions may reference games that no longer exist
@@ -33,73 +35,77 @@ batcher
     criteriaType: "time",
     timeWindowMs: batchIntervalMs,
   })
+  .addBlockchainAdapter("midnight_balancing", midnightBalancingAdapter, {
+    criteriaType: "time",
+    timeWindowMs: batchIntervalMs,
+  })
   .setDefaultTarget("effectstreaml2");
 
-// Add Midnight adapters with time-based batching with very short window
-// This ensures transactions are processed quickly and sequentially
-// The MidnightAdapter handles the actual circuit invocation
-// Skip when using TypeScript contract (no Midnight infrastructure needed)
-// Use dynamic import to avoid eagerly connecting to Midnight infrastructure
-const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
-const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
-let goFishMidnightAdapter: import("./adapter-midnight.ts").GoFishMidnightAdapter | null = null;
+//   // Add Midnight adapters with time-based batching with very short window
+// // This ensures transactions are processed quickly and sequentially
+// // The MidnightAdapter handles the actual circuit invocation
+// // Skip when using TypeScript contract (no Midnight infrastructure needed)
+// // Use dynamic import to avoid eagerly connecting to Midnight infrastructure
+// const skipMidnightInfra = Deno.env.get("SKIP_MIDNIGHT_INFRA") === "true";
+// const useTypescriptContract = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+// let goFishMidnightAdapter: import("./adapter-midnight.ts").GoFishMidnightAdapter | null = null;
 
-if (!useTypescriptContract && !skipMidnightInfra) {
-  const midnightAdapters = await import("./adapter-midnight.ts");
-  for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
-    if (adapter instanceof MidnightAdapter) {
-      batcher.addBlockchainAdapter(contract, adapter, {
-        criteriaType: "size",
-        maxBatchSize: 1, // Each Midnight circuit call is its own batch — the JSR adapter
-                         // only executes the first invocation per submitBatch() call, so
-                         // grouping multiple inputs drops all but the first.
-      });
-    }
-  }
-  goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
-} else if (!useTypescriptContract && skipMidnightInfra) {
-  // SKIP_MIDNIGHT_INFRA=true means the local node/indexer/proof-server were started
-  // externally (or on testnet).  We still need the query adapter so /query-game-state
-  // can read on-chain state.  We do NOT register it as a batcher target — the
-  // balancing adapter handles actual tx submission in this mode.
-  try {
-    const midnightAdapters = await import("./adapter-midnight.ts");
-    goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
-    console.log("🔍 Midnight query adapter initialized (SKIP_MIDNIGHT_INFRA mode)");
-  } catch (err) {
-    console.warn("⚠️ Could not initialize Midnight query adapter:", err);
-  }
-} else {
-  console.log("📝 Skipping legacy Midnight circuit adapter");
-}
+// if (!useTypescriptContract && !skipMidnightInfra) {
+//   const midnightAdapters = await import("./adapter-midnight.ts");
+//   for (const [contract, adapter] of Object.entries(midnightAdapters.midnightAdapters)) {
+//     if (adapter instanceof MidnightAdapter) {
+//       batcher.addBlockchainAdapter(contract, adapter, {
+//         criteriaType: "size",
+//         maxBatchSize: 1, // Each Midnight circuit call is its own batch — the JSR adapter
+//                          // only executes the first invocation per submitBatch() call, so
+//                          // grouping multiple inputs drops all but the first.
+//       });
+//     }
+//   }
+//   goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
+// } else if (!useTypescriptContract && skipMidnightInfra) {
+//   // SKIP_MIDNIGHT_INFRA=true means the local node/indexer/proof-server were started
+//   // externally (or on testnet).  We still need the query adapter so /query-game-state
+//   // can read on-chain state.  We do NOT register it as a batcher target — the
+//   // balancing adapter handles actual tx submission in this mode.
+//   try {
+//     const midnightAdapters = await import("./adapter-midnight.ts");
+//     goFishMidnightAdapter = midnightAdapters.midnightAdapter_go_fish;
+//     console.log("🔍 Midnight query adapter initialized (SKIP_MIDNIGHT_INFRA mode)");
+//   } catch (err) {
+//     console.warn("⚠️ Could not initialize Midnight query adapter:", err);
+//   }
+// } else {
+//   console.log("📝 Skipping legacy Midnight circuit adapter");
+// }
 
-// midnight_balancing: handles pre-proven unbound transactions from the browser WASM prover.
-// Registered whenever batcher mode is active — SKIP_MIDNIGHT_INFRA only skips launching
-// the local Midnight node/indexer/proof-server, not the balancing adapter itself, which
-// connects to an already-running (possibly external) Midnight network.
-if (!useTypescriptContract) {
-  try {
-    const { goFishBalancingAdapter } = await import("./adapter-midnight-balancing.ts");
-    batcher.addBlockchainAdapter("midnight_balancing", goFishBalancingAdapter, {
-      criteriaType: "time",
-      timeWindowMs: 500,
-    });
-    console.log("⚡ midnight_balancing adapter registered (browser WASM proving)");
-  } catch (err) {
-    console.error("❌ Failed to register midnight_balancing adapter:", err);
-  }
-}
+// // midnight_balancing: handles pre-proven unbound transactions from the browser WASM prover.
+// // Registered whenever batcher mode is active — SKIP_MIDNIGHT_INFRA only skips launching
+// // the local Midnight node/indexer/proof-server, not the balancing adapter itself, which
+// // connects to an already-running (possibly external) Midnight network.
+// if (!useTypescriptContract) {
+//   try {
+//     const { goFishBalancingAdapter } = await import("./adapter-midnight-balancing.ts");
+//     batcher.addBlockchainAdapter("midnight_balancing", goFishBalancingAdapter, {
+//       criteriaType: "time",
+//       timeWindowMs: 500,
+//     });
+//     console.log("⚡ midnight_balancing adapter registered (browser WASM proving)");
+//   } catch (err) {
+//     console.error("❌ Failed to register midnight_balancing adapter:", err);
+//   }
+// }
 
 // Secondary HTTP server exposing hand-query endpoint (port 9997).
 // The primary batcher HTTP server (port config.port) is managed internally by
 // @paimaexample/batcher and does not allow custom routes, so we run a separate
 // Fastify instance for this read-only query endpoint.
-const QUERY_PORT = Number(Deno.env.get("BATCHER_QUERY_PORT") || "9997");
-const queryServer = Fastify({ logger: false });
+// const QUERY_PORT = Number(Deno.env.get("BATCHER_QUERY_PORT") || "9997");
+// const queryServer = Fastify({ logger: false });
 
-queryServer.get("/health", async (_req, reply) => {
-  reply.send({ ok: true });
-});
+// queryServer.get("/health", async (_req, reply) => {
+//   reply.send({ ok: true });
+// });
 
 /**
  * POST /query-hand
@@ -120,70 +126,70 @@ queryServer.get("/health", async (_req, reply) => {
  * This is the authoritative source of truth for game phase; do NOT use the backend's
  * optimistic gameStateMap for phase tracking.
  */
-queryServer.post("/query-game-state", async (req, reply) => {
-  const body = req.body as { lobbyId: string };
+// queryServer.post("/query-game-state", async (req, reply) => {
+//   const body = req.body as { lobbyId: string };
 
-  if (!body || !body.lobbyId) {
-    return reply.status(400).send({ error: "Missing required field: lobbyId" });
-  }
+//   if (!body || !body.lobbyId) {
+//     return reply.status(400).send({ error: "Missing required field: lobbyId" });
+//   }
 
-  if (!goFishMidnightAdapter) {
-    return reply.status(503).send({ error: "Midnight adapter not available (USE_TYPESCRIPT_CONTRACT=true or not initialized)" });
-  }
+//   if (!goFishMidnightAdapter) {
+//     return reply.status(503).send({ error: "Midnight adapter not available (USE_TYPESCRIPT_CONTRACT=true or not initialized)" });
+//   }
 
-  try {
-    const state = await goFishMidnightAdapter.queryGameState(body.lobbyId);
-    if (state === null) {
-      return reply.send({ exists: false });
-    }
-    return reply.send({ exists: true, ...state });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[query-game-state] Error:", msg);
-    return reply.status(500).send({ error: msg });
-  }
-});
+//   try {
+//     const state = await goFishMidnightAdapter.queryGameState(body.lobbyId);
+//     if (state === null) {
+//       return reply.send({ exists: false });
+//     }
+//     return reply.send({ exists: true, ...state });
+//   } catch (err) {
+//     const msg = err instanceof Error ? err.message : String(err);
+//     console.error("[query-game-state] Error:", msg);
+//     return reply.status(500).send({ error: msg });
+//   }
+// });
 
-queryServer.post("/query-hand", async (req, reply) => {
-  const body = req.body as {
-    lobbyId: string;
-    playerId: 1 | 2;
-    playerSecretHex: string;
-    shuffleSeedHex: string;
-    opponentSecretHex?: string;
-    opponentShuffleSeedHex?: string;
-  };
+// queryServer.post("/query-hand", async (req, reply) => {
+//   const body = req.body as {
+//     lobbyId: string;
+//     playerId: 1 | 2;
+//     playerSecretHex: string;
+//     shuffleSeedHex: string;
+//     opponentSecretHex?: string;
+//     opponentShuffleSeedHex?: string;
+//   };
 
-  if (!body || !body.lobbyId || !body.playerId || !body.playerSecretHex || !body.shuffleSeedHex) {
-    return reply.status(400).send({ error: "Missing required fields: lobbyId, playerId, playerSecretHex, shuffleSeedHex" });
-  }
+//   if (!body || !body.lobbyId || !body.playerId || !body.playerSecretHex || !body.shuffleSeedHex) {
+//     return reply.status(400).send({ error: "Missing required fields: lobbyId, playerId, playerSecretHex, shuffleSeedHex" });
+//   }
 
-  if (!goFishMidnightAdapter) {
-    return reply.status(503).send({ error: "Midnight adapter not available (USE_TYPESCRIPT_CONTRACT=true or not initialized)" });
-  }
+//   if (!goFishMidnightAdapter) {
+//     return reply.status(503).send({ error: "Midnight adapter not available (USE_TYPESCRIPT_CONTRACT=true or not initialized)" });
+//   }
 
-  try {
-    const hand = await goFishMidnightAdapter.queryPlayerHand(
-      body.lobbyId,
-      body.playerId,
-      body.playerSecretHex,
-      body.shuffleSeedHex,
-      body.opponentSecretHex,
-      body.opponentShuffleSeedHex,
-    );
-    return reply.send({ hand });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[query-hand] Error:", msg);
-    return reply.status(500).send({ error: msg });
-  }
-});
+//   try {
+//     const hand = await goFishMidnightAdapter.queryPlayerHand(
+//       body.lobbyId,
+//       body.playerId,
+//       body.playerSecretHex,
+//       body.shuffleSeedHex,
+//       body.opponentSecretHex,
+//       body.opponentShuffleSeedHex,
+//     );
+//     return reply.send({ hand });
+//   } catch (err) {
+//     const msg = err instanceof Error ? err.message : String(err);
+//     console.error("[query-hand] Error:", msg);
+//     return reply.status(500).send({ error: msg });
+//   }
+// });
 
-queryServer.listen({ port: QUERY_PORT, host: "0.0.0.0" }).then(() => {
-  console.log(`🔍 Query server listening on port ${QUERY_PORT} (POST /query-hand)`);
-}).catch(err => {
-  console.error("❌ Failed to start query server:", err);
-});
+// queryServer.listen({ port: QUERY_PORT, host: "0.0.0.0" }).then(() => {
+//   console.log(`🔍 Query server listening on port ${QUERY_PORT} (POST /query-hand)`);
+// }).catch(err => {
+//   console.error("❌ Failed to start query server:", err);
+// });
 
 // Startup banner via state transition
 batcher

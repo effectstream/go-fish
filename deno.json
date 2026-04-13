@@ -1,6 +1,8 @@
 {
   "workspace": [
-    "./packages/**/*"
+    "./packages/client/**",
+    "./packages/shared/**",
+    "./e2e"
   ],
   "nodeModulesDir": "auto",
   "tasks": {
@@ -25,10 +27,11 @@
     "leaderboard:seed": "deno task --filter @go-fish/node leaderboard:seed",
     "leaderboard:seed:clear": "deno task --filter @go-fish/node leaderboard:seed:clear",
 
-    "test": "deno task --filter @go-fish/node test"
+    "test": "deno task --filter @go-fish/node test",
+    "test:e2e": "deno task --filter @go-fish/e2e test"
   },
   "imports": {
-    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.9.0",
+    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.10.24",
     "@go-fish/midnight-contracts": "./packages/shared/contracts/midnight/deno.json",
     "@go-fish/midnight-contracts/midnight-env": "./packages/shared/contracts/midnight/midnight-env.ts"
   },

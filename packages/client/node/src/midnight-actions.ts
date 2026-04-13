@@ -240,9 +240,9 @@ const actionWitnesses: any = {
     const hexGameId = Array.from(new Uint8Array(gameId)).map(b => b.toString(16).padStart(2, '0')).join('');
     const key = `${hexGameId}-${player}`;
 
-    // Check if we already have a secret for this player/game
-    if (playerSecrets.has(key)) {
-      const s = playerSecrets.get(key)!;
+    // Check volatile map first, then persistent store (survives hand queries that clear volatile map)
+    const s = playerSecrets.get(key) ?? persistentSecrets.get(key);
+    if (s !== undefined) {
       return [context.privateState, s];
     }
 
@@ -258,13 +258,12 @@ const actionWitnesses: any = {
     const hexGameId = Array.from(new Uint8Array(gameId)).map(b => b.toString(16).padStart(2, '0')).join('');
     const key = `${hexGameId}-${player}`;
 
-    // Use injected shuffle seed if available (set before replay via injectShuffleSeed)
-    if (playerShuffleSeeds.has(key)) {
-      const seed = playerShuffleSeeds.get(key)!;
+    // Check volatile map first, then persistent store (survives hand queries that clear volatile map)
+    const cachedSeed = playerShuffleSeeds.get(key) ?? persistentShuffleSeeds.get(key);
+    if (cachedSeed) {
       console.log(`[MidnightActions] shuffle_seed: HIT key="${key}"`);
-      // Capture so get_sorted_deck_witness can generate deterministic weights
-      lastActionShuffleSeed = seed;
-      return [context.privateState, seed];
+      lastActionShuffleSeed = cachedSeed;
+      return [context.privateState, cachedSeed];
     }
 
     // Fallback: deterministic seed (only used when no real seed was provided)
@@ -917,11 +916,13 @@ export async function askForCard(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] askForCard(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${rank})`);
 
+    const now = BigInt(Date.now());
     const result = actionContract.provableCircuits.askForCard(
       actionContext,
       gameId,
       BigInt(playerId),
-      BigInt(rank)
+      BigInt(rank),
+      now
     );
     actionContext = result.context;
 
@@ -948,10 +949,12 @@ export async function goFish(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] goFish(gameId: ${lobbyId}, playerId: ${playerId})`);
 
+    const now = BigInt(Date.now());
     const result = actionContract.provableCircuits.goFish(
       actionContext,
       gameId,
-      BigInt(playerId)
+      BigInt(playerId),
+      now
     );
     actionContext = result.context;
 
@@ -1146,10 +1149,12 @@ export async function respondToAsk(
 
     let result;
     try {
+      const now = BigInt(Date.now());
       result = actionContract.provableCircuits.respondToAsk(
         actionContext,
         gameId,
-        BigInt(playerId)
+        BigInt(playerId),
+        now
       );
       actionContext = result.context;
     } catch (respondError: any) {
@@ -1206,11 +1211,13 @@ export async function afterGoFish(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drewRequestedCard: ${drewRequestedCard})`);
 
+    // V3 contract: afterGoFish no longer takes drewRequestedCard — it decrypts and checks internally
+    const now = BigInt(Date.now());
     const result = actionContract.provableCircuits.afterGoFish(
       actionContext,
       gameId,
       BigInt(playerId),
-      drewRequestedCard
+      now
     );
     actionContext = result.context;
 

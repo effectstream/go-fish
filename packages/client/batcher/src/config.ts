@@ -19,7 +19,7 @@ export const config: BatcherConfig<DefaultBatcherInput> = {
   //     timeout" errors that spam the log and don't affect correctness.
   confirmationLevel: {
     effectstreaml2: "wait-receipt",
-    "go-fish": "no-wait",
+    // "go-fish": "no-wait",
     midnight_balancing: "no-wait",
   },
   enableEventSystem: false,
