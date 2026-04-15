@@ -12,7 +12,6 @@ await Deno.mkdir(`${__dirname}/build/artifacts/hardhat/build-info`, { recursive:
 
 const contracts = [
   { name: "PaimaL2Contract", source: "contracts/PaimaL2Contract.sol" },
-  { name: "GoFishLobby", source: "contracts/GoFishLobby.sol" },
 ];
 
 const buildInfoId = "stub-build-info";

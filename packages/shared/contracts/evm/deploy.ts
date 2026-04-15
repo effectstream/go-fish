@@ -40,7 +40,7 @@ export async function deploy(): Promise<void> {
     messages.push(
       `${deployment.module.id.substring(0, 16).padEnd(16)} @ ${
         deployment.network.substring(0, 16).padEnd(16)
-      } deployed to ${result.paimaL2Contract.address} (PaimaL2) & ${result.goFishLobby.address} (GoFishLobby)`,
+      } deployed to ${result.paimaL2Contract.address} (PaimaL2)`
     );
   }
   console.log("Deployed contracts:\n", messages.join("\n"));

@@ -11,8 +11,17 @@ import {
 import { PrimitiveTypeEVMPaimaL2 } from "@paimaexample/sm/builtin";
 import { hardhat } from "viem/chains";
 import { grammar } from "@go-fish/data-types/grammar";
+import { contractAddressesEvmMain } from "@go-fish/evm-contracts";
 
 const mainSyncProtocolName = "mainNtp";
+
+const chainNameId = "chain31337" as keyof typeof contractAddressesEvmMain;
+
+// PaimaL2Contract address from deployment
+const paimaL2Address = contractAddressesEvmMain()[chainNameId]["GoFishModule#PaimaL2Contract"] as `0x${string}`;
+if (!paimaL2Address) {
+  throw new Error("EffectstreamL2 address not found");
+}
 
 export const config = new ConfigBuilder()
   .setNamespace((builder) => builder.setSecurityNamespace("[go-fish]"))
@@ -39,9 +48,7 @@ export const config = new ConfigBuilder()
           type: ConfigSyncProtocolType.NTP_MAIN,
           chainUri: "",
           startBlockHeight: 1,
-          // Increased to 5000ms to allow CPU-intensive Midnight WASM operations
-          // to complete without blocking sync processes
-          pollingInterval: 5000,
+          pollingInterval: 1000,
         })
       )
       .addParallel(
@@ -54,7 +61,7 @@ export const config = new ConfigBuilder()
           // Increased to 5000ms to reduce mutex contention
           // Midnight circuit operations are CPU-intensive and block the event loop
           // This gives sync processes time to complete between operations
-          pollingInterval: 5000,
+          pollingInterval: 1000,
           confirmationDepth: 1,
         })
       )
@@ -65,8 +72,8 @@ export const config = new ConfigBuilder()
       (network, deployments, syncProtocol) => ({
         name: "GoFish_PaimaL2",
         type: PrimitiveTypeEVMPaimaL2,
-        startBlockHeight: Number(Deno.env.get("PAIMA_L2_START_BLOCK") || "0"),
-        contractAddress: Deno.env.get("PAIMA_L2_CONTRACT_ADDRESS") || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+        startBlockHeight: 0,
+        contractAddress: paimaL2Address,
         paimaL2Grammar: grammar,
       })
     )

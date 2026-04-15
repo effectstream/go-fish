@@ -21,7 +21,7 @@ if (isMainnet) {
 
 
 // PaimaL2Contract address from deployment
-const paimaL2Address = contractAddressesEvmMain()[chainNameId]["effectstreaml2Module#effectstreaml2"] as `0x${string}`;
+const paimaL2Address = contractAddressesEvmMain()[chainNameId]["GoFishModule#PaimaL2Contract"] as `0x${string}`;
 if (!paimaL2Address) {
   throw new Error("EffectstreamL2 address not found");
 }

@@ -11,10 +11,8 @@ const GoFishModule = buildModule("GoFishModule", (m) => {
   // Deploy PaimaL2Contract
   const paimaL2Contract = m.contract("PaimaL2Contract", [owner, fee]);
 
-  // Deploy GoFishLobby contract
-  const goFishLobby = m.contract("GoFishLobby");
 
-  return { paimaL2Contract, goFishLobby };
+  return { paimaL2Contract };
 });
 
 export default GoFishModule;
