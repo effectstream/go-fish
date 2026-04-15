@@ -109,15 +109,7 @@ export class LobbyListScreen {
               <input type="text" id="lobby-name" placeholder="Enter lobby name" maxlength="30"/>
             </div>
             <div class="form-group">
-              <label>Max Players:</label>
-              <select id="max-players">
-                <option value="2" selected>2 Players</option>
-                <option value="3" disabled>3 Players</option>
-                <option value="4" disabled>4 Players</option>
-                <option value="5" disabled>5 Players</option>
-                <option value="6" disabled>6 Players</option>
-              </select>
-              <span class="form-hint">3+ players coming in a future version</span>
+              <span class="form-hint">Go Fish is a 2-player game. Your game will start automatically when someone joins.</span>
             </div>
             <div class="modal-actions">
               <button id="confirm-create-btn" class="btn btn-primary">Create</button>
@@ -151,6 +143,7 @@ export class LobbyListScreen {
   }
 
   private renderLobby(lobby: Lobby): string {
+    const isFull = lobby.playerCount >= 2;
     return `
       <div class="lobby-card" data-lobby-id="${lobby.id}">
         <div class="lobby-header">
@@ -164,16 +157,16 @@ export class LobbyListScreen {
           </div>
           <div class="info-item">
             <span class="label">Players:</span>
-            <span class="value">${lobby.playerCount} / ${lobby.maxPlayers}</span>
+            <span class="value">${lobby.playerCount} / 2</span>
           </div>
         </div>
         <button
           class="btn btn-primary join-btn"
           data-lobby-id="${lobby.id}"
           data-is-rejoin="${lobby.isPlayerInLobby ? 'true' : 'false'}"
-          ${lobby.playerCount >= lobby.maxPlayers && !lobby.isPlayerInLobby ? 'disabled' : ''}
+          ${isFull && !lobby.isPlayerInLobby ? 'disabled' : ''}
         >
-          ${lobby.isPlayerInLobby ? 'Rejoin' : (lobby.playerCount >= lobby.maxPlayers ? 'Full' : 'Join')}
+          ${lobby.isPlayerInLobby ? 'Rejoin' : (isFull ? 'Full' : 'Join')}
         </button>
       </div>
     `;
@@ -246,11 +239,9 @@ export class LobbyListScreen {
     // Confirm button
     document.getElementById('confirm-create-btn')?.addEventListener('click', async () => {
       const nameInput = document.getElementById('lobby-name') as HTMLInputElement;
-      const maxPlayersInput = document.getElementById('max-players') as HTMLSelectElement;
       const confirmBtn = document.getElementById('confirm-create-btn') as HTMLButtonElement;
 
       const lobbyName = nameInput.value.trim() || `${this.gameService.getPlayerName()}'s Lobby`;
-      const maxPlayers = parseInt(maxPlayersInput.value);
 
       if (!this.gameService.getPlayerName()) {
         alert('Please enter your name first!');
@@ -265,7 +256,7 @@ export class LobbyListScreen {
 
       try {
         // Create lobby on-chain
-        const lobby = await this.gameService.createLobby(lobbyName, maxPlayers);
+        const lobby = await this.gameService.createLobby(lobbyName);
 
         if (!lobby) {
           alert('Failed to create lobby. Please try again.');

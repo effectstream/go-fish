@@ -96,7 +96,6 @@ export interface GoFishPlayer {
   id: string;
   name: string;
   isAlive: boolean; // Keep for compatibility, always true in Go Fish
-  isReady: boolean;
   hand: Card[];
   books: Rank[];
   cardCount: number;
@@ -121,14 +120,13 @@ export interface GoFishGameState {
   endedAt?: number;
 }
 
-// Lobby types (reuse from game-types.ts)
+// Lobby types. Go Fish is always 2 players — max is a code constant, not a field.
 export interface Lobby {
   id: string;
   name: string;
   hostId: string;
   hostName: string;
   playerCount: number;
-  maxPlayers: number;
   status: 'waiting' | 'in_progress' | 'finished';
   createdAt: number;
   isPlayerInLobby?: boolean; // True if current user is already in this lobby

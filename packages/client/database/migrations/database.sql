@@ -13,11 +13,11 @@ CREATE TABLE IF NOT EXISTS user_game_state (
 );
 
 -- Lobbies table (game lobbies before the game starts)
+-- Go Fish is always a 2-player game; max_players is a code constant, not a column.
 CREATE TABLE IF NOT EXISTS lobbies (
     lobby_id TEXT PRIMARY KEY,
     lobby_name TEXT NOT NULL,
     host_account_id INTEGER NOT NULL,
-    max_players INTEGER NOT NULL DEFAULT 4,
     status TEXT NOT NULL DEFAULT 'open', -- open, in_progress, finished
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS lobbies (
 );
 
 -- Lobby players table (tracks players in each lobby)
+-- No ready flag: join auto-starts the game when the lobby fills.
 CREATE TABLE IF NOT EXISTS lobby_players (
     lobby_id TEXT NOT NULL,
     account_id INTEGER NOT NULL,
     player_name TEXT NOT NULL,
-    is_ready BOOLEAN DEFAULT false,
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (lobby_id, account_id)
 );

@@ -176,19 +176,20 @@ Queries are defined in SQL files and auto-generated using pgtyped:
 
 ## Game Commands
 
-Blockchain commands (Paima concise grammar format):
+Blockchain commands (Paima concise grammar format).
+
+Go Fish is a fixed 2-player game with auto-start on the second join, so the
+EVM grammar is deliberately minimal — just three commands:
 
 **Lobby Management (EVM):**
-- `createdLobby|playerName|maxPlayers` - Create game lobby
-- `joinedLobby|playerName|lobbyID` - Join lobby
-- `toggledReady|lobbyID` - Toggle ready status
-- `startedGame|lobbyID` - Start game (host only)
-- `leftLobby|lobbyID` - Leave lobby
-- `closedLobby|lobbyID` - Close lobby (host only)
+- `createdLobby|playerName|lobbyName` — Create a new lobby. Host is added as the first player.
+- `joinedLobby|playerName|lobbyID` — Second player joins. The state machine flips the lobby to `in_progress` in the same transition.
+- `closedLobby|lobbyID` — Host cancels an open lobby while still alone. Deletes the lobby row.
 
-**Game Actions (Midnight - planned):**
-- `askedForCard|lobbyID|targetPlayerID|rank` - Ask player for cards
-- Game logic will be handled by Midnight contracts for privacy
+**Game Actions:**
+Game-round logic (asking for cards, drawing, booking) runs on the Midnight
+contract as ZK circuits. See `packages/shared/contracts/midnight/`. None of
+those actions touch the EVM grammar.
 
 See [packages/shared/data-types/src/grammar.ts](packages/shared/data-types/src/grammar.ts)
 

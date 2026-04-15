@@ -12,8 +12,6 @@ import type {
 } from '../../../shared/data-types/src/go-fish-types';
 
 import {
-  createDeck,
-  shuffleDeck,
   checkForBook,
   removeBook,
   getCardsOfRank,
@@ -71,11 +69,9 @@ export class GoFishGameService {
     return this.playerName;
   }
 
-  // Lobby management
-  async createLobby(lobbyName: string, maxPlayers: number): Promise<Lobby | null> {
-    // Call blockchain middleware to create lobby
-    // Pass both player name and lobby name
-    const result = await EffectstreamBridge.createLobby(this.playerName, lobbyName, maxPlayers);
+  // Lobby management — Go Fish is always a 2-player game.
+  async createLobby(lobbyName: string): Promise<Lobby | null> {
+    const result = await EffectstreamBridge.createLobby(this.playerName, lobbyName);
 
     if (!result.success) {
       console.error('Failed to create lobby:', result.errorMessage);
@@ -86,25 +82,24 @@ export class GoFishGameService {
     const lobbyId = result.lobbyId || `lobby_${Date.now()}`;
     const lobby: Lobby = {
       id: lobbyId,
-      name: lobbyName,  // Use the lobby name from user input for local state
+      name: lobbyName,
       hostId: this.playerId,
       hostName: this.playerName,
       playerCount: 0,
-      maxPlayers,
       status: 'waiting',
       createdAt: Date.now(),
     };
 
     this.lobbies.set(lobbyId, lobby);
 
-    // Create game state
+    // Create local game state (in-memory mirror; actual game runs on Midnight).
     const game: GoFishGameState = {
       id: lobbyId,
       status: 'waiting',
       phase: 'lobby',
       round: 0,
       players: [],
-      maxPlayers,
+      maxPlayers: 2,
       hostId: this.playerId,
       currentTurnIndex: 0,
       deck: [],
@@ -144,7 +139,6 @@ export class GoFishGameService {
         hostId: apiLobby.host_account_id?.toString() || '',
         hostName: apiLobby.host_name || 'Unknown',
         playerCount: parseInt(apiLobby.player_count) || 0,
-        maxPlayers: apiLobby.max_players,
         status: apiLobby.status === 'open' ? 'waiting' as const : 'in_progress' as const,
         createdAt: new Date(apiLobby.created_at).getTime(),
         isPlayerInLobby: apiLobby.is_player_in_lobby === true,
@@ -179,80 +173,18 @@ export class GoFishGameService {
     return true;
   }
 
-  async leaveLobby(lobbyId: string): Promise<boolean> {
-    // Submit leave transaction to blockchain
-    const result = await EffectstreamBridge.leaveLobby(lobbyId);
+  /**
+   * Host-only: cancel an open lobby before a second player has joined.
+   */
+  async closeLobby(lobbyId: string): Promise<boolean> {
+    const result = await EffectstreamBridge.closeLobby(lobbyId);
 
     if (!result.success) {
-      console.error('Failed to leave lobby:', result.errorMessage);
+      console.error('Failed to close lobby:', result.errorMessage);
       return false;
     }
 
-    console.log('Leave lobby transaction submitted successfully');
-    return true;
-  }
-
-  toggleReady(lobbyId: string): void {
-    const game = this.games.get(lobbyId);
-    if (!game) return;
-
-    const player = game.players.find(p => p.id === this.playerId);
-    if (player) {
-      player.isReady = !player.isReady;
-    }
-  }
-
-  canStartGame(lobbyId: string): boolean {
-    const game = this.games.get(lobbyId);
-    if (!game) return false;
-
-    return (
-      game.players.length >= 2 &&
-      game.players.every(p => p.isReady || p.id === game.hostId)
-    );
-  }
-
-  startGame(lobbyId: string): boolean {
-    const game = this.games.get(lobbyId);
-    const lobby = this.lobbies.get(lobbyId);
-
-    if (!game || !lobby || !this.canStartGame(lobbyId)) {
-      return false;
-    }
-
-    // Initialize deck and deal cards
-    game.deck = shuffleDeck(createDeck());
-    game.deckCount = game.deck.length;
-    game.status = 'in_progress';
-    game.phase = 'dealing';
-    game.startedAt = Date.now();
-    game.round = 1;
-    game.currentTurnIndex = 0;
-
-    lobby.status = 'in_progress';
-
-    // Deal cards (5-7 cards per player depending on player count)
-    const cardsPerPlayer = game.players.length <= 3 ? 7 : 5;
-
-    for (const player of game.players) {
-      for (let i = 0; i < cardsPerPlayer; i++) {
-        const card = game.deck.pop();
-        if (card) {
-          player.hand.push(card);
-        }
-      }
-      player.hand = sortCards(player.hand);
-      player.cardCount = player.hand.length;
-
-      // Check for initial books
-      this.checkAndCompleteBooks(game, player);
-    }
-
-    game.deckCount = game.deck.length;
-    game.phase = 'playing';
-
-    this.addSystemMessage(lobbyId, `Game started! ${game.players[0].name}'s turn.`);
-
+    console.log('Close lobby transaction submitted successfully');
     return true;
   }
 

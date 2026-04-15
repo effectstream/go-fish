@@ -55,6 +55,52 @@ const FIXTURE_ROWS = [
 type FixtureRow = (typeof FIXTURE_ROWS)[number];
 
 /**
+ * Fixture lobby rows for the /open_lobbies TTL test.
+ * `created_at` is computed at test time so the mock can apply the 10-minute
+ * cutoff the same way the real query does.
+ */
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+const NOW = Date.now();
+
+const LOBBY_FIXTURES: Array<{
+  lobby_id: string;
+  lobby_name: string;
+  status: string;
+  created_at: Date;
+  host_account_id: number;
+  player_count: number;
+  host_name: string;
+}> = [
+  {
+    lobby_id: "lobby_recent_alice",
+    lobby_name: "Alice's Game",
+    status: "open",
+    created_at: new Date(NOW - 2 * 60 * 1000), // 2 min old — fresh
+    host_account_id: 1,
+    player_count: 1,
+    host_name: "Alice",
+  },
+  {
+    lobby_id: "lobby_edge_bob",
+    lobby_name: "Bob's Table",
+    status: "open",
+    created_at: new Date(NOW - 9 * 60 * 1000), // 9 min old — still fresh
+    host_account_id: 2,
+    player_count: 1,
+    host_name: "Bob",
+  },
+  {
+    lobby_id: "lobby_stale_carol",
+    lobby_name: "Carol's Den",
+    status: "open",
+    created_at: new Date(NOW - 11 * 60 * 1000), // 11 min old — EXPIRED
+    host_account_id: 3,
+    player_count: 1,
+    host_name: "Carol",
+  },
+];
+
+/**
  * Build a minimal pg-Pool mock.
  * Intercepts SQL queries by pattern-matching against the query string and
  * returns pre-canned rows. Unrecognised queries return empty results so tests
@@ -98,6 +144,29 @@ function makeMockPool(): Pool {
         const targetPoints = Number(params?.[0] ?? 0);
         const rank = String(FIXTURE_ROWS.filter(r => Number(r.total_points) > targetPoints).length + 1);
         return { rows: [{ rank }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+
+      // ── open_lobbies: optional wallet lookup (is_player_in_lobby) ────────
+      if (q.includes("from effectstream.addresses") && q.includes("where address =")) {
+        // No wallet is bound in these tests — return empty so the route
+        // takes the `false as is_player_in_lobby` path.
+        return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+      }
+
+      // ── open_lobbies: list query with 10-minute TTL cutoff ───────────────
+      if (q.includes("from lobbies l") && q.includes("where l.status = 'open'")) {
+        const limit = Number(params?.[0] ?? 10);
+        const offset = Number(params?.[1] ?? 0);
+        const cutoff = Date.now() - TEN_MINUTES_MS;
+        const filtered = LOBBY_FIXTURES
+          .filter(l => l.status === "open" && l.created_at.getTime() > cutoff)
+          .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())
+          .slice(offset, offset + limit)
+          .map(l => ({
+            ...l,
+            is_player_in_lobby: false,
+          }));
+        return { rows: filtered, rowCount: filtered.length, command: "SELECT", oid: 0, fields: [] };
       }
 
       // Default: empty result (unrecognised query)
@@ -469,6 +538,54 @@ Deno.test({
     const { status, body } = await getJSON(server, `/metrics/users/${addr}`);
     assertEquals(status, 200);
     assertEquals(Array.isArray(body.identity.delegatedFrom), true);
+  },
+  sanitizeOps: false,
+  sanitizeResources: false,
+});
+
+// ── GET /open_lobbies ────────────────────────────────────────────────────────
+
+Deno.test({
+  name: "GET /open_lobbies → 200 with { lobbies: [...] }",
+  fn: async () => {
+    const { status, body } = await getJSON(server, "/open_lobbies");
+    assertEquals(status, 200);
+    assertEquals(Array.isArray(body.lobbies), true);
+  },
+  sanitizeOps: false,
+  sanitizeResources: false,
+});
+
+Deno.test({
+  name: "GET /open_lobbies → hides lobbies older than 10 minutes",
+  fn: async () => {
+    const { status, body } = await getJSON(server, "/open_lobbies");
+    assertEquals(status, 200);
+
+    const ids = body.lobbies.map((l: { lobby_id: string }) => l.lobby_id);
+    // Fresh lobby (2 min old) — must be present
+    assertEquals(ids.includes("lobby_recent_alice"), true, "fresh lobby should be visible");
+    // Edge-of-window lobby (9 min old) — must be present
+    assertEquals(ids.includes("lobby_edge_bob"), true, "9-minute lobby should still be visible");
+    // Stale lobby (11 min old) — must be hidden by the TTL filter
+    assertEquals(ids.includes("lobby_stale_carol"), false, "11-minute lobby should be filtered out");
+  },
+  sanitizeOps: false,
+  sanitizeResources: false,
+});
+
+Deno.test({
+  name: "GET /open_lobbies → response rows do not expose max_players",
+  fn: async () => {
+    const { status, body } = await getJSON(server, "/open_lobbies");
+    assertEquals(status, 200);
+    for (const lobby of body.lobbies) {
+      assertEquals(
+        "max_players" in lobby,
+        false,
+        `lobby ${lobby.lobby_id} should not contain max_players`,
+      );
+    }
   },
   sanitizeOps: false,
   sanitizeResources: false,

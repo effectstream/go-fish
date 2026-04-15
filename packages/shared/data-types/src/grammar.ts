@@ -6,41 +6,28 @@
 import type { GrammarDefinition } from "@paimaexample/concise";
 import { Type } from "@sinclair/typebox";
 
-// Custom types for Go Fish
 const PlayerName = Type.String({ minLength: 1, maxLength: 20 });
 const LobbyName = Type.String({ minLength: 1, maxLength: 30 });
 const LobbyID = Type.String({ minLength: 1, maxLength: 100 });
-const PlayerID = Type.String({ minLength: 1, maxLength: 100 });
-const Rank = Type.Union([
-  Type.Literal('2'),
-  Type.Literal('3'),
-  Type.Literal('4'),
-  Type.Literal('5'),
-  Type.Literal('6'),
-  Type.Literal('7'),
-  Type.Literal('8'),
-  Type.Literal('9'),
-  Type.Literal('10'),
-  Type.Literal('J'),
-  Type.Literal('Q'),
-  Type.Literal('K'),
-  Type.Literal('A'),
-]);
 
 export const goFishL2Grammar = {
   /**
-   * Create Lobby: c|playerName|lobbyName|maxPlayers
-   * Example: c|Alice|Alice's Game|4
+   * Create Lobby: c|playerName|lobbyName
+   * Example: c|Alice|Alice's Game
+   *
+   * Max players is a constant (2) and is not transmitted.
    */
   createdLobby: [
     ['playerName', PlayerName],
     ['lobbyName', LobbyName],
-    ['maxPlayers', Type.Number({ minimum: 2, maximum: 6 })],
   ],
 
   /**
    * Join Lobby: j|playerName|lobbyID
    * Example: j|Bob|abc123def456
+   *
+   * Auto-starts the game — the second joiner always fills the 2-player lobby,
+   * so the state machine flips status to 'in_progress' in the same transition.
    */
   joinedLobby: [
     ['playerName', PlayerName],
@@ -48,36 +35,11 @@ export const goFishL2Grammar = {
   ],
 
   /**
-   * Leave Lobby: l|lobbyID
-   * Example: l|abc123def456
-   */
-  leftLobby: [['lobbyID', LobbyID]],
-
-  /**
-   * Toggle Ready: r|lobbyID
-   * Example: r|abc123def456
-   */
-  toggledReady: [['lobbyID', LobbyID]],
-
-  /**
-   * Start Game (Host only): start|lobbyID
-   * Example: start|abc123def456
-   */
-  startedGame: [['lobbyID', LobbyID]],
-
-  /**
-   * Ask For Card: ask|lobbyID|targetPlayerID|rank
-   * Example: ask|abc123def456|player_123|K
-   */
-  askedForCard: [
-    ['lobbyID', LobbyID],
-    ['targetPlayerID', PlayerID],
-    ['rank', Rank],
-  ],
-
-  /**
-   * Close Lobby (Host only): close|lobbyID
+   * Close Lobby (host only, while alone): close|lobbyID
    * Example: close|abc123def456
+   *
+   * Host cancels an open lobby before a second player has joined.
+   * The state machine deletes the lobby row and its lobby_players row.
    */
   closedLobby: [['lobbyID', LobbyID]],
 } as const satisfies GrammarDefinition;

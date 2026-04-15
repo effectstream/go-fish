@@ -96,12 +96,12 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
         }
       }
 
-      // Query lobbies with optional membership check
+      // Query lobbies with optional membership check.
+      // Lobbies older than 10 minutes are hidden from the list (soft TTL).
       const result = await db.query(`
         SELECT
           l.lobby_id,
           l.lobby_name,
-          l.max_players,
           l.status,
           l.created_at,
           l.host_account_id,
@@ -110,6 +110,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
           ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'} as is_player_in_lobby
         FROM lobbies l
         WHERE l.status = 'open'
+          AND l.created_at > NOW() - INTERVAL '10 minutes'
         ORDER BY l.created_at DESC
         LIMIT $1 OFFSET $2
       `, [count, offset]);
@@ -153,7 +154,6 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
         SELECT
           l.lobby_id,
           l.lobby_name,
-          l.max_players,
           l.status,
           l.created_at,
           (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count
@@ -191,7 +191,6 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
           l.lobby_id,
           l.lobby_name,
           l.host_account_id,
-          l.max_players,
           l.status,
           l.created_at,
           l.started_at
@@ -214,7 +213,6 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
         SELECT
           lp.account_id,
           lp.player_name,
-          lp.is_ready,
           lp.joined_at,
           (SELECT addr.address FROM effectstream.addresses addr
            WHERE addr.account_id = lp.account_id LIMIT 1) as wallet_address
@@ -258,7 +256,6 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
         l.lobby_id,
         l.lobby_name,
         l.host_account_id,
-        l.max_players,
         l.status,
         l.started_at
       FROM lobbies l

@@ -224,12 +224,12 @@ export function isWalletConnected(): boolean {
 }
 
 /**
- * Create a new game lobby on-chain
+ * Create a new game lobby on-chain.
+ * Go Fish is always a 2-player game; no maxPlayers argument is accepted.
  */
 export async function createLobby(
   playerName: string,
   lobbyName: string,
-  maxPlayers: number
 ): Promise<{ success: boolean; lobbyId?: string; errorMessage?: string }> {
   const currentWallet = await ensureWallet();
   if (!currentWallet) {
@@ -237,9 +237,8 @@ export async function createLobby(
   }
 
   try {
-    // Submit transaction to Paima L2 contract
-    // Format: createdLobby command with playerName, lobbyName, and maxPlayers
-    const params = ["createdLobby", playerName, lobbyName, maxPlayers];
+    // Grammar expects: createdLobby|playerName|lobbyName
+    const params = ["createdLobby", playerName, lobbyName];
 
     // Send transaction without waiting for processing (to avoid timeout)
     const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
@@ -318,9 +317,10 @@ export async function joinLobby(
 }
 
 /**
- * Toggle ready status in a lobby
+ * Close a lobby (host only, while still alone).
+ * Deletes the lobby on-chain when no second player has joined yet.
  */
-export async function toggleReady(
+export async function closeLobby(
   lobbyId: string
 ): Promise<{ success: boolean; errorMessage?: string }> {
   const currentWallet = await ensureWallet();
@@ -329,80 +329,18 @@ export async function toggleReady(
   }
 
   try {
-    // Grammar expects: toggledReady|lobbyID
-    const params = ["toggledReady", lobbyId];
+    // Grammar expects: closedLobby|lobbyID
+    const params = ["closedLobby", lobbyId];
     const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
-      return { success: false, errorMessage: "Failed to toggle ready" };
+      return { success: false, errorMessage: "Failed to close lobby" };
     }
 
-    console.log('Toggle ready transaction submitted:', result);
+    console.log('Close lobby transaction submitted:', result);
     return { success: true };
   } catch (error) {
-    console.error('Error toggling ready:', error);
-    return {
-      success: false,
-      errorMessage: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
-
-/**
- * Start game (host only)
- */
-export async function startGame(
-  lobbyId: string
-): Promise<{ success: boolean; errorMessage?: string }> {
-  const currentWallet = await ensureWallet();
-  if (!currentWallet) {
-    return { success: false, errorMessage: "Failed to initialize wallet" };
-  }
-
-  try {
-    // Grammar expects: startedGame|lobbyID
-    const params = ["startedGame", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
-
-    if (!result.success) {
-      return { success: false, errorMessage: "Failed to start game" };
-    }
-
-    console.log('Start game transaction submitted:', result);
-    return { success: true };
-  } catch (error) {
-    console.error('Error starting game:', error);
-    return {
-      success: false,
-      errorMessage: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
-
-/**
- * Leave a lobby
- */
-export async function leaveLobby(
-  lobbyId: string
-): Promise<{ success: boolean; errorMessage?: string }> {
-  const currentWallet = await ensureWallet();
-  if (!currentWallet) {
-    return { success: false, errorMessage: "Failed to initialize wallet" };
-  }
-
-  try {
-    // Grammar expects: leftLobby|lobbyID
-    const params = ["leftLobby", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
-
-    if (!result.success) {
-      return { success: false, errorMessage: "Failed to leave lobby" };
-    }
-
-    console.log('Leave lobby transaction submitted:', result);
-    return { success: true };
-  } catch (error) {
-    console.error('Error leaving lobby:', error);
+    console.error('Error closing lobby:', error);
     return {
       success: false,
       errorMessage: error instanceof Error ? error.message : 'Unknown error',
@@ -528,9 +466,7 @@ export const EffectstreamBridge = {
   isWalletConnected,
   createLobby,
   joinLobby,
-  toggleReady,
-  startGame,
-  leaveLobby,
+  closeLobby,
   getLobbyState,
   getOpenLobbies,
   getUserLobbies,
