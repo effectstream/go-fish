@@ -915,22 +915,16 @@ export async function playOneTurn(
   console.log(`  P${playerId} hand: ${handBefore.map(cardName).join(" ") || "(empty)"} [${handBefore.length}]`);
   console.log(`  P${opponent} hand: ${oppHandBefore.map(cardName).join(" ") || "(empty)"} [${oppHandBefore.length}]`);
 
+  // Empty hand is legal after the rule-5 relaxation — the contract routes
+  // an empty-hand ask through respondToAsk's go-fish branch, giving the
+  // player a card from the deck. Pick rank 0 when we have nothing to ask
+  // about (the contract no longer requires the asker to hold the rank).
+  const askRank = handBefore.length === 0 ? 0 : handRanks(handBefore)[0]!;
   if (handBefore.length === 0) {
-    return {
-      ...empty,
-      playerId,
-      opponent,
-      handBefore,
-      oppHandBefore,
-      handAfter: handBefore,
-      oppHandAfter: oppHandBefore,
-      endReason: `P${playerId} has empty hand`,
-    };
+    console.log(`  → P${playerId} is empty, asking for ${RANKS[askRank]} to trigger go-fish draw`);
+  } else {
+    console.log(`  → P${playerId} asks P${opponent} for ${RANKS[askRank]}`);
   }
-
-  // Pick the first rank in our hand (simple heuristic; fine for testing)
-  const askRank = handRanks(handBefore)[0]!;
-  console.log(`  → P${playerId} asks P${opponent} for ${RANKS[askRank]}`);
 
   // Ask
   await callDelegated(

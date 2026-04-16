@@ -57,8 +57,11 @@ Deno.test({
     const setup = await runFullSetup(session, { gameId });
 
     try {
-      // 3. Turn loop until GameOver / sum==7 / MAX_TURNS (20).
-      const result = await runFullGame(session, gameId, 20);
+      // 3. Turn loop until GameOver / sum==7 / MAX_TURNS.
+      // 30 turns gives headroom for shuffles where books form late —
+      // with the early-win threshold correctly at 4 (not the old
+      // double-increment 3), some games need 22–25 turns.
+      const result = await runFullGame(session, gameId, 30);
 
       console.log(`\n══════════════════════════════════`);
       console.log(`  E2E result`);
@@ -71,6 +74,20 @@ Deno.test({
       console.log(`  divergences:     ${result.divergenceCount}`);
       console.log(`  finalPhase:      ${result.finalPhase} (GameOver=${PHASE.GameOver})`);
       console.log(`  winner:          ${result.winner ?? "(not set)"}`);
+
+      // With the early-win fix (addScore ≥ 4) and the rule-5 relaxation in
+      // askForCard, every finished game must exit in GameOver with a real
+      // winner. Ties are unreachable via the early-win path.
+      if (result.finalPhase !== PHASE.GameOver) {
+        throw new Error(
+          `expected finalPhase == GameOver (${PHASE.GameOver}), got ${result.finalPhase}. exitReason: ${result.exitReason}`,
+        );
+      }
+      if (result.winner !== 1 && result.winner !== 2) {
+        throw new Error(
+          `expected winner in {1, 2}, got ${result.winner ?? "null"}. scores: ${result.finalScores[0]}-${result.finalScores[1]}`,
+        );
+      }
     } finally {
       clearAllSecrets(session, setup.gameIdHex);
     }

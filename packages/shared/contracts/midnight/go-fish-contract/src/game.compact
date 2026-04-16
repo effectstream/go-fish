@@ -311,8 +311,14 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
     const currentCount = countCardsOfRank_withSecrets(gid, askingPlayerId, targetRank, secret1, secret2);
 
-    // RULE 5: Asking player must have at least one card of the requested rank
-    assert(currentCount > 0 as Uint<8>, "Cannot ask for a rank you don't have in your hand");
+    // RULE 5: Asking player must have ≥ 1 card of the requested rank —
+    // EXCEPT when the hand is empty. An empty-hand ask is the real-Go-Fish
+    // "draw from deck" move and flows through respondToAsk's existing
+    // go-fish branch (no standalone draw circuit needed).
+    const askerHandSize = hand_getHandSize(gid, disclosed_playerId);
+    if (askerHandSize > 0 as Uint<64>) {
+        assert(currentCount > 0 as Uint<8>, "Cannot ask for a rank you don't have in your hand");
+    }
 
     // Store the asked rank and asking player for the response phase
     go_fish_setLastAskedRank(gid, targetRank);
@@ -719,6 +725,15 @@ export circuit isGameOver(gameId: Bytes<32>): Boolean {
     const gid = disclose(gameId);
     assert(go_fish_doesGameExist(gid), "Game does not exist");
     return go_fish_isGameOver(gid);
+}
+
+// Top-level wrapper so the managed contract exposes getWinner.
+// Returns 0 if no winner has been recorded yet (game still in progress
+// or in a pre-V4 state), 1 for P1, 2 for P2.
+export circuit getWinner(gameId: Bytes<32>): Uint<64> {
+    const gid = disclose(gameId);
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    return go_fish_getWinner(gid);
 }
 
 export circuit isDeckEmpty(gameId: Bytes<32>): Boolean {

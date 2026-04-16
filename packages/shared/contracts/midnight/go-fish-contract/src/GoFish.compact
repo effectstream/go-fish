@@ -137,33 +137,40 @@ export circuit addScore(gameId: Bytes<32>, playerId: Uint<64>): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
     assert(gameExists.member(gid), "Game does not exist");
-    
+
+    // Read pre-increment scores ONCE, compute post-increment values
+    // locally, then write. Do NOT re-read scoreP1/scoreP2 after the
+    // insert — Compact's queryLedgerState mutates the circuit context
+    // in place, so a re-read returns the POST-write value, and a
+    // naive `s + 1` would double-count. Using newS1/newS2 directly
+    // avoids any dependency on ledger read-after-write semantics.
+    const prevS1 = scoreP1.lookup(gid) as Uint<8>;
+    const prevS2 = scoreP2.lookup(gid) as Uint<8>;
+    const newS1: Uint<8> = (disclosed_playerId == 1 as Uint<64>)
+        ? (prevS1 + 1 as Uint<8>) as Uint<8>
+        : prevS1;
+    const newS2: Uint<8> = (disclosed_playerId == 2 as Uint<64>)
+        ? (prevS2 + 1 as Uint<8>) as Uint<8>
+        : prevS2;
+
     if (disclosed_playerId == 1 as Uint<64>) {
-        const current = scoreP1.lookup(gid) as Uint<8>;
-        scoreP1.insert(gid, (current + 1 as Uint<8>) as Uint<8>);
+        scoreP1.insert(gid, newS1);
     } else if (disclosed_playerId == 2 as Uint<64>) {
-        const current = scoreP2.lookup(gid) as Uint<8>;
-        scoreP2.insert(gid, (current + 1 as Uint<8>) as Uint<8>);
+        scoreP2.insert(gid, newS2);
     }
     const books = totalBooks.lookup(gid) as Uint<8>;
     totalBooks.insert(gid, (books + 1 as Uint<8>) as Uint<8>);
-    
-    // CHANGED: Game ends at 7 books (7 ranks available)
-    if (books + 1 as Uint<8> == 7 as Uint<8>) {
+
+    // Early-win at majority threshold (≥ 4 books of 7). Supersedes the
+    // old "books + 1 == 7" cap — by pigeonhole, 7 books implies max
+    // score ≥ 4, so this check fires strictly earlier. No tie branch:
+    // by induction, when this fires the other player is strictly < 4.
+    if (newS1 >= 4 as Uint<8>) {
         phase.insert(gid, GamePhase.GameOver);
-        // V4: Record winner — player with more books wins
-        const s1 = scoreP1.lookup(gid) as Uint<8>;
-        const s2 = scoreP2.lookup(gid) as Uint<8>;
-        // After incrementing, one of them is the current player's new score
-        const finalS1: Uint<8> = (disclosed_playerId == 1 as Uint<64>) ? (s1 + 1 as Uint<8>) as Uint<8> : s1;
-        const finalS2: Uint<8> = (disclosed_playerId == 2 as Uint<64>) ? (s2 + 1 as Uint<8>) as Uint<8> : s2;
-        if (finalS1 > finalS2) {
-            winner.insert(gid, 1 as Uint<64>);
-        } else if (finalS2 > finalS1) {
-            winner.insert(gid, 2 as Uint<64>);
-        } else {
-            winner.insert(gid, 0 as Uint<64>); // tie
-        }
+        winner.insert(gid, 1 as Uint<64>);
+    } else if (newS2 >= 4 as Uint<8>) {
+        phase.insert(gid, GamePhase.GameOver);
+        winner.insert(gid, 2 as Uint<64>);
     }
     return [];
 }
