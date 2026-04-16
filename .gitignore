@@ -36,3 +36,4 @@ logs/
 
 # Midnight database
 packages/shared/contracts/midnight/midnight-level-db-deploy/*
+packages/client/node/.gitignore
