@@ -264,41 +264,52 @@ export async function respondToAsk(
   };
 }
 
-/**
- * Go Fish action
- */
-export async function goFish(
-  lobbyId: string,
-  playerId: 1 | 2
-): Promise<{ success: boolean; errorMessage?: string }> {
-  if (await shouldUseOnChainAsync()) {
-    console.log("[MidnightService] goFish via on-chain");
-    return MidnightOnChainService.goFish(lobbyId, playerId);
-  }
-
-  console.log("[MidnightService] goFish via backend");
-  return callBackendAction("go_fish", { lobby_id: lobbyId, player_id: playerId });
-}
+// goFish() deleted — no goFish circuit exists. respondToAsk handles the
+// draw internally; the turn flow is: askForCard → respondToAsk → afterGoFish.
 
 /**
- * After Go Fish action
+ * After Go Fish action — contract v3 determines drewRequestedCard internally
+ * by decrypting the drawn card point (game.compact:451-510). No client-side
+ * hand diffing needed.
  */
 export async function afterGoFish(
   lobbyId: string,
   playerId: 1 | 2,
-  drewRequestedCard: boolean
 ): Promise<{ success: boolean; errorMessage?: string }> {
   if (await shouldUseOnChainAsync()) {
     console.log("[MidnightService] afterGoFish via on-chain");
-    return MidnightOnChainService.afterGoFish(lobbyId, playerId, drewRequestedCard);
+    return MidnightOnChainService.afterGoFish(lobbyId, playerId);
   }
 
   console.log("[MidnightService] afterGoFish via backend");
   return callBackendAction("after_go_fish", {
     lobby_id: lobbyId,
     player_id: playerId,
-    drew_requested_card: drewRequestedCard,
   });
+}
+
+/**
+ * Score a book (3 cards of the same rank). Call after any hand-changing
+ * action when the player holds ≥3 of a rank. The contract removes the 3
+ * cards, increments the score, and checks the early-win threshold (≥4).
+ */
+export async function checkAndScoreBook(
+  lobbyId: string,
+  playerId: 1 | 2,
+  targetRank: number,
+): Promise<{ success: boolean; scored: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log(`[MidnightService] checkAndScoreBook(P${playerId}, rank=${targetRank}) via on-chain`);
+    return MidnightOnChainService.checkAndScoreBook(lobbyId, playerId, targetRank);
+  }
+
+  console.log(`[MidnightService] checkAndScoreBook via backend`);
+  const result = await callBackendAction("check_and_score_book", {
+    lobby_id: lobbyId,
+    player_id: playerId,
+    target_rank: targetRank,
+  });
+  return { ...result, scored: result.success };
 }
 
 /**
@@ -507,8 +518,8 @@ export const MidnightService = {
   dealCards,
   askForCard,
   respondToAsk,
-  goFish,
   afterGoFish,
+  checkAndScoreBook,
   skipDrawDeckEmpty,
   claimTimeoutWin,
   // Queries

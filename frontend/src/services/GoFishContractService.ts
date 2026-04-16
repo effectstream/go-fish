@@ -569,30 +569,24 @@ export async function callRespondToAsk(lobbyId: string, playerId: 1 | 2): Promis
   });
 }
 
-export async function callGoFish(lobbyId: string, playerId: 1 | 2): Promise<void> {
-  const addr = await getContractAddress();
-  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
-  const now = BigInt(Math.floor(Date.now() / 1000));
-
-  await withSecrets(lobbyId, playerId, async (gameId) => {
-    await callDelegated(provider, "goFish", () =>
-      contract.callTx.goFish(gameId, BigInt(playerId), now)
-    );
-  });
-}
+// callGoFish deleted — no goFish circuit exists in the compiled contract.
+// respondToAsk handles the draw internally; the turn flow is:
+// askForCard → respondToAsk → (if WaitForDrawCheck) afterGoFish.
 
 export async function callAfterGoFish(
   lobbyId: string,
   playerId: 1 | 2,
-  drewRequestedCard: boolean,
 ): Promise<void> {
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
   const now = BigInt(Math.floor(Date.now() / 1000));
 
   await withSecrets(lobbyId, playerId, async (gameId) => {
+    // Contract v3: afterGoFish(gameId, playerId, now) — 3 args only.
+    // The contract decrypts the drawn card internally and determines
+    // drewRequestedCard programmatically (game.compact:451-510).
     await callDelegated(provider, "afterGoFish", () =>
-      contract.callTx.afterGoFish(gameId, BigInt(playerId), drewRequestedCard, now)
+      contract.callTx.afterGoFish(gameId, BigInt(playerId), now)
     );
   });
 }
@@ -605,6 +599,22 @@ export async function callSwitchTurn(lobbyId: string, playerId: 1 | 2): Promise<
   await callDelegated(provider, "switchTurn", () =>
     contract.callTx.switchTurn(gameId, BigInt(playerId))
   );
+}
+
+export async function callCheckAndScoreBook(
+  lobbyId: string,
+  playerId: 1 | 2,
+  targetRank: number,
+): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+
+  await withSecrets(lobbyId, playerId, async (gameId) => {
+    await callDelegated(provider, "checkAndScoreBook", () =>
+      contract.callTx.checkAndScoreBook(gameId, BigInt(playerId), BigInt(targetRank)),
+      { lobbyId, playerId },
+    );
+  });
 }
 
 export async function callClaimTimeoutWin(lobbyId: string, playerId: 1 | 2): Promise<void> {

@@ -776,28 +776,31 @@ export class GameScene {
     this.drawInProgress = true;
     this.app.setDeckGlowing(false);
     try {
-      this.hud.showNotification('Drawing...', 'Go Fish! Drawing from deck...', 5000);
+      this.hud.showNotification('Drawing...', 'Go Fish! Resolving draw...', 5000);
       soundManager.playGoFish();
 
-      // Capture state before the draw so we can detect the new card afterward.
-      // Also capture the asked rank — needed to determine drewRequestedCard once
-      // the chain confirms.
-      const handBefore = this.adapter?.currentState?.myHand ?? [];
-      const lastAskedRank = this.adapter?.currentState?.lastAskedRank ?? null;
+      // respondToAsk already drew the card from the deck and set phase to
+      // WaitForDrawCheck. We just need to call afterGoFish — the contract
+      // decrypts the drawn card internally and determines whether it
+      // matches the asked rank (game.compact:451-510). No goFish() circuit
+      // exists; the draw is handled inside respondToAsk.
 
-      const result = await MidnightService.goFish(this.lobbyId, this.playerId as 1 | 2);
+      const handBefore = this.adapter?.currentState?.myHand ?? [];
+
+      const result = await MidnightService.afterGoFish(
+        this.lobbyId,
+        this.playerId as 1 | 2,
+      );
       if (!result.success) {
-        this.hud.showNotification('Error', result.errorMessage ?? 'Go Fish failed', 5000);
+        this.hud.showNotification('Error', result.errorMessage ?? 'afterGoFish failed', 5000);
         return;
       }
 
-      // Wait for the chain to advance to wait_draw_check, which confirms the
-      // goFish circuit has been executed and the drawn card is now on-chain.
-      // Only then is the player's updated hand available via the batcher query.
+      // Wait for the chain to advance out of WaitForDrawCheck.
       this.hud.showNotification('Drawing...', 'Waiting for chain confirmation...', 30000);
       const stateAfterDraw = await this.adapter?.pollUntilPhase(
-        'wait_draw',
-        ['wait_draw_check'],
+        'wait_draw_check',
+        ['turn_start'],
       );
 
       const handAfter = stateAfterDraw?.myHand ?? this.adapter?.currentState?.myHand ?? [];
@@ -807,24 +810,7 @@ export class GameScene {
         c => !handBefore.some(b => b.rank === c.rank && b.suit === c.suit),
       );
 
-      // Determine whether the drawn card matches the rank that was asked for.
-      // lastAskedRank is the numeric rank index from on-chain state (0–6).
-      // Card.rank is a string like 'A','2','3',...,'7'; RANK_NAMES maps index→string.
-      let drewRequestedCard = false;
-      if (newCard && lastAskedRank !== null) {
-        const askedRankName = RANK_NAMES[lastAskedRank];
-        drewRequestedCard = newCard.rank === askedRankName;
-        console.log(`[GameScene] goFish: drew ${newCard.rank}, asked for ${askedRankName} → drewRequestedCard=${drewRequestedCard}`);
-      }
-
-      await MidnightService.afterGoFish(
-        this.lobbyId,
-        this.playerId as 1 | 2,
-        drewRequestedCard,
-      );
-
       if (newCard) {
-        const turnMsg = drewRequestedCard ? ' — another turn!' : '';
         this.hud.showNotification('Drew Card', `${newCard.rank} of ${newCard.suit}${turnMsg}`, 5000);
 
         // Animate the drawn card from deck to hand

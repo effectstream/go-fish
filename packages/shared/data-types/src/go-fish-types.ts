@@ -107,7 +107,6 @@ export interface GoFishGameState {
   phase: GamePhase;
   round: number;
   players: GoFishPlayer[];
-  maxPlayers: number;
   hostId: string;
   currentTurnIndex: number;
   deck: Card[];

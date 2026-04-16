@@ -880,9 +880,15 @@ export class GameScreen {
 
   private _renderActionPanel(game: GoFishGameState, currentPlayer: GoFishPlayer): string {
     if (!currentPlayer || currentPlayer.hand.length === 0) {
+      // Empty-hand asks are legal (contract rule-5 relaxation). The asker
+      // can request any rank; respondToAsk handles transfer/draw/switchTurn.
       return `
         <div class="ask-action-panel">
-          <p class="info-text">You have no cards. Drawing will happen automatically...</p>
+          <h3>Ask for a Card</h3>
+          <p class="info-text">You have no cards — ask your opponent for any rank.</p>
+          <button id="empty-hand-ask-btn" class="btn btn-primary">
+            Ask for a card
+          </button>
         </div>
       `;
     }
@@ -1158,12 +1164,68 @@ export class GameScreen {
     `;
   }
 
+  /**
+   * After any hand-changing action, check if the player has 3 of a rank
+   * and submit checkAndScoreBook for each. The contract removes the 3
+   * cards and increments the score. At ≥4 books, it sets GameOver.
+   *
+   * Mirrors _helpers.ts:autoScoreBooks from the e2e reference.
+   */
+  private async autoScoreBooks(): Promise<void> {
+    if (!this.gameState) return;
+    const playerId = this.gameState.playerId as 1 | 2;
+
+    try {
+      const hand = await MidnightService.getPlayerHand(this.lobbyId, playerId);
+      if (!hand || hand.length < 3) return;
+
+      // Group cards by rank and find any with 3 (a complete book)
+      const rankCounts = new Map<number, number>();
+      for (const card of hand) {
+        rankCounts.set(card.rank, (rankCounts.get(card.rank) ?? 0) + 1);
+      }
+
+      const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7'];
+      for (const [rank, count] of rankCounts) {
+        if (count >= 3) {
+          console.log(`[GameScreen] autoScoreBooks: P${playerId} has ${count} of ${RANK_NAMES[rank]} — scoring book`);
+          try {
+            const result = await MidnightService.checkAndScoreBook(this.lobbyId, playerId, rank);
+            if (result.success) {
+              this.showNotification({
+                type: 'book',
+                rank: RANK_NAMES[rank] as any,
+              });
+              console.log(`[GameScreen] ★ Book of ${RANK_NAMES[rank]} scored!`);
+            } else {
+              console.warn(`[GameScreen] checkAndScoreBook(${RANK_NAMES[rank]}) failed: ${result.errorMessage}`);
+            }
+          } catch (err) {
+            // BACKEND_ISSUES #1: local hand read may disagree with the
+            // contract's internal rank counting. Log and continue — the
+            // on-chain state is authoritative.
+            console.warn(`[GameScreen] checkAndScoreBook(${RANK_NAMES[rank]}) threw:`, err);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[GameScreen] autoScoreBooks hand read failed:', err);
+    }
+  }
+
   private renderGameOverPanel(): string {
     if (!this.gameState) return '';
 
     const myScore = this.gameState.scores[this.gameState.playerId - 1];
     const opponentScore = this.gameState.scores[this.gameState.playerId === 1 ? 1 : 0];
-    const isWinner = myScore > opponentScore;
+    // Early-win: the contract sets GameOver when a player reaches ≥4 books.
+    // Winner is the player with ≥4 (ties are unreachable via the early-win
+    // path). The on-chain `getWinner(gameId)` circuit returns 1 or 2; here
+    // we derive the same from scores since the backend doesn't yet expose
+    // the getWinner field in its /game_state response.
+    // TODO: read getWinner from the contract via the indexer once the
+    // frontend has direct indexer access (Phase 7 / E1 in FRONTEND_UPDATE.md).
+    const isWinner = myScore >= 4;
     const isTie = myScore === opponentScore;
 
     return `
@@ -1172,6 +1234,7 @@ export class GameScreen {
         <div class="final-scores">
           <p>Your Books: ${myScore}</p>
           <p>Opponent's Books: ${opponentScore}</p>
+          <p class="total-books">Total: ${myScore + opponentScore}/7 books</p>
         </div>
         <button id="back-to-lobby-btn" class="btn btn-primary">
           Back to Lobby List
@@ -1508,107 +1571,70 @@ export class GameScreen {
    * Uses onclick assignment (not addEventListener) to prevent stacking multiple handlers
    */
   private attachInlineActionListeners() {
-    // Go Fish action - draw from deck and complete turn
+    // Go Fish action — respondToAsk already drew a card from the deck and
+    // set phase=WaitForDrawCheck. The user just needs to call afterGoFish
+    // to resolve the draw (the contract decrypts the card internally and
+    // decides whether the asker drew the requested rank).
+    // No separate goFish() circuit exists — it was merged into respondToAsk.
     const goFishBtn = document.getElementById('go-fish-btn') as HTMLButtonElement | null;
     if (goFishBtn) {
       goFishBtn.onclick = async () => {
         const btn = goFishBtn;
         btn.disabled = true;
-        btn.textContent = 'Drawing...';
+        btn.textContent = 'Resolving draw...';
 
         if (this.gameState) {
           try {
-            // Step 1: Get hand before drawing to compare later
-            const handBefore = await MidnightService.getPlayerHand(
-              this.lobbyId,
-              this.gameState.playerId as 1 | 2
-            );
-            console.log('[GameScreen] Hand before Go Fish:', handBefore);
-
-            // Step 2: Draw card from deck
-            const goFishResult = await MidnightService.goFish(
-              this.lobbyId,
-              this.gameState.playerId as 1 | 2
-            );
-
-            if (!goFishResult.success) {
-              alert(`Failed to draw card: ${goFishResult.errorMessage}`);
-              btn.disabled = false;
-              btn.textContent = '🎣 Draw from Deck';
-              return;
-            }
-
-            console.log('[GameScreen] Go Fish draw succeeded');
-
-            // Step 3: Get hand after drawing to find the new card
-            const handAfter = await MidnightService.getPlayerHand(
-              this.lobbyId,
-              this.gameState.playerId as 1 | 2
-            );
-            console.log('[GameScreen] Hand after Go Fish:', handAfter);
-
-            // Step 4: Find the new card by comparing hands
-            let drewRequestedCard = false;
-            let drawnCard: { rank: number; suit: number } | null = null;
-
-            for (const cardAfter of handAfter) {
-              const existsInBefore = handBefore.some(
-                (cardBefore: {rank: number; suit: number}) =>
-                  cardBefore.rank === cardAfter.rank && cardBefore.suit === cardAfter.suit
-              );
-              if (!existsInBefore) {
-                drawnCard = cardAfter;
-                console.log(`[GameScreen] Drew card: rank=${cardAfter.rank}, suit=${cardAfter.suit}`);
-
-                // Check if it matches the asked rank
-                if (this.selectedRank !== null) {
-                  // Simplified deck: 7 ranks (A=0 through 7=6)
-                  const rankMap: Record<string, number> = {
-                    'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6
-                  };
-                  const askedRankNum = rankMap[this.selectedRank] ?? -1;
-                  if (cardAfter.rank === askedRankNum) {
-                    drewRequestedCard = true;
-                    console.log('[GameScreen] Drew the requested card! Player gets another turn.');
-                  }
-                }
-                break;
-              }
-            }
-
-            // Show notification for the drawn card
-            if (drawnCard) {
-              const rankNames: Rank[] = ['A', '2', '3', '4', '5', '6', '7']; // Simplified deck: 7 ranks
-              const suitNames: Suit[] = ['hearts', 'diamonds', 'clubs']; // Simplified deck: 3 suits
-              this.showNotification({
-                type: 'draw',
-                card: {
-                  rank: rankNames[drawnCard.rank],
-                  suit: suitNames[drawnCard.suit]
-                }
-              });
-            }
-
-            // Step 5: Call afterGoFish to complete the turn
-            console.log(`[GameScreen] Calling afterGoFish with drewRequestedCard=${drewRequestedCard}`);
-            const afterGoFishResult = await MidnightService.afterGoFish(
+            console.log('[GameScreen] Calling afterGoFish (contract decrypts drawn card internally)');
+            const result = await MidnightService.afterGoFish(
               this.lobbyId,
               this.gameState.playerId as 1 | 2,
-              drewRequestedCard
             );
 
-            if (afterGoFishResult.success) {
+            if (result.success) {
               console.log('[GameScreen] afterGoFish succeeded, turn complete');
               this.selectedRank = null;
+              // Auto-score any books that formed from the drawn card
+              await this.autoScoreBooks();
             } else {
-              console.error('[GameScreen] afterGoFish failed:', afterGoFishResult.errorMessage);
-              alert(`Failed to complete turn: ${afterGoFishResult.errorMessage}`);
+              console.error('[GameScreen] afterGoFish failed:', result.errorMessage);
+              alert(`Failed to complete turn: ${result.errorMessage}`);
             }
           } catch (error) {
-            console.error('[GameScreen] Go Fish failed:', error);
-            alert('Failed to draw card. Please try again.');
+            console.error('[GameScreen] afterGoFish failed:', error);
+            alert('Failed to resolve draw. Please try again.');
+          } finally {
             btn.disabled = false;
-            btn.textContent = '🎣 Draw from Deck';
+            btn.textContent = '🎣 Resolve Draw';
+          }
+        }
+      };
+    }
+
+    // Empty-hand ask — auto-asks for rank 0 (any rank legal per contract rule-5)
+    const emptyHandAskBtn = document.getElementById('empty-hand-ask-btn') as HTMLButtonElement | null;
+    if (emptyHandAskBtn) {
+      emptyHandAskBtn.onclick = async () => {
+        emptyHandAskBtn.disabled = true;
+        emptyHandAskBtn.textContent = 'Asking...';
+
+        if (this.gameState) {
+          try {
+            console.log('[GameScreen] Empty-hand ask — requesting rank 0 (any rank valid)');
+            const result = await MidnightService.askForCard(
+              this.lobbyId,
+              this.gameState.playerId as 1 | 2,
+              0,
+            );
+            if (!result.success) {
+              alert(`Ask failed: ${result.errorMessage}`);
+            }
+          } catch (error) {
+            console.error('[GameScreen] Empty-hand ask failed:', error);
+            alert('Failed to ask. Please try again.');
+          } finally {
+            emptyHandAskBtn.disabled = false;
+            emptyHandAskBtn.textContent = 'Ask for a card';
           }
         }
       };
@@ -1675,6 +1701,11 @@ export class GameScreen {
                   });
                 }
               }
+              // Auto-score any books in the asker's hand (the asker
+              // just received cards from us — they may now have a book).
+              // We run this for ourselves too (defensive — our hand
+              // might contain a book from earlier Go Fish draws).
+              await this.autoScoreBooks();
               // State will update on next poll
             } else {
               alert(`Failed to respond: ${result.errorMessage}`);

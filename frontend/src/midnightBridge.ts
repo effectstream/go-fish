@@ -371,74 +371,35 @@ export async function respondToAsk(
   }
 }
 
-/**
- * Draw a card from the deck
- */
-export async function goFish(
-  lobbyId: string,
-  playerId: 1 | 2
-): Promise<{ success: boolean; card?: { x: bigint; y: bigint }; errorMessage?: string }> {
-  try {
-    if (!isMidnightConnected() || !contract || !circuitContext) {
-      return { success: false, errorMessage: 'Midnight contract not initialized' };
-    }
-
-    // Set game context for witness functions
-    setGameContext(lobbyId, playerId);
-
-    const gameId = lobbyIdToGameId(lobbyId);
-
-    console.log(`[MidnightBridge] goFish(gameId: ${lobbyId}, playerId: ${playerId})`);
-
-    // Call contract circuit - returns CurvePoint (semi-masked card)
-    const result = contract.provableCircuits.goFish(
-      circuitContext,
-      gameId,
-      BigInt(playerId)
-    );
-
-    // Update circuit context with result
-    circuitContext = result.context;
-
-    const card = result.result;
-
-    console.log(`[MidnightBridge] goFish succeeded: drew card`);
-    return { success: true, card };
-  } catch (error) {
-    console.error('[MidnightBridge] goFish failed:', error);
-    return {
-      success: false,
-      errorMessage: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
+// goFish() deleted — no goFish circuit exists in the compiled contract.
+// respondToAsk handles the draw internally; the turn flow is:
+// askForCard → respondToAsk → (if WaitForDrawCheck) afterGoFish.
 
 /**
- * Complete the go fish action (check if drew requested card)
+ * Complete the go fish action — contract v3 decrypts the drawn card
+ * internally and determines drewRequestedCard (game.compact:451-510).
  */
 export async function afterGoFish(
   lobbyId: string,
   playerId: 1 | 2,
-  drewRequestedCard: boolean
 ): Promise<{ success: boolean; errorMessage?: string }> {
   try {
     if (!isMidnightConnected() || !contract || !circuitContext) {
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
 
-    // Set game context for witness functions
     setGameContext(lobbyId, playerId);
 
     const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
 
-    console.log(`[MidnightBridge] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drew: ${drewRequestedCard})`);
+    console.log(`[MidnightBridge] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId})`);
 
-    // Call contract circuit
     const result = contract.provableCircuits.afterGoFish(
       circuitContext,
       gameId,
       BigInt(playerId),
-      drewRequestedCard
+      now
     );
 
     // Update circuit context with result

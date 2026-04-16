@@ -1021,53 +1021,22 @@ export async function onChainRespondToAsk(
   }
 }
 
-/**
- * Go Fish action - draw from deck
- */
-export async function onChainGoFish(
-  lobbyId: string,
-  playerId: 1 | 2
-): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use GoFishContractService (WASM proving in browser)
-  if (batcherModeActive) {
-    console.log("[MidnightOnChain] Using GoFishContractService for goFish (WASM proving)...");
-    try {
-      await GoFishContractService.callGoFish(lobbyId, playerId);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, errorMessage: err?.message || String(err) };
-    }
-  }
-
-  if (!isOnChainReady()) {
-    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
-  }
-
-  try {
-    const callTx = getCallTx();
-    const gameId = lobbyIdToGameId(lobbyId);
-    const now = BigInt(Math.floor(Date.now() / 1000));
-    await callTx.goFish(gameId, BigInt(playerId), now);
-    return { success: true };
-  } catch (error) {
-    console.error("[MidnightOnChain] goFish failed:", error);
-    return { success: false, errorMessage: String(error) };
-  }
-}
+// goFish circuit was removed — respondToAsk handles the draw internally.
+// The turn flow is: askForCard → respondToAsk → (if WaitForDrawCheck) afterGoFish.
 
 /**
- * After Go Fish action - complete the turn
+ * After Go Fish action — complete the turn. Contract v3 takes 3 args
+ * (gameId, playerId, now); it decrypts the drawn card internally to
+ * determine drewRequestedCard (game.compact:451-510).
  */
 export async function onChainAfterGoFish(
   lobbyId: string,
   playerId: 1 | 2,
-  drewRequestedCard: boolean
 ): Promise<{ success: boolean; errorMessage?: string }> {
-  // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using GoFishContractService for afterGoFish (WASM proving)...");
     try {
-      await GoFishContractService.callAfterGoFish(lobbyId, playerId, drewRequestedCard);
+      await GoFishContractService.callAfterGoFish(lobbyId, playerId);
       return { success: true };
     } catch (err: any) {
       return { success: false, errorMessage: err?.message || String(err) };
@@ -1082,7 +1051,7 @@ export async function onChainAfterGoFish(
     const callTx = getCallTx();
     const gameId = lobbyIdToGameId(lobbyId);
     const now = BigInt(Math.floor(Date.now() / 1000));
-    await callTx.afterGoFish(gameId, BigInt(playerId), drewRequestedCard, now);
+    await callTx.afterGoFish(gameId, BigInt(playerId), now);
     return { success: true };
   } catch (error) {
     console.error("[MidnightOnChain] afterGoFish failed:", error);
@@ -1121,6 +1090,42 @@ export async function onChainSkipDrawDeckEmpty(
   } catch (error) {
     console.error("[MidnightOnChain] skipDrawDeckEmpty failed:", error);
     return { success: false, errorMessage: String(error) };
+  }
+}
+
+/**
+ * Score a book (3 cards of the same rank). Called after any hand-changing
+ * action when the player holds ≥3 of a rank. The contract removes the 3
+ * cards and increments the player's score. If score reaches ≥4, the
+ * contract sets phase=GameOver and writes the winner.
+ */
+export async function onChainCheckAndScoreBook(
+  lobbyId: string,
+  playerId: 1 | 2,
+  targetRank: number,
+): Promise<{ success: boolean; scored: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log(`[MidnightOnChain] checkAndScoreBook(P${playerId}, rank=${targetRank}) via WASM...`);
+    try {
+      await GoFishContractService.callCheckAndScoreBook(lobbyId, playerId, targetRank);
+      return { success: true, scored: true };
+    } catch (err: any) {
+      return { success: false, scored: false, errorMessage: err?.message || String(err) };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, scored: false, errorMessage: "On-chain mode not active" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    await callTx.checkAndScoreBook(gameId, BigInt(playerId), BigInt(targetRank));
+    return { success: true, scored: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] checkAndScoreBook failed:", error);
+    return { success: false, scored: false, errorMessage: String(error) };
   }
 }
 
@@ -1197,8 +1202,8 @@ export const MidnightOnChainService = {
   dealCards: onChainDealCards,
   askForCard: onChainAskForCard,
   respondToAsk: onChainRespondToAsk,
-  goFish: onChainGoFish,
   afterGoFish: onChainAfterGoFish,
+  checkAndScoreBook: onChainCheckAndScoreBook,
   skipDrawDeckEmpty: onChainSkipDrawDeckEmpty,
   claimTimeoutWin: onChainClaimTimeoutWin,
 };

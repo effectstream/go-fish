@@ -2,16 +2,12 @@ import { type WitnessContext } from "@midnight-ntwrk/compact-runtime";
 export type Ledger = {};
 export type PrivateState = {};
 
-/**
- * Default keys for testing/development
- * In production, these should be provided by the client via setPlayerSecrets()
- */
-export const keys = {
-  player1: BigInt(Math.floor(Math.random() * 1000000)),
-  player2: BigInt(Math.floor(Math.random() * 1000000)),
-  shuffleSeed1: new Uint8Array(32).fill(Math.floor(Math.random() * 256)),
-  shuffleSeed2: new Uint8Array(32).fill(Math.floor(Math.random() * 256)),
-};
+// Static fallback keys removed — they were 20-bit `Math.random()` values
+// that silently produced wrong ec_mul results when the witness was consulted
+// without `setPlayerSecrets` being called first. The witness now throws
+// immediately on a miss so bugs surface at the exact circuit that depends
+// on the secret, not downstream in a card-ownership mismatch.
+// See BACKEND_ISSUES.md #1 and e2e/smoke/test-witnesses.ts for context.
 
 /**
  * Dynamic per-game secrets storage
@@ -102,10 +98,19 @@ export function clearPlayerSecrets(gameIdHex: string, playerId: 1 | 2): void {
 }
 
 /**
- * Get secret key - checks dynamic secrets first, falls back to static keys
+ * Get secret key from dynamic secrets. Throws on miss — there is no
+ * silent fallback to static keys. The old fallback used
+ * `Math.random() * 1000000` (a 20-bit integer, far below the 254-bit
+ * Jubjub field order), which silently produced wrong masked card values
+ * downstream. Failing loud is always better than silent corruption.
+ *
+ * Callers must ensure `setPlayerSecrets` has been called for the
+ * (gameIdHex, playerIndex) pair BEFORE any circuit that consults this
+ * witness. The batcher does this in its adapter; the frontend does it
+ * via `GoFishContractService.withSecrets`; the e2e test uses its own
+ * `WitnessState` and never touches this module.
  */
 const getSecretKey = (gameIdHex: string | null, index: number) => {
-  // Check dynamic secrets first
   if (gameIdHex) {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
@@ -114,45 +119,37 @@ const getSecretKey = (gameIdHex: string | null, index: number) => {
       console.log(`[Witnesses] player_secret_key: HIT player=${index} refCount=${refCount} secret=${dynamic.secret}`);
       return dynamic.secret;
     }
-    // Log all currently-set keys to help diagnose key mismatch
     const allKeys = [...dynamicSecrets.keys()].join(", ") || "(empty)";
-    console.warn(`[Witnesses] player_secret_key: MISS for key="${key}" — current keys: ${allKeys}`);
+    throw new Error(
+      `[Witnesses] player_secret_key: MISSING secret for player=${index} ` +
+      `in game=${gameIdHex.slice(0, 20)}… — call setPlayerSecrets() first. ` +
+      `Current keys: ${allKeys}`
+    );
   }
-
-  // Fall back to static keys — this means the batcher did NOT receive a dynamic secret
-  // for this player. This is a bug if it happens during applyMask or dealCards.
-  switch (index) {
-    case 1:
-      console.warn(`[Witnesses] FALLBACK to static key for player 1 (game ${gameIdHex}) — secret=${keys.player1}`);
-      return keys.player1;
-    case 2:
-      console.warn(`[Witnesses] FALLBACK to static key for player 2 (game ${gameIdHex}) — secret=${keys.player2}`);
-      return keys.player2;
-  }
-  throw new Error("Invalid player index");
+  throw new Error(
+    `[Witnesses] player_secret_key: called with null gameIdHex for player=${index}`
+  );
 };
 
 /**
- * Get shuffle seed - checks dynamic secrets first, falls back to static seeds
+ * Get shuffle seed from dynamic secrets. Same strict-fail policy as
+ * getSecretKey — no fallback to static seeds.
  */
 const getShuffleSeed = (gameIdHex: string | null, index: number) => {
-  // Check dynamic secrets first
   if (gameIdHex) {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
     if (dynamic) {
       return dynamic.shuffleSeed;
     }
+    throw new Error(
+      `[Witnesses] shuffle_seed: MISSING seed for player=${index} ` +
+      `in game=${gameIdHex.slice(0, 20)}… — call setPlayerSecrets() first.`
+    );
   }
-
-  // Fall back to static seeds
-  switch (index) {
-    case 1:
-      return keys.shuffleSeed1;
-    case 2:
-      return keys.shuffleSeed2;
-  }
-  throw new Error("Invalid shuffle seed index");
+  throw new Error(
+    `[Witnesses] shuffle_seed: called with null gameIdHex for player=${index}`
+  );
 };
 
 /**

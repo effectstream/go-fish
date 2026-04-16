@@ -99,7 +99,6 @@ export class GoFishGameService {
       phase: 'lobby',
       round: 0,
       players: [],
-      maxPlayers: 2,
       hostId: this.playerId,
       currentTurnIndex: 0,
       deck: [],
