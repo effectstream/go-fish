@@ -10,8 +10,13 @@
  *        createdLobby → joinedLobby (auto-starts the game)
  *   2. Midnight setup (batcher /send-input → midnight_balancing target):
  *        applyMask ×2 → dealCards ×2  (init_deck only on first deploy)
+ *        → scoreInitialBooks ×2  (Contract V3 post-deal scan, mandatory
+ *                                 gate before the first askForCard)
  *   3. Turn loop until phase == GameOver, scores sum == 7, or MAX_TURNS:
- *        askForCard → respondToAsk → (afterGoFish if Go Fish) → autoScoreBooks
+ *        askForCard → respondToAsk → (afterGoFish if Go Fish)
+ *      Book scoring is handled inside the contract — `respondToAsk`
+ *      auto-scores on a successful transfer and `afterGoFish` auto-scores
+ *      on the drawn card's rank. No more client-driven `checkAndScoreBook`.
  *
  * All the mechanics live in `smoke/_helpers.ts`, which doubles as the
  * reference module the frontend will port from. This file is just the
@@ -30,6 +35,7 @@ import {
   clearAllSecrets,
   createSmokeSession,
   EVM_RPC_URL,
+  formatBookedRanks,
   HARDHAT_KEYS,
   lobbyIdToGameId,
   PHASE,
@@ -52,7 +58,10 @@ Deno.test({
     const lobbyId = await runLobbyFlow(p1Wallet, p2Wallet, `E2E-${Date.now()}`);
     const gameId = lobbyIdToGameId(lobbyId);
 
-    // 2. Midnight session + per-game setup (applyMask ×2, dealCards ×2).
+    // 2. Midnight session + per-game setup (applyMask ×2, dealCards ×2,
+    //    scoreInitialBooks ×2). `runFullSetup` runs the V3 post-deal scan
+    //    at the end; the first `askForCard` inside `runFullGame` would
+    //    otherwise revert ("Player N must score initial books first").
     const session = await createSmokeSession(`e2e-${lobbyId}`);
     const setup = await runFullSetup(session, { gameId });
 
@@ -71,7 +80,8 @@ Deno.test({
       console.log(`  finalScores:     P1=${result.finalScores[0]} P2=${result.finalScores[1]}`);
       console.log(`  finalHandSizes:  P1=${result.finalHandSizes[0]} P2=${result.finalHandSizes[1]}`);
       console.log(`  totalBooks:      ${result.totalBooksScored}/7`);
-      console.log(`  divergences:     ${result.divergenceCount}`);
+      console.log(`  booksP1:         ${formatBookedRanks(result.finalBookedRanks[0])}`);
+      console.log(`  booksP2:         ${formatBookedRanks(result.finalBookedRanks[1])}`);
       console.log(`  finalPhase:      ${result.finalPhase} (GameOver=${PHASE.GameOver})`);
       console.log(`  winner:          ${result.winner ?? "(not set)"}`);
 

@@ -34,6 +34,11 @@ const ZK_CONFIG_PATH = resolve(
 // Note: no separate `goFish` circuit exists — respondToAsk handles the draw
 // automatically and transitions phase to WaitForDrawCheck, which afterGoFish
 // then resolves. afterGoFish(gameId, playerId, now) — contract v3 signature.
+//
+// Contract V3: `checkAndScoreBook` was removed — book scoring happens inline
+// inside respondToAsk / afterGoFish, plus the one-shot post-deal scan via
+// `scoreInitialBooks`. Book state is read via `getBookedRanks` /
+// `hasInitialBooksScored`.
 const CIRCUITS = [
   "init_deck",
   "applyMask",
@@ -41,7 +46,10 @@ const CIRCUITS = [
   "askForCard",
   "respondToAsk",
   "afterGoFish",
-  "checkAndScoreBook",
+  "scoreInitialBooks",
+  "getBookedRanks",
+  "hasInitialBooksScored",
+  "discoverHand",
   "doesPlayerHaveSpecificCard",  // used for local hand reads via provableCircuits
 ] as const;
 

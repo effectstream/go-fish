@@ -613,8 +613,12 @@ export async function createSmokeSession(
  * it as VM ops on the indexer's `ContractState` is how the frontend's
  * `GoFishContractService.queryIsStaticDeckInitialized` does it.
  *
- * Path [1n, 0n] is the compiled accessor path for
- * `Deck::staticDeckInitialized` in the current contract build.
+ * Path is the compiled accessor for `Deck::staticDeckInitialized` in the
+ * current contract build. Contract V3 restructured the ledger layout (added
+ * booksP1/P2 + initialBooksScoredP1/P2), shifting slot indices — the
+ * compiled `_init_static_deck_0` now reads at `[0n, 2n]` (see
+ * managed/contract/index.js:2523 `queryLedgerState` ops). Keep this path in
+ * sync with that function after every `deno task compact`.
  */
 async function queryStaticDeckInitialized(
   publicDataProvider: any,
@@ -624,8 +628,8 @@ async function queryStaticDeckInitialized(
   if (!contractState) return false;
 
   const keyType = new CompactTypeUnsignedInteger(255n, 1);
-  const key1 = { value: keyType.toValue(1n), alignment: keyType.alignment() };
-  const key0 = { value: keyType.toValue(0n), alignment: keyType.alignment() };
+  const keyOuter = { value: keyType.toValue(0n), alignment: keyType.alignment() };
+  const keyInner = { value: keyType.toValue(2n), alignment: keyType.alignment() };
 
   try {
     const results = contractState.query(
@@ -636,8 +640,8 @@ async function queryStaticDeckInitialized(
             cached: false,
             pushPath: false,
             path: [
-              { tag: "value" as const, value: key1 },
-              { tag: "value" as const, value: key0 },
+              { tag: "value" as const, value: keyOuter },
+              { tag: "value" as const, value: keyInner },
             ],
           },
         },
@@ -795,6 +799,11 @@ export async function runFullSetup(
     v => !isMissing(v) && Number(v) === PHASE.TurnStart,
   );
 
+  // Contract V3: both players must submit their post-deal initial-book
+  // scan before any askForCard will be accepted. Fold it into setup so
+  // existing callers (one-turn, game-round, future smokes) need no changes.
+  await runInitialBookScoring(session, gameId);
+
   return { gameId, gameIdHex, p1Secret, p2Secret, p1Seed, p2Seed };
 }
 
@@ -840,7 +849,151 @@ export function handRanks(cards: number[]): number[] {
 }
 
 // ---------------------------------------------------------------------------
-// Turn loop primitives — playOneTurn, autoScoreBooks, runFullGame
+// Initial book scoring — mandatory post-deal scan (Contract V3)
+// ---------------------------------------------------------------------------
+
+/** Sentinel passed when a player's 4-card deal has no 3-of-a-rank book. */
+export const NO_INITIAL_BOOK: [bigint, bigint, bigint] = [255n, 255n, 255n];
+
+/**
+ * From a 4-card initial hand (indices 0..20), detect the 3 cards forming a
+ * book and return their indices as bigints; return `NO_INITIAL_BOOK`
+ * (`[255,255,255]`) when no three share a rank.
+ *
+ * Returns the lowest-indexed book when multiple exist. A 4-card hand can
+ * at most contain one book (needs 3 of one rank; the 4th card takes the
+ * remaining slot), so that tie-break is essentially defensive.
+ */
+export function computeInitialBookIndices(
+  hand: number[],
+): [bigint, bigint, bigint] {
+  const byRank = new Map<number, number[]>();
+  for (const idx of hand) {
+    const rank = idx % 7;
+    const bucket = byRank.get(rank) ?? [];
+    bucket.push(idx);
+    byRank.set(rank, bucket);
+  }
+  for (const [, indices] of [...byRank.entries()].sort((a, b) => a[0] - b[0])) {
+    if (indices.length >= 3) {
+      const sorted = [...indices].sort((a, b) => a - b);
+      return [BigInt(sorted[0]!), BigInt(sorted[1]!), BigInt(sorted[2]!)];
+    }
+  }
+  return NO_INITIAL_BOOK;
+}
+
+/**
+ * Submit one player's `scoreInitialBooks` tx and wait until the contract's
+ * `hasInitialBooksScored(playerId)` flag flips to true. Called once per
+ * player after dealing; required before any `askForCard`.
+ *
+ * Reference behavior the frontend ports from:
+ *   1. Read the post-deal hand (here via `readHand`; frontend uses the
+ *      cheaper `discoverHand` batch circuit).
+ *   2. Compute `bookIndices` off-chain — three card indices if 3 of the 4
+ *      cards share a rank, else `[255, 255, 255]`.
+ *   3. Submit `scoreInitialBooks(gameId, playerId, bookIndices, now)`.
+ *   4. Poll `hasInitialBooksScored` for settle.
+ *
+ * Parallel-safe across players (the contract's per-player ledger slots
+ * don't conflict), but we run sequentially for reproducible logs.
+ */
+export async function scoreInitialBooksForPlayer(
+  session: SmokeSession,
+  gameId: Uint8Array,
+  playerId: 1 | 2,
+): Promise<{ playerId: 1 | 2; bookIndices: [bigint, bigint, bigint]; bookedRank: number | null }> {
+  const { contract, walletProvider, read } = session;
+
+  const hand = await readHand(session, gameId, playerId);
+  const bookIndices = computeInitialBookIndices(hand);
+  const bookedRank =
+    bookIndices === NO_INITIAL_BOOK ? null : Number(bookIndices[0]) % 7;
+
+  if (bookedRank === null) {
+    console.log(
+      `  P${playerId} initial hand [${hand.map(cardName).join(" ")}] — no book, submitting sentinel`,
+    );
+  } else {
+    console.log(
+      `  P${playerId} initial hand [${hand.map(cardName).join(" ")}] — book of ${RANKS[bookedRank]} at [${bookIndices.map(String).join(",")}]`,
+    );
+  }
+
+  await callDelegated(
+    walletProvider,
+    `scoreInitialBooks:${playerId}`,
+    () =>
+      contract.callTx.scoreInitialBooks(
+        gameId,
+        BigInt(playerId),
+        bookIndices as unknown as bigint[],
+        nowSeconds(),
+      ),
+    { playerId },
+  );
+  await waitFor(
+    `hasInitialBooksScored(${playerId})`,
+    MIDNIGHT_WAIT_MS,
+    () => read<boolean>("hasInitialBooksScored", gameId, BigInt(playerId)),
+    v => v === true,
+  );
+
+  return { playerId, bookIndices, bookedRank };
+}
+
+/**
+ * Run the mandatory post-deal initial-book scan for both players.
+ *
+ * In Contract V3, `askForCard` asserts both players have called
+ * `scoreInitialBooks`. This helper completes that gate. Called from
+ * `runFullSetup` so any downstream test (one-turn, full game, etc.)
+ * picks it up automatically.
+ */
+export async function runInitialBookScoring(
+  session: SmokeSession,
+  gameId: Uint8Array,
+): Promise<{
+  p1: Awaited<ReturnType<typeof scoreInitialBooksForPlayer>>;
+  p2: Awaited<ReturnType<typeof scoreInitialBooksForPlayer>>;
+}> {
+  console.log("\n── scoreInitialBooks (post-deal scan, both players) ──");
+  const p1 = await scoreInitialBooksForPlayer(session, gameId, 1);
+  const p2 = await scoreInitialBooksForPlayer(session, gameId, 2);
+  return { p1, p2 };
+}
+
+/**
+ * Read a player's booked ranks as a 7-wide boolean vector. `result[r] ===
+ * true` means the player has scored a book for rank `r` (A,2..7). Total
+ * books for a player = number of `true` entries (≤ 4 by game construction).
+ */
+export async function readBookedRanks(
+  session: SmokeSession,
+  gameId: Uint8Array,
+  playerId: 1 | 2,
+): Promise<boolean[]> {
+  const v = await session.read<boolean[]>(
+    "getBookedRanks",
+    gameId,
+    BigInt(playerId),
+  );
+  if (isMissing(v)) return [false, false, false, false, false, false, false];
+  return v;
+}
+
+/** Pretty-print a 7-wide booked-ranks vector: `[A,3,6]` for ranks at true. */
+export function formatBookedRanks(vec: boolean[]): string {
+  const names: string[] = [];
+  for (let r = 0; r < vec.length; r++) {
+    if (vec[r]) names.push(RANKS[r] ?? String(r));
+  }
+  return names.length === 0 ? "(none)" : `[${names.join(",")}]`;
+}
+
+// ---------------------------------------------------------------------------
+// Turn loop primitives — playOneTurn, runFullGame
 // ---------------------------------------------------------------------------
 
 export interface TurnResult {
@@ -867,7 +1020,9 @@ export interface TurnResult {
  * contract (BACKEND_ISSUES #1: divergence between local hand read and the
  * contract's internal rank check).
  *
- * The function does NOT score books — that's `autoScoreBooks`'s job.
+ * Book scoring is handled inside the contract: `respondToAsk` auto-scores
+ * at the asked rank on a successful transfer, and `afterGoFish` auto-scores
+ * at the drawn card's rank. The client no longer drives per-rank book txs.
  */
 export async function playOneTurn(
   session: SmokeSession,
@@ -1011,88 +1166,33 @@ export async function playOneTurn(
   };
 }
 
-/**
- * After a hand-mutating action, look for any rank with ≥3 cards in the
- * given player's hand and submit `checkAndScoreBook` for it. Each attempt
- * is wrapped in try/catch so divergence (BACKEND_ISSUES #1) doesn't halt
- * the loop — failures are logged and recorded.
- *
- * Waits for the player's hand size to shrink by 3 after each successful
- * book scoring (book consumes exactly 3 cards from the hand).
- */
-export async function autoScoreBooks(
-  session: SmokeSession,
-  gameId: Uint8Array,
-  playerId: 1 | 2,
-  turnNumber: number,
-): Promise<{ scored: number[]; failed: number[] }> {
-  const { contract, walletProvider, read } = session;
-
-  const hand = await readHand(session, gameId, playerId);
-  const counts = new Map<number, number>();
-  for (const c of hand) counts.set(c % 7, (counts.get(c % 7) ?? 0) + 1);
-
-  const scored: number[] = [];
-  const failed: number[] = [];
-
-  for (const [rank, count] of counts) {
-    if (count < 3) continue;
-    console.log(`  ★ P${playerId} has ${count} of ${RANKS[rank]} — attempting book scoring`);
-
-    // Read pre-call hand size so we can wait for the −3 shrink
-    const [h1Pre, h2Pre] = (await read<[any, any]>("getHandSizes", gameId)) as [any, any];
-    const sizePre = playerId === 1 ? Number(h1Pre) : Number(h2Pre);
-
-    try {
-      await callDelegated(
-        walletProvider,
-        `checkAndScoreBook:t${turnNumber}:r${rank}`,
-        () => contract.callTx.checkAndScoreBook(gameId, BigInt(playerId), BigInt(rank)),
-        { playerId },
-      );
-      await waitFor(
-        `P${playerId} hand shrinks after book of ${RANKS[rank]}`,
-        MIDNIGHT_WAIT_MS,
-        async () => {
-          const [h1, h2] = (await read<[any, any]>("getHandSizes", gameId)) as [any, any];
-          return playerId === 1 ? Number(h1) : Number(h2);
-        },
-        size => size <= sizePre - 3,
-        2000,
-      );
-      scored.push(rank);
-      console.log(`  ✓ book of ${RANKS[rank]} scored`);
-    } catch (err) {
-      // BACKEND_ISSUES #1: doesPlayerHaveSpecificCard local read may give
-      // false positives that disagree with the contract's internal counting.
-      // Log and continue so the game still completes.
-      console.log(`  [divergence] checkAndScoreBook(P${playerId}, ${RANKS[rank]}) failed: ${(err as Error).message}`);
-      failed.push(rank);
-    }
-  }
-
-  return { scored, failed };
-}
-
 export interface GameResult {
   turnsPlayed: number;
   finalPhase: number;
   finalScores: [number, number];
   finalHandSizes: [number, number];
+  /** Sum of booked ranks across both players (= sum of scores). */
   totalBooksScored: number;
+  /** Per-player booked-ranks bitmask (7-wide) at end of game. */
+  finalBookedRanks: [boolean[], boolean[]];
+  /**
+   * Retained on the result shape for log-line stability. In V3 the client
+   * no longer drives per-rank book txs — `respondToAsk` and `afterGoFish`
+   * handle scoring internally — so there's nothing left to diverge.
+   */
   divergenceCount: number;
   exitReason: string;
   winner: number | null;
 }
 
 /**
- * Run the full game loop: playOneTurn + autoScoreBooks until the game
- * ends or we hit MAX_TURNS. Exit reasons:
- *   - phase == GameOver (the contract auto-ends at 7 books)
- *   - sum of scores == 7 (same condition, defensive)
- *   - playOneTurn returned `ended: true` (empty hand, etc.)
- *   - turn >= maxTurns (safety cap; the user's design says 20 is enough
- *     for a natural game)
+ * Run the full game loop until the game ends or we hit MAX_TURNS. In
+ * Contract V3 book scoring is contract-internal, so the loop is simply:
+ * playOneTurn → check scores / phase. Exit reasons:
+ *   - phase == GameOver (contract ends the game at score ≥ 4 / 7 books total)
+ *   - sum of scores == 7 (defensive — same condition)
+ *   - playOneTurn returned `ended: true` (empty hand, unexpected phase, etc.)
+ *   - turn >= maxTurns (safety cap)
  */
 export async function runFullGame(
   session: SmokeSession,
@@ -1102,7 +1202,6 @@ export async function runFullGame(
   const { read } = session;
   let turn = 0;
   let exitReason = `MAX_TURNS (${maxTurns}) reached`;
-  let divergenceCount = 0;
 
   while (turn < maxTurns) {
     turn++;
@@ -1113,14 +1212,16 @@ export async function runFullGame(
       break;
     }
 
-    // Score any books now in the current player's hand
-    const books = await autoScoreBooks(session, gameId, result.playerId, turn);
-    divergenceCount += books.failed.length;
-
-    // Check end-of-game conditions
+    // End-of-turn telemetry: scores + booked-rank vectors per player.
+    // Contract now books inline inside respondToAsk/afterGoFish, so this
+    // reflects any book just scored by either of those circuits.
     const [s1, s2] = (await read<[any, any]>("getScores", gameId)) as [any, any];
     const sum = Number(s1) + Number(s2);
-    console.log(`  scores=${Number(s1)}-${Number(s2)} (total ${sum}/7)`);
+    const books1 = await readBookedRanks(session, gameId, 1);
+    const books2 = await readBookedRanks(session, gameId, 2);
+    console.log(
+      `  scores=${Number(s1)}-${Number(s2)} (total ${sum}/7) booksP1=${formatBookedRanks(books1)} booksP2=${formatBookedRanks(books2)}`,
+    );
 
     if (sum >= 7) {
       exitReason = `all 7 books scored (final ${Number(s1)}-${Number(s2)})`;
@@ -1138,6 +1239,8 @@ export async function runFullGame(
   const [fs1, fs2] = (await read<[any, any]>("getScores", gameId)) as [any, any];
   const [fh1, fh2] = (await read<[any, any]>("getHandSizes", gameId)) as [any, any];
   const finalPhase = Number(await read<number | bigint>("getGamePhase", gameId));
+  const finalBooks1 = await readBookedRanks(session, gameId, 1);
+  const finalBooks2 = await readBookedRanks(session, gameId, 2);
 
   // Winner is recorded on-chain when GameOver is reached. getWinner returns
   // 0 for tie/unset, 1 for P1, 2 for P2.
@@ -1155,7 +1258,8 @@ export async function runFullGame(
     finalScores: [Number(fs1), Number(fs2)],
     finalHandSizes: [Number(fh1), Number(fh2)],
     totalBooksScored: Number(fs1) + Number(fs2),
-    divergenceCount,
+    finalBookedRanks: [finalBooks1, finalBooks2],
+    divergenceCount: 0,
     exitReason,
     winner,
   };

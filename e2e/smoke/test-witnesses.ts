@@ -266,5 +266,28 @@ export function makeTestWitnesses(state: WitnessState) {
       indexed.sort((a, b) => a.w - b.w);
       return [ctx.privateState, indexed.map(p => ({ x: p.x, y: p.y }))];
     },
+
+    // Contract V3: split a card index (0..20) into [suit, rank] with
+    // suit = cardIndex / 7, rank = cardIndex % 7. The circuit re-verifies
+    // rank < 7 && suit*7 + rank == cardIndex, so a wrong answer here would
+    // fail the reconstruction assert rather than silently corrupt state.
+    // Called from `afterGoFish` (via split_card_index) to learn the drawn
+    // card's rank and auto-score a book on completion.
+    //
+    // Return type: `Uint<8>` values cross the witness boundary as `bigint`
+    // in compact-runtime 0.15.0 — returning plain `number` triggers a
+    // "expected value of type [Uint<0..256>, Uint<0..256>]" type error.
+    wit_split_card_index: (
+      ctx: WitnessContext<any, any>,
+      cardIndex: bigint,
+    ): [any, [bigint, bigint]] => {
+      if (cardIndex < 0n || cardIndex > 20n) {
+        throw new Error(
+          `testWitness: wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`,
+        );
+      }
+      const n = Number(cardIndex);
+      return [ctx.privateState, [BigInt(Math.floor(n / 7)), BigInt(n % 7)]];
+    },
   };
 }

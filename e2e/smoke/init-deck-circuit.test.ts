@@ -103,9 +103,13 @@ async function queryStaticDeckInitialized(
     const contractState = await publicDataProvider.queryContractState(contractAddress);
     if (!contractState) return null;
 
+    // Contract V3: ledger layout restructure moved staticDeckInitialized.
+    // Current compiled path = [0n, 2n] (see managed/contract/index.js
+    // `_init_static_deck_0` queryLedgerState ops at ~line 2524). Keep in
+    // sync with that accessor after every `deno task compact`.
     const keyType = new CompactTypeUnsignedInteger(255n, 1);
-    const key1 = { value: keyType.toValue(1n), alignment: keyType.alignment() };
-    const key0 = { value: keyType.toValue(0n), alignment: keyType.alignment() };
+    const keyOuter = { value: keyType.toValue(0n), alignment: keyType.alignment() };
+    const keyInner = { value: keyType.toValue(2n), alignment: keyType.alignment() };
 
     const results = contractState.query(
       [
@@ -115,8 +119,8 @@ async function queryStaticDeckInitialized(
             cached: false,
             pushPath: false,
             path: [
-              { tag: "value" as const, value: key1 },
-              { tag: "value" as const, value: key0 },
+              { tag: "value" as const, value: keyOuter },
+              { tag: "value" as const, value: keyInner },
             ],
           },
         },
