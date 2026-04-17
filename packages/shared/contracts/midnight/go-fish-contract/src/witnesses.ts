@@ -273,12 +273,37 @@ const printCurvePoint = (
   return [a.privateState, true];
 };
 
+/**
+ * Card-index split witness: given a card index (0..20), returns [suit, rank]
+ * where cardIndex = suit * 7 + rank.
+ * The circuit verifies via `rank < 7 && suit*7 + rank == cardIndex`, so a
+ * malicious witness can't cheat — it would fail the reconstruction check.
+ */
+function splitCardIndexWitness(cardIndex: bigint): [number, number] {
+  if (cardIndex < 0n || cardIndex > 20n) {
+    throw new Error(
+      `[Witnesses] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`
+    );
+  }
+  const n = Number(cardIndex);
+  const suit = Math.floor(n / 7);
+  const rank = n % 7;
+  return [suit, rank];
+}
+
 export const witnesses = {
   print_field: printAny,
   print_bytes_32: printAny,
   print_vector_2_field: printAny,
   print_curve_point: printCurvePoint,
   print_uint_64: printAny,
+
+  wit_split_card_index: (
+    { privateState }: WitnessContext<Ledger, PrivateState>,
+    cardIndex: bigint,
+  ): [PrivateState, [number, number]] => {
+    return [privateState, splitCardIndexWitness(cardIndex)];
+  },
 
   get_sorted_deck_witness: (
     { privateState }: WitnessContext<Ledger, PrivateState>,

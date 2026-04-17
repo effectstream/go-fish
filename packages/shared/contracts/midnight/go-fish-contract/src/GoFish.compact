@@ -19,7 +19,13 @@ export ledger currentTurn: Map<Bytes<32>, Uint<64>>; // 1 or 2
 export ledger phase: Map<Bytes<32>, GamePhase>;
 export ledger scoreP1: Map<Bytes<32>, Uint<8>>;
 export ledger scoreP2: Map<Bytes<32>, Uint<8>>;
-export ledger totalBooks: Map<Bytes<32>, Uint<8>>; // Total books completed
+// Per-player booked ranks. Nested Set<Uint<8>> — rank values 0..6 inserted on book. Game ends at 4 books, so at most 4 entries per set.
+export ledger booksP1: Map<Bytes<32>, Set<Uint<8>>>;
+export ledger booksP2: Map<Bytes<32>, Set<Uint<8>>>;
+// Tracks whether each player has completed their one-time post-deal initial book scan.
+// askForCard asserts both flags are true. Parallel-safe: each player only writes their own.
+export ledger initialBooksScoredP1: Map<Bytes<32>, Boolean>;
+export ledger initialBooksScoredP2: Map<Bytes<32>, Boolean>;
 export ledger cardsDealtP1: Map<Bytes<32>, Uint<64>>; // Track cards dealt during setup
 export ledger cardsDealtP2: Map<Bytes<32>, Uint<64>>;
 export ledger lastAskedRank: Map<Bytes<32>, Uint<32>>; // Track the rank being asked for (for state recovery)
@@ -90,7 +96,10 @@ export circuit init_game(gameId: Bytes<32>): [] {
     phase.insert(gid, GamePhase.Setup);
     scoreP1.insert(gid, 0 as Uint<8>);
     scoreP2.insert(gid, 0 as Uint<8>);
-    totalBooks.insert(gid, 0 as Uint<8>);
+    booksP1.insert(gid, default<Set<Uint<8>>>);
+    booksP2.insert(gid, default<Set<Uint<8>>>);
+    initialBooksScoredP1.insert(gid, false);
+    initialBooksScoredP2.insert(gid, false);
     cardsDealtP1.insert(gid, 0 as Uint<64>);
     cardsDealtP2.insert(gid, 0 as Uint<64>);
     lastAskedRank.insert(gid, 255 as Uint<32>); // 255 = no pending request
@@ -158,8 +167,6 @@ export circuit addScore(gameId: Bytes<32>, playerId: Uint<64>): [] {
     } else if (disclosed_playerId == 2 as Uint<64>) {
         scoreP2.insert(gid, newS2);
     }
-    const books = totalBooks.lookup(gid) as Uint<8>;
-    totalBooks.insert(gid, (books + 1 as Uint<8>) as Uint<8>);
 
     // Early-win at majority threshold (≥ 4 books of 7). Supersedes the
     // old "books + 1 == 7" cap — by pigeonhole, 7 books implies max
@@ -173,6 +180,61 @@ export circuit addScore(gameId: Bytes<32>, playerId: Uint<64>): [] {
         winner.insert(gid, 2 as Uint<64>);
     }
     return [];
+}
+
+// Mark a rank as booked for a player — inserts into the per-player Set.
+// Idempotent (Set.insert on existing element is a no-op).
+export circuit markRankBooked(gameId: Bytes<32>, playerId: Uint<64>, rank: Uint<8>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    const disclosed_rank = disclose(rank);
+    assert(gameExists.member(gid), "Game does not exist");
+    if (disclosed_playerId == 1 as Uint<64>) {
+        booksP1.lookup(gid).insert(disclosed_rank);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        booksP2.lookup(gid).insert(disclosed_rank);
+    }
+    return [];
+}
+
+// Check if a rank has been booked by a player.
+export circuit isRankBooked(gameId: Bytes<32>, playerId: Uint<64>, rank: Uint<8>): Boolean {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    const disclosed_rank = disclose(rank);
+    assert(gameExists.member(gid), "Game does not exist");
+    if (disclosed_playerId == 1 as Uint<64>) {
+        return booksP1.lookup(gid).member(disclosed_rank);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        return booksP2.lookup(gid).member(disclosed_rank);
+    }
+    return false;
+}
+
+// Mark that a player has completed their post-deal initial book scan.
+export circuit markInitialBooksScored(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    if (disclosed_playerId == 1 as Uint<64>) {
+        initialBooksScoredP1.insert(gid, true);
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        initialBooksScoredP2.insert(gid, true);
+    }
+    return [];
+}
+
+// Query whether a player has completed initial book scan.
+export circuit hasInitialBooksScored(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(gameExists.member(gid), "Game does not exist");
+    if (disclosed_playerId == 1 as Uint<64>) {
+        return initialBooksScoredP1.lookup(gid) as Boolean;
+    } else if (disclosed_playerId == 2 as Uint<64>) {
+        return initialBooksScoredP2.lookup(gid) as Boolean;
+    }
+    return false;
 }
 
 // Mark that a card was dealt during setup

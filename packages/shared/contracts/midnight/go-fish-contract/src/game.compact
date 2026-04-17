@@ -18,7 +18,7 @@ pragma language_version >= 0.19.0;
 // EXPORTED (PUBLIC) METHODS:
 //   Setup:     applyMask(gameId, playerId), dealCards(gameId, playerId)
 //   Gameplay:  askForCard, respondToAsk, goFish, afterGoFish, switchTurn
-//   Scoring:   checkAndScoreBook, checkAndEndGame  
+//   Scoring:   scoreInitialBooks (one-shot post-deal), checkAndEndGame (auto in respondToAsk/afterGoFish)
 //   Queries:   getGamePhase, getCurrentTurn, getScores, getHandSizes, etc.
 //
 // ============================================
@@ -29,6 +29,27 @@ import CompactStandardLibrary prefix std_;
 import './Deck' prefix deck_;
 import './Hand' prefix hand_;
 import './GoFish' prefix go_fish_;
+
+// Specialized divisor-by-7 witness for card-index normalization.
+// Card index = rank + suit*7 with rank in [0..6] and suit in [0..2].
+// The witness returns (suit, rank); the circuit verifies rank < 7 and
+// suit*7 + rank == cardIndex. Values outside 0..20 reconstruct to something
+// != cardIndex, so the assertion catches any malicious witness.
+witness wit_split_card_index(cardIndex: Field): [Uint<8>, Uint<8>];
+
+// Internal: verifiable card-index → (suit, rank) decomposition.
+// Cheaper than scanning all 7 ranks to find a match (no ec_mul involved).
+circuit split_card_index(cardIndex: Field): [Uint<8>, Uint<8>] {
+    const d: Field = disclose(cardIndex);
+    const [suit, rank] = wit_split_card_index(d);
+    const sd: Uint<8> = disclose(suit);
+    const rd: Uint<8> = disclose(rank);
+    assert(rd < 7 as Uint<8>, "rank must be < 7");
+    // Reconstruct in Field arithmetic (Uint<8> → Field widening is always safe).
+    const reconstructed: Field = ((sd as Field) * (7 as Field)) + (rd as Field);
+    assert(reconstructed == d, "split witness verification failed");
+    return [sd, rd];
+}
 
 // Constructor only initializes the static deck mappings (shared across all games)
 constructor() {
@@ -291,6 +312,12 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.TurnStart, "Can only ask for cards at turn start");
 
+    // RULE: Both players must have completed the mandatory post-deal initial book scan.
+    // Implicit gate — no dedicated phase needed; each scoreInitialBooks TX only writes its
+    // own player's flag, so two parallel txs can't collide on shared state.
+    assert(go_fish_hasInitialBooksScored(gid, 1 as Uint<64>), "Player 1 must score initial books first");
+    assert(go_fish_hasInitialBooksScored(gid, 2 as Uint<64>), "Player 2 must score initial books first");
+
     // RULE 2: Must be the asking player's turn
     const currentTurn = go_fish_getCurrentTurn(gid);
     assert(disclosed_playerId == currentTurn, "Not your turn - only current player can ask for cards");
@@ -366,11 +393,49 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
     const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
 
-    // Count how many cards the responding player has of this rank
-    const respondingCardCount = countCardsOfRank_withSecrets(gid, respondingPlayerId, targetRank, secret1, secret2);
+    // Consolidated count+transfer: compute responder's 3 masked cards at targetRank ONCE
+    // (3 ec_muls total — previously count+transfer each did 3 separate ec_muls = 6 total).
+    // OPT-H: count is a dual check (masked + unmasked forms); transfer only moves masked
+    // form (matches existing transferCardOfRank_withSecrets behavior).
+    const responderSecret: Field = (disclosed_respondingId == 1 as Uint<64>) ? secret1 : secret2;
+    const opponentIdR: Uint<64> = (disclosed_respondingId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+    const rBase1 = deck_reverseDeckCurveToCard.lookup(targetRank) as JubjubPoint;
+    const rBase2 = deck_reverseDeckCurveToCard.lookup(targetRank + 7 as Uint<32>) as JubjubPoint;
+    const rBase3 = deck_reverseDeckCurveToCard.lookup(targetRank + 14 as Uint<32>) as JubjubPoint;
+    const rMasked1 = std_ecMul(rBase1, responderSecret);
+    const rMasked2 = std_ecMul(rBase2, responderSecret);
+    const rMasked3 = std_ecMul(rBase3, responderSecret);
 
-    // EC-MUL GUARD BUG FIX: call transferAllCardsOfRank unconditionally
-    transferAllCardsOfRank_withSecrets(gid, respondingPlayerId, targetRank, secret1, secret2);
+    // Dual-form count (OPT-H).
+    const rc1m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rMasked1));
+    const rc1u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rBase1));
+    const rc2m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rMasked2));
+    const rc2u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rBase2));
+    const rc3m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rMasked3));
+    const rc3u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rBase3));
+    const respondingCardCount: Uint<8> = (rc1m + rc1u + rc2m + rc2u + rc3m + rc3u) as Uint<8>;
+
+    // Transfer masked-form cards to the opponent (asker). Unmasked cards stay put —
+    // matches existing transferCardOfRank_withSecrets behavior.
+    if (rc1m > 0 as Uint<8>) {
+        hand_removeCardFromHand(gid, disclosed_respondingId, rMasked1);
+        hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase1));
+    }
+    if (rc2m > 0 as Uint<8>) {
+        hand_removeCardFromHand(gid, disclosed_respondingId, rMasked2);
+        hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase2));
+    }
+    if (rc3m > 0 as Uint<8>) {
+        hand_removeCardFromHand(gid, disclosed_respondingId, rMasked3);
+        hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase3));
+    }
+
+    // Auto-book scoring for the asker at the asked rank — UNCONDITIONAL (helper contains
+    // ec_mul, must not live inside a conditional branch). When no transfer happened
+    // (respondingCardCount == 0), this is a no-op: asker's rank count can't reach 3 without
+    // the transfer. Ternary-select asker's secret from pre-fetched secrets.
+    const askerSecret: Field = (askingPlayerId == 1 as Uint<64>) ? secret1 : secret2;
+    const [_askerBookScored, _askerCount] = _tryScoreBook(gid, askingPlayerId, targetRank as Uint<8>, askerSecret);
 
     // OPT-I: UNCONDITIONAL draw — compute partial decryption for the asking player.
     // The responding player removes their OWN mask. The result (baseCard * askingPlayerSecret)
@@ -486,25 +551,30 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>)
     const drawnCardPoint = go_fish_getLastDrawnCard(gid);
     const decryptedPoint = deck_partial_decryption(gid, drawnCardPoint, playerId);
 
-    // Check if the decrypted point matches any of the 3 base cards of the asked rank.
-    // Card index = rank + suit*7, so the 3 cards of lastRank are at indices: rank, rank+7, rank+14.
-    const baseCard1 = deck_reverseDeckCurveToCard.lookup(lastRank) as JubjubPoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(lastRank + 7 as Uint<32>) as JubjubPoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(lastRank + 14 as Uint<32>) as JubjubPoint;
+    // Pre-fetch both secrets for ec_mul guard-safe ternary select (needed later for
+    // _tryScoreBook at the drawn card's rank, which may differ from lastRank).
+    const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
+    const playerSecret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
 
-    // Compare decrypted point against base cards using coordinate comparison
-    // (Compact 0.30.0 JubjubPoint == bug — compare coordinates instead)
-    const drewRequestedCard =
-        (jubjubPointX(decryptedPoint) == jubjubPointX(baseCard1) && jubjubPointY(decryptedPoint) == jubjubPointY(baseCard1)) ||
-        (jubjubPointX(decryptedPoint) == jubjubPointX(baseCard2) && jubjubPointY(decryptedPoint) == jubjubPointY(baseCard2)) ||
-        (jubjubPointX(decryptedPoint) == jubjubPointX(baseCard3) && jubjubPointY(decryptedPoint) == jubjubPointY(baseCard3));
+    // Detect the drawn card's rank via a single reverse-map lookup + witness-verified
+    // integer division. Replaces the 7-rank × 3-suit coord scan (21 lookups + ternary
+    // cascade). No ec_mul here — pure Map.lookup + Field arithmetic + assertions.
+    const cardIndex: Field = deck_getCardFromPoint(decryptedPoint);
+    const [_drawnSuit, drawnRank] = split_card_index(cardIndex);
 
-    // EC-MUL GUARD BUG FIX: countCardsOfRank unconditionally
-    const currentCount = countCardsOfRank(gid, playerId, lastRank);
+    const drewRequestedCard: Boolean = ((drawnRank as Uint<32>) == lastRank);
+
+    // UNCONDITIONAL book check at the DRAWN card's rank. Helper also returns the
+    // pre-removal count of that rank — we reuse it for the anti-cheat assert (saves
+    // the 3 ec_muls a separate countCardsOfRank would cost, since drewRequestedCard
+    // implies drawnRank == lastRank).
+    const [_scored, drawnRankCount] = _tryScoreBook(gid, playerId, drawnRank, playerSecret);
 
     if (drewRequestedCard) {
         const prevCount = go_fish_getPreDrawRankCount(gid);
-        assert(currentCount == (prevCount + 1 as Uint<8>), "Cheating: card count mismatch");
+        // drawnRank == lastRank here, so drawnRankCount is the pre-removal count at lastRank.
+        assert(drawnRankCount == (prevCount + 1 as Uint<8>), "Cheating: card count mismatch");
 
         go_fish_clearLastAskedRank(gid);
         go_fish_setLastMoveAt(gid, now);
@@ -623,41 +693,32 @@ circuit countCardsOfRank_withSecrets(gameId: Bytes<32>, playerId: Uint<64>, targ
 // BOOK SCORING
 // ============================================
 
-export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRank: Uint<32>): Boolean {
+// Internal: attempt to score a book at `rank` for `playerId`.
+// Caller must supply the player's secret (ternary-select from pre-fetched secrets).
+// ec_mul calls are unconditional (ZKIR guard-safe); only the hand removals and ledger
+// writes are inside the cardCount==3 branch. Non-exported — must always be called
+// outside any `if/else` branch at the call site (the whole helper contains ec_mul).
+// Returns [scored, preRemovalCount] — callers use preRemovalCount for anti-cheat
+// checks, avoiding a second 3-ec_mul count of the same rank.
+circuit _tryScoreBook(gameId: Bytes<32>, playerId: Uint<64>, rank: Uint<8>, secret: Field): [Boolean, Uint<8>] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
-    const disclosed_rank = disclose(targetRank);
-    
-    // Game must exist
-    assert(go_fish_doesGameExist(gid), "Game does not exist");
-
-    // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, playerId);
+    const disclosed_rank = disclose(rank);
+    const rank32: Uint<32> = disclosed_rank as Uint<32>;
 
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
+    assert(disclosed_rank < 7 as Uint<8>, "Invalid card rank");
 
-    const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase != go_fish_GamePhase.Setup, "Cannot score books during setup");
-    assert(currentPhase != go_fish_GamePhase.GameOver, "Game is already over");
+    const baseCard1 = deck_reverseDeckCurveToCard.lookup(rank32) as JubjubPoint;
+    const baseCard2 = deck_reverseDeckCurveToCard.lookup(rank32 + 7 as Uint<32>) as JubjubPoint;
+    const baseCard3 = deck_reverseDeckCurveToCard.lookup(rank32 + 14 as Uint<32>) as JubjubPoint;
 
-    // OPT-C: Fetch secrets once, compute masked cards once, reuse for both counting and removal.
-    // Previously countCardsOfRank computed secrets+maskedCards, then the inline block recomputed
-    // them identically (18 ec_mul → 9 ec_mul).
-    const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
-    const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
-    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
-
-    const baseCard1 = deck_reverseDeckCurveToCard.lookup(disclosed_rank) as JubjubPoint;
-    const baseCard2 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+7 as Uint<32>) as JubjubPoint;
-    const baseCard3 = deck_reverseDeckCurveToCard.lookup(disclosed_rank+14 as Uint<32>) as JubjubPoint;
-
-    // UNCONDITIONAL ec_mul — computed once, used for both counting and removal
+    // UNCONDITIONAL ec_mul — must stay outside all branches in the compiled ZKIR.
     const maskedCard1 = std_ecMul(baseCard1, secret);
     const maskedCard2 = std_ecMul(baseCard2, secret);
     const maskedCard3 = std_ecMul(baseCard3, secret);
 
-    // OPT-H: Dual check — each card might be masked (dealt/drawn) or unmasked (transferred)
+    // OPT-H: Dual check — each card might be masked (dealt/drawn) or unmasked (transferred).
     const c1m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(maskedCard1));
     const c1u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(baseCard1));
     const c2m: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_playerId, disclose(maskedCard2));
@@ -667,7 +728,6 @@ export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRa
     const cardCount = (c1m + c1u + c2m + c2u + c3m + c3u) as Uint<8>;
 
     if (cardCount == 3 as Uint<8>) {
-        // Remove each card from whichever form it's in
         if (c1m > 0 as Uint<8>) {
             hand_removeCardFromHandForBook(gid, disclosed_playerId, maskedCard1);
         } else {
@@ -684,11 +744,125 @@ export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRa
             hand_removeCardFromHandForBook(gid, disclosed_playerId, baseCard3);
         }
 
+        // Record the booked rank in the per-player Set (visible to opponent and frontend).
+        go_fish_markRankBooked(gid, playerId, rank);
+        // Increment score + handle ≥4-books early-win.
         go_fish_addScore(gid, playerId);
-        return true;
+        return [true, cardCount];
     }
 
-    return false;
+    return [false, cardCount];
+}
+
+// Mandatory post-deal book scoring.
+// Both players call this once (parallel-safe — each only writes to their own ledger slots).
+// askForCard asserts both players' flags.
+//
+// OPTIMIZATION: Rather than scanning all 7 ranks (which would unroll 7 × _tryScoreBook bodies
+// and push the circuit to k=17), the CLIENT tells us which 3 cards form a book from their
+// 4-card initial hand. We verify algebraically:
+//   - all 3 indices distinct and in [0, 21)
+//   - all 3 have the same rank (i % 7, expressed via subtraction since % isn't available)
+//   - all 3 masked cards exist in the player's hand (initial hand is masked-only — no
+//     unmasked dual check needed, transfers can't have happened yet)
+// The client passes the SENTINEL [0xFF, 0xFF, 0xFF] when the initial hand has no book.
+//
+// Privacy: the 3 indices determine the booked rank (1 rank), same info as markRankBooked.
+// The leftover (4th) card stays private.
+//
+// Cheating is self-harming:
+//   - claiming 3 indices NOT in hand → hand_doesPlayerHaveCard assert fails, tx rejected
+//   - claiming 3 non-same-rank indices → rank equality assert fails
+//   - claiming sentinel when there IS a book → player forfeits the book (their loss)
+//   - claiming duplicate indices → distinctness assert fails
+export circuit scoreInitialBooks(
+    gameId: Bytes<32>,
+    playerId: Uint<64>,
+    bookIndices: Vector<3, Uint<8>>,
+    now: Uint<64>
+): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    const i1 = disclose(bookIndices[0]);
+    const i2 = disclose(bookIndices[1]);
+    const i3 = disclose(bookIndices[2]);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    go_fish_assertCallerIsPlayer(gid, playerId);
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    // Dealing must be complete.
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase != go_fish_GamePhase.Setup, "Dealing not complete");
+    assert(currentPhase != go_fish_GamePhase.GameOver, "Game already over");
+
+    // One-shot guard — this player hasn't already scored initial books.
+    assert(!go_fish_hasInitialBooksScored(gid, playerId), "Initial books already scored");
+
+    // Timestamp drift check.
+    assert(
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
+        "Claimed timestamp is too far in the future"
+    );
+
+    // "No book" sentinel.
+    const noBook: Boolean = (i1 == 255 as Uint<8>) && (i2 == 255 as Uint<8>) && (i3 == 255 as Uint<8>);
+
+    // Safe index when noBook — index 0 is always valid, result discarded.
+    const safe_i1: Uint<32> = noBook ? 0 as Uint<32> : (i1 as Uint<32>);
+    const safe_i2: Uint<32> = noBook ? 0 as Uint<32> : (i2 as Uint<32>);
+    const safe_i3: Uint<32> = noBook ? 0 as Uint<32> : (i3 as Uint<32>);
+
+    // Fetch both secrets UNCONDITIONALLY; ternary-select caller's (ec_mul guard-safe).
+    const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
+    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
+
+    // Base card lookups + ec_mul — UNCONDITIONAL.
+    const b1 = deck_reverseDeckCurveToCard.lookup(safe_i1) as JubjubPoint;
+    const b2 = deck_reverseDeckCurveToCard.lookup(safe_i2) as JubjubPoint;
+    const b3 = deck_reverseDeckCurveToCard.lookup(safe_i3) as JubjubPoint;
+    const m1 = std_ecMul(b1, secret);
+    const m2 = std_ecMul(b2, secret);
+    const m3 = std_ecMul(b3, secret);
+
+    if (!noBook) {
+        // Each index in [0, 21).
+        assert(i1 < 21 as Uint<8>, "Invalid book index 1");
+        assert(i2 < 21 as Uint<8>, "Invalid book index 2");
+        assert(i3 < 21 as Uint<8>, "Invalid book index 3");
+
+        // Distinct.
+        assert(i1 != i2, "Duplicate indices 1-2");
+        assert(i2 != i3, "Duplicate indices 2-3");
+        assert(i1 != i3, "Duplicate indices 1-3");
+
+        // Rank = i % 7, via subtraction (Compact has no modulo).
+        const r1: Uint<8> = (i1 < 7 as Uint<8>) ? i1 : ((i1 < 14 as Uint<8>) ? (i1 - 7 as Uint<8>) as Uint<8> : (i1 - 14 as Uint<8>) as Uint<8>);
+        const r2: Uint<8> = (i2 < 7 as Uint<8>) ? i2 : ((i2 < 14 as Uint<8>) ? (i2 - 7 as Uint<8>) as Uint<8> : (i2 - 14 as Uint<8>) as Uint<8>);
+        const r3: Uint<8> = (i3 < 7 as Uint<8>) ? i3 : ((i3 < 14 as Uint<8>) ? (i3 - 7 as Uint<8>) as Uint<8> : (i3 - 14 as Uint<8>) as Uint<8>);
+
+        // All three same rank.
+        assert(r1 == r2, "Cards 1-2 different ranks");
+        assert(r2 == r3, "Cards 2-3 different ranks");
+
+        // Each masked card must exist in player's hand.
+        assert(hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(m1)), "Book card 1 not in hand");
+        assert(hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(m2)), "Book card 2 not in hand");
+        assert(hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(m3)), "Book card 3 not in hand");
+
+        // Remove the 3 cards, mark the rank, increment score.
+        hand_removeCardFromHandForBook(gid, disclosed_playerId, m1);
+        hand_removeCardFromHandForBook(gid, disclosed_playerId, m2);
+        hand_removeCardFromHandForBook(gid, disclosed_playerId, m3);
+
+        go_fish_markRankBooked(gid, playerId, r1);
+        go_fish_addScore(gid, playerId);
+    }
+
+    go_fish_markInitialBooksScored(gid, playerId);
+    go_fish_setLastMoveAt(gid, now);
+    return [];
 }
 
 // ============================================
@@ -840,6 +1014,25 @@ export circuit discoverHand(gameId: Bytes<32>, playerId: Uint<64>): Vector<21, B
         return hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard))
             || hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(baseCard));
     }, INDICES_21);
+}
+
+// Query: 7-bit membership vector of booked ranks for a player.
+// Vector[r] == true iff player has booked rank r. Frontend uses this to render book piles.
+export circuit getBookedRanks(gameId: Bytes<32>, playerId: Uint<64>): Vector<7, Boolean> {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    const INDICES_7: Vector<7, Uint<8>> = [0, 1, 2, 3, 4, 5, 6];
+    return map((r) => go_fish_isRankBooked(gid, playerId, r), INDICES_7);
+}
+
+// Query: has a player completed their mandatory post-deal initial book scan?
+export circuit hasInitialBooksScored(gameId: Bytes<32>, playerId: Uint<64>): Boolean {
+    const gid = disclose(gameId);
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    return go_fish_hasInitialBooksScored(gid, playerId);
 }
 
 // Test helper
