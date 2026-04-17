@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Card } from '../../../../shared/data-types/src/go-fish-types';
+import type { Card } from '../../../../packages/shared/data-types/src/go-fish-types';
 import type { CardTextureAtlas } from '../textures/CardTextureAtlas';
 
 const CARD_WIDTH = 1.0;

@@ -1,9 +1,10 @@
 import { MidnightService } from '../../services/MidnightService';
+import * as GoFishContractService from '../../services/GoFishContractService';
 import { queryHandFromBatcher, registerMidnightAddress } from '../../services/BatcherMidnightService';
 import { PlayerKeyManager } from '../../services/PlayerKeyManager';
 import { getLaceAddress } from '../../laceWalletBridge';
-import type { Card } from '../../../../shared/data-types/src/go-fish-types';
-import { INDEX_TO_RANK, INDEX_TO_SUIT } from '../../../../shared/data-types/src/go-fish-types';
+import type { Card } from '../../../../packages/shared/data-types/src/go-fish-types';
+import { INDEX_TO_RANK, INDEX_TO_SUIT } from '../../../../packages/shared/data-types/src/go-fish-types';
 
 export interface GameSceneState {
   phase: string;
@@ -52,6 +53,21 @@ export class GameStateAdapter {
   private polling = false;
   private midnightAddressRegistered = false;
 
+  /** Frontend-driven action log — entries added by GameScene action handlers. */
+  private localGameLog: string[] = [];
+
+  /** Push a timestamped entry to the game log. The next state emission
+   *  includes it so the HUD renders it immediately. */
+  addLog(msg: string): void {
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    this.localGameLog.push(`[${time}] ${msg}`);
+  }
+
+  /** Get the current local log (used when building state). */
+  get gameLog(): string[] {
+    return this.localGameLog;
+  }
+
   constructor(
     lobbyId: string,
     walletAddress: string,
@@ -62,12 +78,36 @@ export class GameStateAdapter {
     this.onChange = onChange;
   }
 
+  /** Unsubscribe from the WS contract state changes. */
+  private unsubscribeWs: (() => void) | null = null;
+  /** When true, the current poll was triggered by a WS notification. */
+  private wsTriggered = false;
+
   start(): void {
     if (this.pollIntervalId !== null) return;
     this.midnightAddressRegistered = false;
+
+    // Start the WS subscription — notification-only. When the contract
+    // state changes on-chain, the WS fires and we re-query via HTTP to
+    // get the fresh state. No cached state, no staleness bugs.
+    GoFishContractService.startContractSubscription().catch(err => {
+      console.warn('[GameStateAdapter] WS subscription setup failed, falling back to polling:', err);
+    });
+    this.unsubscribeWs = GoFishContractService.onContractStateChange(() => {
+      // WS says "something changed" → fresh HTTP query.
+      // Mark as WS-triggered so poll() always fires onChange even if
+      // no game-state fields visibly changed. This is critical during
+      // setup: masks/deals land on-chain (changing contract bytes) but
+      // the game state fields (phase, scores, hands) stay identical.
+      // Without this flag, the other browser never re-runs setup.
+      this.wsTriggered = true;
+      this.poll();
+    });
+
     // Immediate first poll
     this.poll();
-    this.pollIntervalId = window.setInterval(() => this.poll(), this.pollIntervalMs);
+    // Safety fallback in case WS drops
+    this.pollIntervalId = window.setInterval(() => this.poll(), 30000);
   }
 
   stop(): void {
@@ -75,6 +115,8 @@ export class GameStateAdapter {
       clearInterval(this.pollIntervalId);
       this.pollIntervalId = null;
     }
+    this.unsubscribeWs?.();
+    this.unsubscribeWs = null;
   }
 
   /** Force an immediate poll (e.g., after an action). */
@@ -115,7 +157,14 @@ export class GameStateAdapter {
   }
 
   private async poll(): Promise<void> {
-    if (this.polling) return;
+    if (this.polling) {
+      // A poll is already in progress. If this was WS-triggered, schedule
+      // a retry so the notification isn't silently lost.
+      if (this.wsTriggered) {
+        setTimeout(() => this.poll(), 500);
+      }
+      return;
+    }
     this.polling = true;
 
     try {
@@ -132,56 +181,23 @@ export class GameStateAdapter {
       if (handIsReady) {
         const pid = rawState.playerId as 1 | 2;
 
-        // Primary: query hand from the batcher's query server.
-        // The batcher uses real on-chain indexer state, so it correctly reflects
-        // card transfers from respondToAsk/goFish — unlike the backend's local sim.
+        // Read hand directly from the contract ledger by enumerating all 21
+        // cards via doesPlayerHaveSpecificCard. The circuit applies the reverse
+        // ec_mul using our secret (set in the witness module) to determine
+        // ownership. Matches the e2e reference (readHand in _helpers.ts).
         try {
-          const batterHand = await queryHandFromBatcher(this.lobbyId, pid);
-          if (batterHand !== null) {
-            console.log(`[GameStateAdapter] batcher hand: ${batterHand.length} cards:`, JSON.stringify(batterHand));
-            myHand = batterHand.map((c: { rank: number; suit: number }) => ({
-              rank: INDEX_TO_RANK[c.rank] ?? 'A',
-              suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
-            }));
-          } else {
-            throw new Error("batcher returned null");
-          }
-        } catch (batcherErr) {
-          // Fallback: use the backend's local simulation (may be stale after card transfers)
-          console.warn('[GameStateAdapter] Batcher hand query failed, falling back to backend:', batcherErr instanceof Error ? batcherErr.message : String(batcherErr));
-          try {
-            const opponentId = (pid === 1 ? 2 : 1) as 1 | 2;
-            const playerSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid);
-            const playerSecretHex = playerSecret.toString(16).padStart(64, '0');
-            const shuffleSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, pid);
-            const shuffleSeedHex = Array.from(shuffleSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-            let opponentSecretHex: string | undefined;
-            let opponentShuffleSeedHex: string | undefined;
-            if (PlayerKeyManager.hasExistingKeys(this.lobbyId, opponentId)) {
-              try {
-                const opponentSecret = PlayerKeyManager.getPlayerSecret(this.lobbyId, opponentId);
-                opponentSecretHex = opponentSecret.toString(16).padStart(64, '0');
-                const opponentSeedBytes = PlayerKeyManager.getShuffleSeed(this.lobbyId, opponentId);
-                opponentShuffleSeedHex = Array.from(opponentSeedBytes).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-              } catch {
-                // Ignore — opponent keys unavailable
-              }
-            }
-            console.log(`[GameStateAdapter] fallback: fetching hand for player ${pid} from backend`);
-            const rawHand = await MidnightService.getPlayerHandWithSecret(
-              this.lobbyId,
-              pid,
-              playerSecretHex,
-              { shuffleSeedHex, opponentSecretHex, opponentShuffleSeedHex },
-            );
-            console.log(`[GameStateAdapter] backend rawHand: ${rawHand.length} cards:`, JSON.stringify(rawHand));
-            myHand = rawHand.map((c: { rank: number; suit: number }) => ({
-              rank: INDEX_TO_RANK[c.rank] ?? 'A',
-              suit: INDEX_TO_SUIT[c.suit] ?? 'hearts',
-            }));
-          } catch (fallbackErr) {
-            console.warn('[GameStateAdapter] Backend hand fallback also failed:', fallbackErr);
-          }
+          const cardIndices = await GoFishContractService.queryHandFromContract(this.lobbyId, pid);
+          // Sort by rank (idx % 7), then by suit (floor(idx / 7)) for a
+          // stable, readable layout. Cosmetic only — the on-chain state is
+          // unchanged.
+          const sorted = [...cardIndices].sort((a, b) => (a % 7) - (b % 7) || Math.floor(a / 7) - Math.floor(b / 7));
+          myHand = sorted.map(idx => ({
+            rank: INDEX_TO_RANK[idx % 7] ?? 'A',
+            suit: INDEX_TO_SUIT[Math.floor(idx / 7)] ?? 'hearts',
+          }));
+          console.log(`[GameStateAdapter] contract hand: ${sorted.length} cards idx=${JSON.stringify(sorted)} mapped=${JSON.stringify(myHand)}`);
+        } catch (err) {
+          console.warn('[GameStateAdapter] Contract hand query failed:', err instanceof Error ? err.message : String(err));
         }
       }
 
@@ -213,14 +229,24 @@ export class GameStateAdapter {
         myBooks: rawState.myBooks ?? [],
         playerName: myPlayer?.name ?? `Player ${rawState.playerId}`,
         opponentName: opponentPlayer?.name ?? 'Opponent',
-        gameLog: rawState.gameLog ?? [],
+        gameLog: this.localGameLog,
         lastAskedRank: (rawState.lastAskedRank as number | null | undefined) ?? null,
       };
 
       const changes = this.detectChanges(current, this.previousState);
       const hasAnyChange = Object.values(changes).some(Boolean);
 
-      if (hasAnyChange || this.previousState === null) {
+      // Always fire onChange when:
+      // - Any game state field changed (normal case)
+      // - First poll (previousState is null)
+      // - WS-triggered: contract bytes changed on-chain even though the
+      //   visible game state fields look identical. Critical during setup
+      //   where mask/deal landing doesn't change phase/scores/hands but
+      //   the other browser MUST re-run runAutomaticSetup.
+      const forceNotify = this.wsTriggered;
+      this.wsTriggered = false;
+
+      if (hasAnyChange || this.previousState === null || forceNotify) {
         this.onChange(current, this.previousState, changes);
       }
 

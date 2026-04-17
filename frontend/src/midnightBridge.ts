@@ -18,7 +18,7 @@
  * - Automatic cleanup of expired sessions
  */
 
-import { Contract } from '../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
+import { Contract } from '../../packages/shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
 import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-runtime';
 import {
   PlayerKeyManager,
@@ -591,7 +591,6 @@ export const MidnightBridge = {
   dealCards,
   askForCard,
   respondToAsk,
-  goFish,
   afterGoFish,
   checkAndScoreBook,
   getGamePhase,

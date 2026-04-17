@@ -105,7 +105,10 @@ export class LobbyScreen {
   private renderLoading() {
     this.container.innerHTML = `
       <div class="lobby-screen">
-        <div class="lobby-header"><h1>Loading lobby…</h1></div>
+        <header class="side-header">
+          <h1 class="title">Loading…</h1>
+        </header>
+        <div class="side-content"></div>
       </div>
     `;
   }
@@ -119,45 +122,39 @@ export class LobbyScreen {
     const myWalletAddress = this.gameService.getPlayerId();
     const playerCount = players.length;
 
-    // The only surface action is Cancel, and only the host sees it.
-    const cancelButton = isHost
-      ? `<button id="cancel-lobby-btn" class="btn btn-secondary">Cancel Lobby</button>`
-      : '';
-
     const infoText = isHost
       ? (playerCount < 2 ? 'Waiting for an opponent to join…' : 'Starting game…')
       : 'Starting game…';
 
+    // Host-only Cancel Lobby button. Everyone gets the Back button which
+    // just returns them to the lobby list (doesn't leave the lobby).
+    const cancelButton = isHost
+      ? `<button id="cancel-lobby-btn" class="btn btn-secondary">Cancel Lobby</button>`
+      : '';
+
     this.container.innerHTML = `
       <div class="lobby-screen">
-        <div class="lobby-header">
-          <h1>🎣 ${lobbyName}</h1>
-          ${cancelButton}
-        </div>
+        <header class="side-header">
+          <button id="back-btn" class="icon-btn back-btn" title="Back to lobbies" aria-label="Back">‹</button>
+          <h1 class="title">${lobbyName}</h1>
+          <div class="welcome">${infoText}</div>
+        </header>
 
-        <div class="lobby-content">
-          <div class="players-panel full-width">
-            <h2>Players (${playerCount}/2)</h2>
-            <div class="players-list">
-              ${players.map((p: any) => this.renderPlayer(p, hostAccountId, myWalletAddress)).join('')}
-            </div>
-
-            <div class="waiting-section">
-              <p class="info-text">${infoText}</p>
-            </div>
+        <div class="side-content">
+          <h2>Players (${playerCount}/2)</h2>
+          <div class="players-list">
+            ${players.map((p: any) => this.renderPlayer(p, hostAccountId, myWalletAddress)).join('')}
+            ${playerCount < 2 ? `
+              <div class="player-item waiting-slot">
+                <span class="player-name">Waiting for opponent…</span>
+              </div>
+            ` : ''}
           </div>
         </div>
 
-        <div class="game-rules">
-          <h3>How to Play Go Fish</h3>
-          <ul>
-            <li><strong>Objective</strong>: Collect the most "books" (sets of 3 cards of the same rank).</li>
-            <li><strong>Your Turn</strong>: Ask the other player for cards of a rank you already hold.</li>
-            <li><strong>Success</strong>: If they have cards of that rank, they give them all to you and you go again.</li>
-            <li><strong>Go Fish!</strong>: If they don't, you draw a card from the deck.</li>
-            <li><strong>Winning</strong>: The player with the most books when the deck runs out wins!</li>
-          </ul>
-        </div>
+        <footer class="side-footer">
+          ${cancelButton}
+        </footer>
       </div>
     `;
 
@@ -179,6 +176,13 @@ export class LobbyScreen {
   }
 
   private attachEventListeners(isHost: boolean) {
+    // Back button — return to the lobby list without leaving the lobby.
+    // The refresh interval keeps polling status and will auto-navigate to
+    // the game when a second player joins.
+    document.getElementById('back-btn')?.addEventListener('click', () => {
+      this.dispatchEvent('navigate', { screen: 'lobby-list' });
+    });
+
     if (!isHost) return;
 
     document.getElementById('cancel-lobby-btn')?.addEventListener('click', async () => {

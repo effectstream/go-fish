@@ -4,10 +4,11 @@
 
 import { GoFishGameService } from '../services/GoFishGameService';
 import { CardComponent } from '../components/Card';
-import type { GoFishGameState, GoFishPlayer, Rank, Suit } from '../../../shared/data-types/src/go-fish-types';
-import { getUniqueRanks } from '../../../shared/data-types/src/go-fish-types';
+import type { GoFishGameState, GoFishPlayer, Rank, Suit } from '../../../packages/shared/data-types/src/go-fish-types';
+import { getUniqueRanks } from '../../../packages/shared/data-types/src/go-fish-types';
 import { getWalletAddress } from '../effectstreamBridge';
 import { MidnightService } from '../services/MidnightService';
+import * as GoFishContractService from '../services/GoFishContractService';
 import { PlayerKeyManager } from '../services/PlayerKeyManager';
 
 // Type for API game state response
@@ -62,6 +63,19 @@ export class GameScreen {
   // Track previous scores for book completion detection
   private previousScores: [number, number] | null = null;
 
+  // Frontend-driven game log — entries added by action handlers as circuits
+  // are proven, submitted, and confirmed. Replaces the empty backend gameLog.
+  private actionLog: string[] = [];
+
+  /** Push a timestamped entry to the game log and refresh the UI. */
+  private log(msg: string): void {
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    this.actionLog.push(`[${time}] ${msg}`);
+    // Live-update the log panel if it exists
+    const el = document.getElementById('game-log-container');
+    if (el) el.innerHTML = this.renderGameLogEntries();
+  }
+
   constructor(container: HTMLElement, lobbyId: string) {
     this.container = container;
     this.lobbyId = lobbyId;
@@ -71,19 +85,28 @@ export class GameScreen {
     this.walletAddress = getWalletAddress();
   }
 
+  private unsubscribeWs?: () => void;
+
   show() {
     this.isHidden = false;
     this.errorCount = 0;
     this.render();
-    // Poll every 5 seconds to reduce database pressure and prevent mutex deadlocks
-    // The Paima sync process needs time to complete, and concurrent Midnight queries
-    // can block the event loop causing sync protocols to timeout waiting for mutex
-    // Increased from 3s to 5s to give more breathing room for sync operations
-    this.refreshInterval = window.setInterval(() => this.render(), 5000);
+
+    // WS subscription: notification-only. When the contract state changes,
+    // re-render (which does a fresh HTTP query for the latest state).
+    GoFishContractService.startContractSubscription().catch(() => {});
+    this.unsubscribeWs = GoFishContractService.onContractStateChange(() => {
+      this.render();
+    });
+
+    // Safety fallback in case WS drops
+    this.refreshInterval = window.setInterval(() => this.render(), 30000);
   }
 
   hide() {
     this.isHidden = true;
+    this.unsubscribeWs?.();
+    this.unsubscribeWs = undefined;
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
       this.refreshInterval = undefined;
@@ -161,6 +184,35 @@ export class GameScreen {
     const currentTurnPlayer = this.gameState.players[this.gameState.currentTurn - 1];
     const myHandSize = this.gameState.handSizes[this.gameState.playerId - 1];
     const myScore = this.gameState.scores[this.gameState.playerId - 1];
+
+    // Keep the last log entry showing current turn/wait status (replace if
+    // the previous entry was also a status line, so they don't pile up).
+    const phase = this.gameState.phase;
+    const opponentName = currentTurnPlayer?.name || 'Opponent';
+    const statusPrefix = '⏳';
+    const lastEntry = this.actionLog.length > 0 ? this.actionLog[this.actionLog.length - 1] : '';
+    const lastIsStatus = lastEntry.includes(statusPrefix);
+
+    let statusMsg = '';
+    if (phase === 'turn_start' && isMyTurn) {
+      statusMsg = `${statusPrefix} Your turn — pick a card to ask for`;
+    } else if (phase === 'turn_start' && !isMyTurn) {
+      statusMsg = `${statusPrefix} Waiting for ${opponentName} to ask...`;
+    } else if (phase === 'wait_response' && isMyTurn) {
+      statusMsg = `${statusPrefix} Waiting for ${opponentName} to respond...`;
+    } else if (phase === 'wait_response' && !isMyTurn) {
+      statusMsg = `${statusPrefix} ${opponentName} asked — check your hand and respond`;
+    } else if (phase === 'wait_draw_check') {
+      statusMsg = `${statusPrefix} Go Fish — resolve the draw`;
+    }
+
+    if (statusMsg) {
+      if (lastIsStatus) {
+        this.actionLog[this.actionLog.length - 1] = statusMsg;
+      } else {
+        this.actionLog.push(statusMsg);
+      }
+    }
 
     console.log(`[GameScreen] State: phase=${this.gameState.phase}, currentTurn=${this.gameState.currentTurn}, myPlayerId=${this.gameState.playerId}, isMyTurn=${isMyTurn}, myHandSize=${myHandSize}`);
 
@@ -416,7 +468,7 @@ export class GameScreen {
             <!-- Game Log -->
             <div class="game-log-panel">
               <h3>Game Log</h3>
-              <div id="game-log-container">${this.renderGameLogFromAPI()}</div>
+              <div id="game-log-container">${this.renderGameLogEntries()}</div>
             </div>
           </div>
         </div>
@@ -499,7 +551,7 @@ export class GameScreen {
     // Update game log
     const gameLogContainer = document.getElementById('game-log-container');
     if (gameLogContainer) {
-      gameLogContainer.innerHTML = this.renderGameLogFromAPI();
+      gameLogContainer.innerHTML = this.renderGameLogEntries();
     }
 
     // Update opponent info
@@ -659,9 +711,23 @@ export class GameScreen {
       console.log('[GameScreen] Setup status:', status);
 
       // Step 1: Apply mask (only if not already applied)
-      // Use frontend-side cache to prevent duplicate attempts
+      // ORDERING: P1 (lobby creator) applies first, P2 (joiner) waits for P1.
+      // This preserves the EVM player order into the Midnight contract and
+      // matches the e2e reference (e2e/smoke/_helpers.ts:runFullSetup).
       if (!this.maskApplied && !status.hasMaskApplied) {
-        console.log('[GameScreen] Applying mask...');
+        const myPlayerId = this.gameState.playerId;
+
+        // P2 must wait for P1's mask before applying their own
+        if (myPlayerId === 2 && !status.opponentHasMaskApplied) {
+          console.log('[GameScreen] Player 2 waiting for Player 1 to apply mask first... will retry in 2s');
+          setTimeout(() => {
+            this.setupAttempted = false;
+            this.render();
+          }, 2000);
+          return;
+        }
+
+        console.log(`[GameScreen] Player ${myPlayerId} applying mask...`);
         const maskResult = await MidnightService.applyMask(
           this.lobbyId,
           this.gameState.playerId as 1 | 2
@@ -1190,8 +1256,10 @@ export class GameScreen {
         if (count >= 3) {
           console.log(`[GameScreen] autoScoreBooks: P${playerId} has ${count} of ${RANK_NAMES[rank]} — scoring book`);
           try {
+            this.log(`📚 Scoring book of ${RANK_NAMES[rank]}s — proving...`);
             const result = await MidnightService.checkAndScoreBook(this.lobbyId, playerId, rank);
             if (result.success) {
+              this.log(`★ Book of ${RANK_NAMES[rank]}s scored!`);
               this.showNotification({
                 type: 'book',
                 rank: RANK_NAMES[rank] as any,
@@ -1495,28 +1563,21 @@ export class GameScreen {
     `;
   }
 
-  private renderGameLogFromAPI(): string {
-    if (!this.gameState || !this.gameState.gameLog) {
+  private renderGameLogEntries(): string {
+    if (this.actionLog.length === 0) {
       return '<div class="empty-log">Game starting...</div>';
     }
 
-    if (this.gameState.gameLog.length === 0) {
-      return '<div class="empty-log">No moves yet</div>';
-    }
+    const totalEntries = this.actionLog.length;
 
-    const totalEntries = this.gameState.gameLog.length;
-
-    // Take last 10 entries, reverse to show newest first, and add numbering
     return `
       <table class="game-log-table">
         <tbody>
-          ${this.gameState.gameLog
+          ${this.actionLog
             .slice(-10)
             .reverse()
             .map((msg, reverseIndex) => {
-              // Calculate the actual entry number (1-indexed from start of game)
               const entryNumber = totalEntries - reverseIndex;
-              // Mark the newest entry (first in reversed list) for animation
               const isNewest = reverseIndex === 0;
               return `
                 <tr class="log-row ${isNewest ? 'newest' : ''}">
@@ -1585,13 +1646,14 @@ export class GameScreen {
 
         if (this.gameState) {
           try {
-            console.log('[GameScreen] Calling afterGoFish (contract decrypts drawn card internally)');
+            this.log('🎣 Resolving draw — proving...');
             const result = await MidnightService.afterGoFish(
               this.lobbyId,
               this.gameState.playerId as 1 | 2,
             );
 
             if (result.success) {
+              this.log('🎣 Draw resolved — submitted');
               console.log('[GameScreen] afterGoFish succeeded, turn complete');
               this.selectedRank = null;
               // Auto-score any books that formed from the drawn card
@@ -1620,13 +1682,15 @@ export class GameScreen {
 
         if (this.gameState) {
           try {
-            console.log('[GameScreen] Empty-hand ask — requesting rank 0 (any rank valid)');
+            this.log('🃏 No cards — asking opponent for any rank (proving...)');
             const result = await MidnightService.askForCard(
               this.lobbyId,
               this.gameState.playerId as 1 | 2,
               0,
             );
-            if (!result.success) {
+            if (result.success) {
+              this.log('🃏 Ask submitted — waiting for opponent to respond');
+            } else {
               alert(`Ask failed: ${result.errorMessage}`);
             }
           } catch (error) {
@@ -1656,6 +1720,7 @@ export class GameScreen {
               this.gameState.playerId as 1 | 2
             );
 
+            this.log('🔍 Checking hand and responding — proving...');
             const result = await MidnightService.respondToAsk(
               this.lobbyId,
               this.gameState.playerId as 1 | 2
@@ -1663,6 +1728,12 @@ export class GameScreen {
 
             if (result.success) {
               console.log('[GameScreen] Respond to ask succeeded:', result);
+
+              if (result.hasCards && result.cardCount > 0) {
+                this.log(`📤 Gave ${result.cardCount} card(s) to opponent`);
+              } else {
+                this.log('🎣 Go Fish — opponent draws from deck');
+              }
 
               // If cards were transferred (we lost cards), show notification
               if (result.hasCards && result.cardCount > 0) {
@@ -1832,6 +1903,7 @@ export class GameScreen {
             const targetRank = rankMap[this.selectedRank] ?? 0;
             console.log(`[GameScreen] askForCard: selectedRank="${this.selectedRank}" → targetRank=${targetRank}, hand=`, JSON.stringify(this.myDecryptedHand));
 
+            this.log(`🃏 Asking opponent for ${this.selectedRank}s — proving...`);
             const result = await MidnightService.askForCard(
               this.lobbyId,
               this.gameState.playerId as 1 | 2,
@@ -1839,6 +1911,7 @@ export class GameScreen {
             );
 
             if (result.success) {
+              this.log(`🃏 Asked for ${this.selectedRank}s — submitted, waiting for opponent`);
               console.log('[GameScreen] Ask for card succeeded');
               this.closeActionModal(); // Close modal and reset selections
               // State will update on next poll

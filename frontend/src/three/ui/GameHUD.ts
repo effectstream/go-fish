@@ -257,22 +257,8 @@ export class GameHUD {
       return;
     }
 
-    // Respond button (when it's opponent's turn and we need to respond)
-    // Hidden while a response is already in-flight to prevent double-submission.
-    if (state.phase === 'wait_response' && !state.isMyTurn && !state.respondInProgress) {
-      this.actionPanel.appendChild(
-        this.createButton('Check Hand & Respond', () => {
-          this.actionPanel.innerHTML = ''; // Immediately remove to prevent double-click
-          this.onRespondClick?.();
-        }, '#4caf50'),
-      );
-    } else if (state.phase === 'wait_response' && !state.isMyTurn && state.respondInProgress) {
-      const btn = this.createButton('Responding...', () => {}, '#888888');
-      btn.disabled = true;
-      btn.style.opacity = '0.6';
-      btn.style.cursor = 'not-allowed';
-      this.actionPanel.appendChild(btn);
-    }
+    // Respond is fully automatic — status is communicated via the bottom-left
+    // loader (proving ♥ → sending ♦). No action panel UI needed here.
 
     // Draw phase: deck empty → show skip button; otherwise deck click handles it
     if (state.phase === 'wait_draw' && state.isMyTurn) {

@@ -3,7 +3,7 @@
  */
 
 import { GoFishGameService } from '../services/GoFishGameService';
-import type { Lobby } from '../../../shared/data-types/src/go-fish-types';
+import type { Lobby } from '../../../packages/shared/data-types/src/go-fish-types';
 import { getWalletAddress, switchAccount, getLobbyState } from '../effectstreamBridge';
 
 export class LobbyListScreen {
@@ -36,8 +36,14 @@ export class LobbyListScreen {
       return;
     }
 
-    // Fetch lobbies from server
-    const lobbies = await this.gameService.fetchOpenLobbies();
+    // Fetch open lobbies and the player's resumable games in parallel
+    const [lobbies, resumableGames] = await Promise.all([
+      this.gameService.fetchOpenLobbies(),
+      this.gameService.findResumableGames().catch(err => {
+        console.warn('[LobbyListScreen] findResumableGames failed:', err);
+        return [] as Array<{ lobbyId: string; playerId: 1 | 2; lobbyName: string; opponentName: string }>;
+      }),
+    ]);
 
     // Check if modal is open - if so, don't re-render
     const existingModal = document.getElementById('create-lobby-modal') as HTMLElement;
@@ -70,32 +76,51 @@ export class LobbyListScreen {
       return;
     }
 
-    // Store current input value, focus state, and cursor position before re-render
-    const nameInput = document.getElementById('player-name') as HTMLInputElement;
-    const currentValue = nameInput?.value || this.gameService.getPlayerName();
-    const isFocused = document.activeElement === nameInput;
-    const cursorStart = nameInput?.selectionStart || 0;
-    const cursorEnd = nameInput?.selectionEnd || 0;
+    const playerName = this.gameService.getPlayerName() || 'Player';
+
+    // Compute a default lobby name that doesn't collide with existing lobby
+    // names (open lobbies + my active games). Starts with "{name}'s game"
+    // and appends " #2", " #3", … until unique. Pure UI — avoids showing
+    // duplicates in the sidebar list; the contract doesn't care.
+    const existingNames = new Set<string>([
+      ...lobbies.map(l => l.name),
+      ...resumableGames.map(g => g.lobbyName),
+    ]);
+    const defaultLobbyName = this.nextAvailableLobbyName(`${playerName}'s game`, existingNames);
 
     this.container.innerHTML = `
       <div class="lobby-list-screen">
-        <h1 class="title">🎣 Go Fish Game</h1>
+        <header class="side-header">
+          <div class="top-actions">
+            <button id="leaderboard-btn" class="icon-btn" title="Leaderboard" aria-label="Leaderboard">🏆</button>
+            <button id="refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh">↻</button>
+            <button id="help-btn" class="icon-btn" title="How to play" aria-label="Help">?</button>
+            <button id="about-btn" class="icon-btn" title="About / Report" aria-label="About">ⓘ</button>
+          </div>
+          <h1 class="title">Go Fish</h1>
+          <div class="welcome">Welcome<span class="name">${playerName}</span></div>
+        </header>
 
-        <div class="player-info">
-          <label>Your Name:</label>
-          <input
-            type="text"
-            id="player-name"
-            value="${currentValue}"
-            placeholder="Enter your name"
-            maxlength="20"
-          />
+        <div class="side-content">
+          ${resumableGames.length > 0 ? `
+            <h2>My Active Games (${resumableGames.length})</h2>
+            <div class="resume-list">
+              ${resumableGames.map(g => this.renderResumableGame(g)).join('')}
+            </div>
+          ` : ''}
+
+          <h2>Available Lobbies (${lobbies.length})</h2>
+          <div class="lobby-list">
+            ${lobbies.length === 0
+              ? '<div class="empty-state">No lobbies available yet.</div>'
+              : lobbies.map(lobby => this.renderLobby(lobby)).join('')
+            }
+          </div>
         </div>
 
-        <div class="actions">
+        <footer class="side-footer">
           <button id="create-lobby-btn" class="btn btn-primary">Create New Lobby</button>
-          <button id="refresh-btn" class="btn btn-secondary">Refresh</button>
-        </div>
+        </footer>
 
         <!-- Create Lobby Modal (with overlay) -->
         <div id="create-lobby-modal" class="create-lobby-modal-overlay" style="display: none;">
@@ -106,7 +131,7 @@ export class LobbyListScreen {
             </div>
             <div class="form-group">
               <label>Lobby Name:</label>
-              <input type="text" id="lobby-name" placeholder="Enter lobby name" maxlength="30"/>
+              <input type="text" id="lobby-name" placeholder="Enter lobby name" maxlength="30" value="${defaultLobbyName}"/>
             </div>
             <div class="form-group">
               <span class="form-hint">Go Fish is a 2-player game. Your game will start automatically when someone joins.</span>
@@ -117,29 +142,119 @@ export class LobbyListScreen {
             </div>
           </div>
         </div>
-
-        <h2>Available Lobbies (${lobbies.length})</h2>
-
-        <div class="lobby-list">
-          ${lobbies.length === 0
-            ? '<div class="empty-state">No lobbies available. Create one!</div>'
-            : lobbies.map(lobby => this.renderLobby(lobby)).join('')
-          }
-        </div>
       </div>
     `;
 
-    // Restore focus and cursor position if it was focused before
-    if (isFocused) {
-      const newNameInput = document.getElementById('player-name') as HTMLInputElement;
-      if (newNameInput) {
-        newNameInput.focus();
-        // Restore exact cursor position
-        newNameInput.setSelectionRange(cursorStart, cursorEnd);
-      }
-    }
-
     this.attachEventListeners();
+  }
+
+  private renderResumableGame(game: {
+    lobbyId: string;
+    playerId: 1 | 2;
+    lobbyName: string;
+    opponentName: string;
+    myScore: number;
+    opponentScore: number;
+    isMyTurn: boolean;
+    phase: number;
+  }): string {
+    // Phase → user-facing status. 0=dealing, 1=turn_start, 2=wait_response,
+    // 3=wait_transfer, 4=wait_draw, 5=wait_draw_check, 6=game_over
+    const inSetup = game.phase === 0;
+    const finished = game.phase === 6;
+    // Turn states use the in-row dealer chip; only setup/finished show a pill
+    const showStatusPill = inSetup || finished;
+    const statusText = inSetup ? 'Setup' : 'Finished';
+    const statusClass = inSetup ? 'in_progress' : 'finished';
+
+    // Turn chip — small gold disc marking whose turn it is. Uses a play
+    // arrow (▶) rather than the poker "D" dealer-button convention.
+    const chip = `<span class="dealer-chip" title="Current turn">▶</span>`;
+    const meActive = !inSetup && !finished && game.isMyTurn;
+    const themActive = !inSetup && !finished && !game.isMyTurn;
+
+    // Mocked mini-hand preview — NOT connected to the contract. Seeded off
+    // the lobby id so each card shows a stable (but card-specific) mini hand
+    // without an extra witness query per render.
+    const mockHand = this.mockMiniHand(game.lobbyId);
+
+    return `
+      <div class="lobby-card resume-card" data-lobby-id="${game.lobbyId}">
+        <div class="lobby-header">
+          <h3>${game.lobbyName}</h3>
+          ${showStatusPill ? `<span class="lobby-status ${statusClass}">${statusText}</span>` : ''}
+        </div>
+        <div class="mini-hand">
+          ${mockHand.map(c => `
+            <div class="mini-card ${c.red ? 'red' : ''}">
+              <span class="mc-rank">${c.rank}</span>
+              <span class="mc-suit">${c.suit}</span>
+            </div>
+          `).join('')}
+        </div>
+        <div class="score-row">
+          <div class="score-side me ${meActive ? 'active' : ''}">
+            <span class="name">${meActive ? chip : ''} You</span>
+            <span class="books">${game.myScore}</span>
+          </div>
+          <span class="divider">♣</span>
+          <div class="score-side them ${themActive ? 'active' : ''}">
+            <span class="name">${game.opponentName} ${themActive ? chip : ''}</span>
+            <span class="books">${game.opponentScore}</span>
+          </div>
+        </div>
+        <button class="btn btn-primary resume-btn" data-lobby-id="${game.lobbyId}">
+          ${meActive ? 'Play Turn' : 'Resume'}
+        </button>
+      </div>
+    `;
+  }
+
+  /** Find the first name in the sequence "base", "base #2", "base #3", … that
+   *  isn't already taken by an existing lobby. Comparison is case-insensitive
+   *  and trim-insensitive so we don't accept near-duplicates. */
+  private nextAvailableLobbyName(base: string, taken: Set<string>): string {
+    const norm = (s: string) => s.trim().toLowerCase();
+    const takenLower = new Set<string>();
+    for (const n of taken) takenLower.add(norm(n));
+
+    if (!takenLower.has(norm(base))) return base;
+    for (let i = 2; i < 100; i++) {
+      const candidate = `${base} #${i}`;
+      if (!takenLower.has(norm(candidate))) return candidate;
+    }
+    // Fallback — extremely unlikely to hit, but keep it stable.
+    return `${base} #${Date.now().toString().slice(-4)}`;
+  }
+
+  /** Deterministic mock hand derived from the lobby id. Shows 4 cards so
+   *  each Active Games card has a sensible preview without extra contract
+   *  reads. Real hand data lives in the game screen. */
+  private mockMiniHand(seedStr: string): Array<{ rank: string; suit: string; red: boolean }> {
+    // Simple string hash for deterministic seeding
+    let hash = 0;
+    for (let i = 0; i < seedStr.length; i++) {
+      hash = ((hash << 5) - hash) + seedStr.charCodeAt(i);
+      hash |= 0;
+    }
+    const RANKS = ['A', '2', '3', '4', '5', '6', '7'];
+    const SUITS = [
+      { sym: '♥', red: true },
+      { sym: '♦', red: true },
+      { sym: '♣', red: false },
+      { sym: '♠', red: false },
+    ];
+    const hand: Array<{ rank: string; suit: string; red: boolean }> = [];
+    for (let i = 0; i < 4; i++) {
+      // LCG step from the seed hash → different index per position
+      hash = (hash * 1103515245 + 12345) | 0;
+      const rIdx = Math.abs(hash) % RANKS.length;
+      hash = (hash * 1103515245 + 12345) | 0;
+      const sIdx = Math.abs(hash) % SUITS.length;
+      const s = SUITS[sIdx];
+      hand.push({ rank: RANKS[rIdx], suit: s.sym, red: s.red });
+    }
+    return hand;
   }
 
   private renderLobby(lobby: Lobby): string {
@@ -173,25 +288,43 @@ export class LobbyListScreen {
   }
 
   private attachEventListeners() {
-    // Player name input - save on both input and change
-    const nameInput = document.getElementById('player-name') as HTMLInputElement;
-    nameInput?.addEventListener('input', (e) => {
-      const target = e.target as HTMLInputElement;
-      this.gameService.setPlayerName(target.value.trim());
-    });
-    nameInput?.addEventListener('change', (e) => {
-      const target = e.target as HTMLInputElement;
-      this.gameService.setPlayerName(target.value.trim());
-    });
-
-    // Create lobby button
+    // Create lobby button (sticky footer)
     document.getElementById('create-lobby-btn')?.addEventListener('click', () => {
       this.showCreateLobbyModal();
     });
 
-    // Refresh button
+    // Refresh icon (top-right of sidebar header)
     document.getElementById('refresh-btn')?.addEventListener('click', () => {
       this.render();
+    });
+
+    // Leaderboard icon — dispatch a custom event so UIManager can toggle the
+    // LeaderboardPanel (which is owned by UIManager, not this screen).
+    document.getElementById('leaderboard-btn')?.addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent('open-leaderboard', { bubbles: true }));
+    });
+
+    // Help icon — placeholder for a future "How to play" modal.
+    document.getElementById('help-btn')?.addEventListener('click', () => {
+      console.log('[LobbyListScreen] Help button clicked — modal not implemented yet');
+    });
+
+    // About / Report icon — placeholder for a future "About & Report an
+    // issue" modal.
+    document.getElementById('about-btn')?.addEventListener('click', () => {
+      console.log('[LobbyListScreen] About button clicked — modal not implemented yet');
+    });
+
+    // Resume buttons — jump straight into the game screen
+    document.querySelectorAll('.resume-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const lobbyId = target.dataset.lobbyId;
+        if (lobbyId) {
+          console.log('[LobbyListScreen] Resuming game:', lobbyId);
+          this.dispatchEvent('navigate', { screen: 'game', lobbyId });
+        }
+      });
     });
 
     // Join buttons

@@ -1,16 +1,19 @@
 import * as THREE from 'three';
 import gsap from 'gsap';
-import type { Card } from '../../../../shared/data-types/src/go-fish-types';
+import type { Card } from '../../../../packages/shared/data-types/src/go-fish-types';
 import type { ThreeApp } from '../ThreeApp';
 import { GameStateAdapter, type GameSceneState, type StateChanges } from '../state/GameStateAdapter';
 import { AnimationQueue } from '../state/AnimationQueue';
 import { GameHUD } from '../ui/GameHUD';
 import { MidnightService } from '../../services/MidnightService';
+import * as GoFishContractService from '../../services/GoFishContractService';
 import { PlayerKeyManager } from '../../services/PlayerKeyManager';
 import { registerSecret as batcherRegisterSecret } from '../../services/BatcherMidnightService';
 import { isBatcherModeEnabled } from '../../proving/batcher-providers';
 import { animateDealHand, animateDrawFromDeck } from '../animations/CardAnimations';
 import { soundManager } from '../SoundManager';
+import { globalLoader } from '../ui/GlobalLoader';
+import { turnIndicator } from '../ui/TurnIndicator';
 
 const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7'] as const;
 
@@ -56,6 +59,7 @@ export class GameScene {
   private drawInProgress = false;
   private askInProgress = false;
   private respondInProgress = false;
+  private scoreBookInProgress = false;
 
   /**
    * When the asking player receives cards from the opponent, the on-chain indexer
@@ -64,6 +68,9 @@ export class GameScene {
    * re-enabling card selection. Set in performAskForCard when cardCount > 0.
    */
   private expectedMinHandSize: number = 0;
+
+  /** Direct WS subscription for setup coordination. */
+  private unsubscribeSetupWs: (() => void) | null = null;
 
   constructor(app: ThreeApp) {
     this.app = app;
@@ -112,11 +119,11 @@ export class GameScene {
       this.confirmAskForCard(opponentId);
     };
     this.hud.onCancelOpponentSelect = () => {
-      this.pendingAskRank = null;
-      this.pendingAskRankIndex = -1;
-      this.app.inputManager.setOpponentSelectMode(false);
-      this.app.setOpponentHighlighted(false);
-      this.hud.hideOpponentSelectPrompt();
+      this.cancelAskSelection();
+    };
+    // Click empty space while in opponent-select mode → cancel selection
+    this.app.inputManager.onEmptyClickInSelectMode = () => {
+      this.cancelAskSelection();
     };
 
     // Start polling
@@ -124,21 +131,38 @@ export class GameScene {
       this.onGameStateChange(current, prev, changes);
     });
     this.adapter.start();
+
+    // Direct WS listener for setup coordination. When the opponent's
+    // mask or deal lands on-chain, the contract state changes but the
+    // game state fields (phase, scores, hands) look identical. This
+    // listener ensures runAutomaticSetup fires immediately.
+    this.unsubscribeSetupWs = GoFishContractService.onContractStateChange(() => {
+      if (this.setupPhase === 'waiting_for_opponent') {
+        console.log('[GameScene] WS: contract state changed while waiting_for_opponent → re-running setup');
+        this.runAutomaticSetup();
+      }
+    });
   }
 
   stop(): void {
     this.adapter?.stop();
     this.adapter = null;
+    this.unsubscribeSetupWs?.();
+    this.unsubscribeSetupWs = null;
     this.hud.hide();
     this.animationQueue.clear();
     this.app.inputManager.onCardClick = null;
     this.app.inputManager.onDeckClick = null;
     this.app.inputManager.onOpponentClick = null;
     this.app.inputManager.onOpponentHoverChange = null;
+    this.app.inputManager.onEmptyClickInSelectMode = null;
     this.app.inputManager.setDeckHitTarget(null);
     this.app.inputManager.setOpponentHitTarget(null);
     this.app.inputManager.setOpponentSelectMode(false);
     this.app.setOpponentHighlighted(false);
+    turnIndicator.hide();
+    globalLoader.hide();
+    globalLoader.setBackground(null);
   }
 
   private onGameStateChange(
@@ -152,24 +176,41 @@ export class GameScene {
     if (changes.handChanged) {
       this.app.setPlayerHand(state.myHand);
 
-      // Play deal animation on first hand load
+      // Play deal animation on first hand load — but only when we actually
+      // saw the game transition out of 'dealing'. If we joined with a
+      // non-empty hand already past dealing (rejoin case), just show the
+      // cards without replaying the animation.
+      const isRejoin = _previous === null && state.phase !== 'dealing';
       if (!this.initialDealPlayed && state.myHand.length > 0) {
         this.initialDealPlayed = true;
-        const deckWorldPos = new THREE.Vector3();
-        this.app.getDeckGroup().getWorldPosition(deckWorldPos);
-        // Convert to player hand group local space
-        const handGroup = this.app.getPlayerHandGroup();
-        const deckLocalPos = handGroup.worldToLocal(deckWorldPos.clone());
+        if (isRejoin) {
+          console.log('[GameScene] Rejoining in-progress game — skipping deal animation');
+        } else {
+          const deckWorldPos = new THREE.Vector3();
+          this.app.getDeckGroup().getWorldPosition(deckWorldPos);
+          // Convert to player hand group local space
+          const handGroup = this.app.getPlayerHandGroup();
+          const deckLocalPos = handGroup.worldToLocal(deckWorldPos.clone());
 
-        this.animationQueue.enqueue(async () => {
-          const cards = this.app.getPlayerCards();
-          // Play deal sound for each card with stagger
-          for (let i = 0; i < cards.length; i++) {
-            setTimeout(() => soundManager.playCardDeal(), i * 120);
-          }
-          await animateDealHand(cards, deckLocalPos, 0.12);
-        });
+          this.animationQueue.enqueue(async () => {
+            const cards = this.app.getPlayerCards();
+            // Play deal sound for each card with stagger
+            for (let i = 0; i < cards.length; i++) {
+              setTimeout(() => soundManager.playCardDeal(), i * 120);
+            }
+            await animateDealHand(cards, deckLocalPos, 0.12);
+          });
+        }
       }
+    }
+
+    // Hand changed → check for any complete book (3 of a rank) and score it.
+    // Skips if we're already scoring, or if the game is over, or the hand
+    // can't contain a book (fewer than 3 cards).
+    if (changes.handChanged && state.myHand.length >= 3 && !state.isGameOver) {
+      this.autoScoreBooks(state).catch(err => {
+        console.warn('[GameScene] autoScoreBooks failed:', err);
+      });
     }
 
     if (changes.handSizesChanged) {
@@ -195,6 +236,71 @@ export class GameScene {
     }
 
     const isMyTurn = state.currentTurn === state.playerId;
+
+    // Update game log with current turn/wait status (replaces last status line)
+    if (changes.phaseChanged || changes.turnChanged) {
+      const opName = state.opponentName || 'Opponent';
+      const statusPrefix = '⏳';
+      const log = this.adapter?.gameLog ?? [];
+      const lastIsStatus = log.length > 0 && log[log.length - 1].includes(statusPrefix);
+
+      let statusMsg = '';
+      if (state.phase === 'turn_start' && isMyTurn) {
+        statusMsg = `${statusPrefix} Your turn — pick a card to ask for`;
+      } else if (state.phase === 'turn_start' && !isMyTurn) {
+        statusMsg = `${statusPrefix} Waiting for ${opName} to ask...`;
+      } else if (state.phase === 'wait_response' && !isMyTurn) {
+        statusMsg = `${statusPrefix} ${opName} asked — check your hand and respond`;
+      } else if (state.phase === 'wait_response' && isMyTurn) {
+        statusMsg = `${statusPrefix} Waiting for ${opName} to respond...`;
+      } else if (state.phase === 'wait_draw_check' || state.phase === 'wait_draw') {
+        statusMsg = `${statusPrefix} Go Fish — resolve the draw`;
+      } else if (state.phase === 'game_over') {
+        statusMsg = '🏁 Game Over!';
+      }
+
+      if (statusMsg && this.adapter) {
+        if (lastIsStatus) {
+          log[log.length - 1] = statusMsg;
+        } else {
+          this.adapter.addLog(statusMsg.replace(/^\[.*?\] /, ''));
+        }
+      }
+    }
+
+    // "Your turn" indicator — bottom-center golden ♣. Only when it's my turn
+    // in turn_start and I don't have a local action running. While the user
+    // is mid-selection (opponentSelectMode), handleCardClick owns the message,
+    // so we don't overwrite it here.
+    const localActionRunningForTurn =
+      this.askInProgress || this.respondInProgress || this.drawInProgress || this.scoreBookInProgress;
+    const inOpponentSelect = this.app.inputManager.opponentSelectMode;
+    if (state.phase === 'turn_start' && isMyTurn && !localActionRunningForTurn && !state.isGameOver) {
+      if (!inOpponentSelect) turnIndicator.show('Select a Card');
+    } else {
+      turnIndicator.hide();
+    }
+
+    // Background "waiting for opponent" loader — spades, slow ambient pulse.
+    // Shows only when we have no local action running; the proving/sending
+    // foreground loader masks it whenever the local player is submitting a tx.
+    const localActionRunning = this.askInProgress || this.respondInProgress || this.drawInProgress;
+    const opName = state.opponentName || 'Opponent';
+    if (!localActionRunning && !state.isGameOver) {
+      if (state.phase === 'turn_start' && !isMyTurn) {
+        globalLoader.setBackground('waiting', `Waiting for ${opName} to ask…`);
+      } else if (state.phase === 'wait_response' && isMyTurn) {
+        globalLoader.setBackground('waiting', `Waiting for ${opName} to respond…`);
+      } else if (state.phase === 'wait_draw_check' && !isMyTurn) {
+        globalLoader.setBackground('waiting', `${opName} is drawing…`);
+      } else if (state.phase === 'wait_transfer' && isMyTurn) {
+        globalLoader.setBackground('waiting', `${opName} is transferring cards…`);
+      } else {
+        globalLoader.setBackground(null);
+      }
+    } else {
+      globalLoader.setBackground(null);
+    }
 
     // Set card interactivity: only allow hover animation when player can select a card.
     // Also wait until the hand has caught up with any cards transferred from the opponent
@@ -241,6 +347,31 @@ export class GameScene {
     // Detect opponent asking for a card (phase changed to wait_response and it's not our turn)
     if (changes.phaseChanged && state.phase === 'wait_response' && !isMyTurn) {
       this.showOpponentAskNotification(state, _previous);
+      // Auto-trigger respond — no user click required. The HUD shows a
+      // "responding..." status instead of a button.
+      if (!this.respondInProgress) {
+        this.handleRespondToAsk();
+      }
+    }
+
+    // Also auto-trigger when rejoining: first poll (previous===null) shows
+    // wait_response and we're not the asker — start responding immediately.
+    if (_previous === null && state.phase === 'wait_response' && !isMyTurn && !this.respondInProgress) {
+      this.handleRespondToAsk();
+    }
+
+    // Auto-resolve the draw. After respondToAsk (no match), the contract
+    // internally draws a card and moves to wait_draw_check. The asker must
+    // now call afterGoFish to finalize. No user action needed — both
+    // browsers observe wait_draw_check but only the asker (currentTurn ===
+    // playerId) submits the tx. Guard with drawInProgress to avoid double-
+    // submission, and fire on both phase transition AND fresh rejoin.
+    const shouldAutoDraw =
+      state.phase === 'wait_draw_check' &&
+      isMyTurn &&
+      !this.drawInProgress;
+    if (shouldAutoDraw && (changes.phaseChanged || _previous === null)) {
+      this.handleGoFish();
     }
 
     // Clear the waiting banner once we're no longer in wait_response (opponent responded)
@@ -279,9 +410,12 @@ export class GameScene {
     this.hud.onSkipDrawClick = () => this.handleSkipDraw();
     this.hud.onBackToLobby = () => this.navigateToLobbyList();
 
-    // Handle setup phase automation
-    // Only run when idle — 'failed' retries are scheduled explicitly by runAutomaticSetup
-    if (this.setupPhase === 'idle' && (state.phase === 'dealing' || state.phase === 'turn_start')) {
+    // Handle setup phase automation. With the WS subscription, state
+    // changes trigger this callback instantly — no need for 2s polling.
+    // Re-run setup when idle (first entry) OR when waiting for opponent
+    // (the WS just delivered the opponent's mask/deal landing on-chain).
+    if ((this.setupPhase === 'idle' || this.setupPhase === 'waiting_for_opponent') &&
+        (state.phase === 'dealing' || state.phase === 'turn_start')) {
       this.runAutomaticSetup();
     }
 
@@ -417,9 +551,10 @@ export class GameScene {
     timeoutMs: number,
   ): Promise<boolean> {
     const startTime = Date.now();
-    const pollIntervalMs = 3000;
+    const pollIntervalMs = 2000;
 
     while (Date.now() - startTime < timeoutMs) {
+      // queryCircuit always does fresh HTTP — no stale cache to worry about.
       const status = await MidnightService.getSetupStatus(
         this.lobbyId,
         this.playerId as 1 | 2,
@@ -449,7 +584,10 @@ export class GameScene {
    * Orchestrates two focused steps: setupMask() and setupDealCards().
    */
   private async runAutomaticSetup(): Promise<void> {
-    if (this.setupPhase !== 'idle') return;
+    // Allow re-entry from 'idle' (first run) and 'waiting_for_opponent'
+    // (WS delivered opponent's state change). Block re-entry from
+    // 'applying_mask' / 'dealing' / 'syncing' (already in progress).
+    if (this.setupPhase !== 'idle' && this.setupPhase !== 'waiting_for_opponent') return;
     this.setupPhase = 'applying_mask';
 
     try {
@@ -463,6 +601,9 @@ export class GameScene {
 
       console.log('[GameScene] Automatic setup complete!');
       this.setupPhase = 'done';
+      // Setup WS listener no longer needed — unsubscribe to avoid noise
+      this.unsubscribeSetupWs?.();
+      this.unsubscribeSetupWs = null;
       this.hud.showNotification('Setup Complete', 'Waiting for game to start...', 5000);
       this.adapter?.forcePoll();
     } catch (error: unknown) {
@@ -470,26 +611,53 @@ export class GameScene {
       console.error('[GameScene] Automatic setup failed:', msg);
       this.hud.showNotification('Error', 'Setup failed. Retrying...', 10000);
       this.scheduleSetupRetry(10000);
+    } finally {
+      globalLoader.hide();
     }
   }
 
-  /** Step 1: Apply mask. Returns false if setup should be aborted/retried. */
-  private async setupMask(status: { hasMaskApplied: boolean }): Promise<boolean> {
+  /** Step 1: Apply mask. Returns false if setup should be aborted/retried.
+   *  ORDERING: P1 (lobby creator) applies first, P2 (joiner) waits for P1.
+   *  Preserves EVM player order into the Midnight contract. */
+  private async setupMask(status: { hasMaskApplied: boolean; opponentHasMaskApplied?: boolean }): Promise<boolean> {
     if (status.hasMaskApplied) {
       console.log('[GameScene] Mask already applied, skipping');
       this.setupPhase = 'waiting_for_opponent';
       return true;
     }
 
-    this.hud.showNotification('Setting Up', 'Applying cryptographic mask...', 30000);
+    // P2 must wait for P1's mask before applying their own.
+    // No scheduleSetupRetry — the WS subscription will trigger
+    // onGameStateChange when P1's mask lands, re-entering setup.
+    if (this.playerId === 2 && !status.opponentHasMaskApplied) {
+      console.log('[GameScene] Player 2 waiting for Player 1 to apply mask (WS will trigger next attempt)');
+      this.hud.showNotification('Setting Up', 'Waiting for opponent to shuffle the deck...', 30000);
+      this.setupPhase = 'waiting_for_opponent';
+      return false;
+    }
+
+    this.hud.showNotification('Setting Up', 'Applying cryptographic mask — proving...', 60000);
     const pid = this.playerId as 1 | 2;
     const secretHex = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid).toString(16).padStart(64, '0');
     const maskResult = await MidnightService.applyMask(this.lobbyId, pid, secretHex);
 
     if (maskResult.success) {
-      console.log('[GameScene] Mask applied successfully');
-      this.setupPhase = 'waiting_for_opponent';
-      return true;
+      console.log('[GameScene] Mask submitted to batcher, waiting for on-chain confirmation...');
+      this.hud.showNotification('Setting Up', 'Mask submitted — waiting for blockchain confirmation...', 120000);
+      // Poll until the indexer confirms the mask is on-chain.
+      // Without this wait, the setup loop retries immediately and
+      // double-submits because hasMaskApplied is still false.
+      const confirmed = await this.pollForSetupStatus('hasMaskApplied', 120000);
+      if (confirmed) {
+        console.log('[GameScene] Mask confirmed on-chain — forcing adapter poll so both browsers sync');
+        this.adapter?.forcePoll(); // Trigger state refresh for WS listeners
+        this.setupPhase = 'waiting_for_opponent';
+        return true;
+      }
+      console.warn('[GameScene] Mask submitted but not confirmed within timeout');
+      this.hud.showNotification('Warning', 'Mask may not have landed — retrying...', 10000);
+      this.scheduleSetupRetry(5000);
+      return false;
     }
 
     const err = maskResult.errorMessage ?? '';
@@ -529,35 +697,30 @@ export class GameScene {
 
     // Wait for opponent to apply their mask
     if (!updatedStatus.opponentHasMaskApplied) {
-      console.log('[GameScene] Waiting for opponent to apply mask... will retry in 2s');
+      console.log('[GameScene] Waiting for opponent to apply mask (WS will trigger next attempt)');
       this.hud.showNotification('Setting Up', 'Waiting for opponent...', 30000);
-      this.scheduleSetupRetry(2000);
+      this.setupPhase = 'waiting_for_opponent';
       return false;
     }
 
-    // Wait for indexer to sync (only once per setup session)
+    // Brief pause for indexer to sync after opponent's mask lands.
     if (this.setupPhase === 'waiting_for_opponent') {
-      console.log('[GameScene] Opponent mask applied, waiting 8s for indexer to sync...');
+      console.log('[GameScene] Opponent mask applied, brief sync pause...');
       this.hud.showNotification('Setting Up', 'Syncing blockchain state...', 10000);
-      await new Promise(resolve => setTimeout(resolve, 8000));
+      await new Promise(resolve => setTimeout(resolve, 2000));
       this.setupPhase = 'dealing';
     }
 
     const postSyncStatus = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
     console.log('[GameScene] Post-sync setup status:', postSyncStatus);
 
-    // Player 2 must wait for Player 1 to deal first (enforced by contract)
+    // Player 2 must wait for Player 1 to deal first (enforced by contract).
+    // WS will trigger next attempt when P1's deal lands on-chain.
     if (this.playerId === 2 && !postSyncStatus.opponentHasDealt) {
-      console.log('[GameScene] Player 2 waiting for Player 1 to deal first... will retry in 5s');
+      console.log('[GameScene] Player 2 waiting for Player 1 to deal (WS will trigger next attempt)');
       this.hud.showNotification('Setting Up', 'Waiting for Player 1 to deal...', 30000);
-      // Stay in 'dealing' phase — do NOT reset to 'waiting_for_opponent', which would
-      // re-trigger the 8s indexer sync wait on every retry cycle.
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      const refreshedStatus = await MidnightService.getSetupStatus(this.lobbyId, this.playerId as 1 | 2);
-      if (!refreshedStatus.opponentHasDealt) {
-        this.scheduleSetupRetry(100);
-        return false;
-      }
+      this.setupPhase = 'waiting_for_opponent';
+      return false;
     }
 
     // Attempt dealCards with inline retry for "mask not yet on-chain" failures.
@@ -575,8 +738,16 @@ export class GameScene {
       const dealResult = await MidnightService.dealCards(this.lobbyId, pid, secretHex, seedHex);
 
       if (dealResult.success) {
-        console.log('[GameScene] Cards dealt successfully');
-        return true;
+        console.log('[GameScene] Cards submitted to batcher, waiting for on-chain confirmation...');
+        this.hud.showNotification('Setting Up', 'Cards submitted — waiting for blockchain confirmation...', 120000);
+        const confirmed = await this.pollForSetupStatus('hasDealt', 120000);
+        if (confirmed) {
+          console.log('[GameScene] Cards dealt and confirmed on-chain — forcing adapter poll so both browsers sync');
+          this.adapter?.forcePoll(); // Trigger state refresh for WS listeners
+          return true;
+        }
+        console.warn('[GameScene] dealCards submitted but not confirmed within timeout');
+        continue; // retry the while loop
       }
 
       lastErr = dealResult.errorMessage ?? '';
@@ -643,7 +814,21 @@ export class GameScene {
 
     // Enter opponent-select mode — player must click an opponent
     this.app.inputManager.setOpponentSelectMode(true);
-    this.hud.showOpponentSelectPrompt(card.rank, state.opponentName);
+    // Repurpose the turn indicator as the "ask target" prompt rather than
+    // popping a second HUD modal. Clicking the opponent confirms; clicking
+    // empty space cancels (wired via onEmptyClickInSelectMode).
+    turnIndicator.show(`Click ${state.opponentName} to ask for ${card.rank}s`);
+  }
+
+  /** Clear any pending ask selection and return to normal turn prompt. */
+  private cancelAskSelection(): void {
+    if (this.pendingAskRankIndex === -1 && !this.app.inputManager.opponentSelectMode) return;
+    this.pendingAskRank = null;
+    this.pendingAskRankIndex = -1;
+    this.app.inputManager.setOpponentSelectMode(false);
+    this.app.setOpponentHighlighted(false);
+    // Back to the default "select a card" prompt (still our turn)
+    turnIndicator.show('Select a Card');
   }
 
   /** Called after opponent is clicked to confirm the ask. */
@@ -653,7 +838,7 @@ export class GameScene {
     // Exit opponent-select mode
     this.app.inputManager.setOpponentSelectMode(false);
     this.app.setOpponentHighlighted(false);
-    this.hud.hideOpponentSelectPrompt();
+    turnIndicator.hide();
 
     // Show persistent waiting banner immediately — stays until the batcher confirms
     const rankLabel = this.pendingAskRank ?? '';
@@ -696,8 +881,10 @@ export class GameScene {
     this.app.setCardsInteractive(false);
     try {
       const handBefore = this.adapter?.currentState?.myHand.length ?? 0;
+      this.adapter?.addLog(`🃏 Asking for ${RANK_NAMES[rankIndex]}s — proving...`);
       const result = await MidnightService.askForCard(this.lobbyId, this.playerId as 1 | 2, rankIndex);
       if (result.success) {
+        this.adapter?.addLog(`🃏 Asked for ${RANK_NAMES[rankIndex]}s — waiting for opponent`);
         // Wait for the opponent to respond (phase leaves wait_response).
         // This tells us whether a transfer happened (wait_transfer) or go fish (wait_draw).
         const stateAfterResponse = await this.adapter?.pollUntilPhase(
@@ -730,6 +917,7 @@ export class GameScene {
       this.app.setCardsInteractive(true);
     } finally {
       this.askInProgress = false;
+      globalLoader.hide();
     }
   }
 
@@ -738,11 +926,14 @@ export class GameScene {
     this.respondInProgress = true;
     try {
       this.hud.showNotification('Responding...', 'Checking hand...', 5000);
+      this.adapter?.addLog('🔍 Checking hand — proving...');
       const result = await MidnightService.respondToAsk(this.lobbyId, this.playerId as 1 | 2);
       if (result.success) {
         if (result.hasCards) {
+          this.adapter?.addLog(`📤 Gave ${result.cardCount} card(s) to opponent`);
           this.hud.showNotification('Responding...', `Transferring ${result.cardCount} card(s) — waiting for chain...`, 30000);
         } else {
+          this.adapter?.addLog('🎣 Go Fish — opponent draws from deck');
           this.hud.showNotification('Responding...', 'Go Fish! — waiting for chain...', 30000);
         }
 
@@ -769,6 +960,68 @@ export class GameScene {
       this.hud.showNotification('Error', 'Failed to respond', 5000);
     } finally {
       this.respondInProgress = false;
+      globalLoader.hide();
+    }
+  }
+
+  /**
+   * Scan the current hand for any 3-of-a-rank and submit checkAndScoreBook
+   * for each. The contract removes the 3 cards and increments the score.
+   * At ≥4 books, it sets GameOver.
+   *
+   * Serialized via scoreBookInProgress — if multiple hand updates arrive
+   * quickly (e.g., after respondToAsk transfer + redraw), we only run one
+   * scoring pass at a time. The next poll will pick up any remaining books.
+   */
+  private async autoScoreBooks(state: GameSceneState): Promise<void> {
+    if (this.scoreBookInProgress) return;
+
+    // Tally ranks first — bail out entirely if no book exists. Don't flip
+    // scoreBookInProgress or touch the loader, otherwise an unrelated
+    // in-flight "sending" loader would get hidden by our finally block.
+    const rankCounts = new Map<string, number>();
+    for (const card of state.myHand) {
+      rankCounts.set(card.rank, (rankCounts.get(card.rank) ?? 0) + 1);
+    }
+    let hasBook = false;
+    for (const count of rankCounts.values()) {
+      if (count >= 3) { hasBook = true; break; }
+    }
+    if (!hasBook) return;
+
+    this.scoreBookInProgress = true;
+    try {
+      for (const [rank, count] of rankCounts) {
+        if (count < 3) continue;
+        const rankIndex = RANK_NAMES.indexOf(rank as typeof RANK_NAMES[number]);
+        if (rankIndex < 0) continue;
+
+        console.log(`[GameScene] autoScoreBooks: ${count}×${rank} — scoring book`);
+        this.adapter?.addLog(`📚 Scoring book of ${rank}s — proving...`);
+        try {
+          const result = await MidnightService.checkAndScoreBook(
+            this.lobbyId,
+            this.playerId as 1 | 2,
+            rankIndex,
+          );
+          if (result.success) {
+            this.adapter?.addLog(`★ Book of ${rank}s scored!`);
+            this.hud.showNotification('Book Scored!', `Book of ${rank}s`, 4000);
+            soundManager.playBookComplete();
+          } else {
+            console.warn(`[GameScene] checkAndScoreBook(${rank}) failed: ${result.errorMessage}`);
+          }
+        } catch (err) {
+          // Local hand read may disagree with contract's internal rank
+          // counting in edge cases — log and continue.
+          console.warn(`[GameScene] checkAndScoreBook(${rank}) threw:`, err);
+        }
+      }
+    } finally {
+      this.scoreBookInProgress = false;
+      // Safe to hide here — we only got past the early-return if we actually
+      // submitted a book, so the loader we're clearing is our own.
+      globalLoader.hide();
     }
   }
 
@@ -787,6 +1040,7 @@ export class GameScene {
 
       const handBefore = this.adapter?.currentState?.myHand ?? [];
 
+      this.adapter?.addLog('🎣 Resolving draw — proving...');
       const result = await MidnightService.afterGoFish(
         this.lobbyId,
         this.playerId as 1 | 2,
@@ -795,6 +1049,7 @@ export class GameScene {
         this.hud.showNotification('Error', result.errorMessage ?? 'afterGoFish failed', 5000);
         return;
       }
+      this.adapter?.addLog('🎣 Draw resolved — submitted');
 
       // Wait for the chain to advance out of WaitForDrawCheck.
       this.hud.showNotification('Drawing...', 'Waiting for chain confirmation...', 30000);
@@ -811,7 +1066,7 @@ export class GameScene {
       );
 
       if (newCard) {
-        this.hud.showNotification('Drew Card', `${newCard.rank} of ${newCard.suit}${turnMsg}`, 5000);
+        this.hud.showNotification('Drew Card', `${newCard.rank} of ${newCard.suit}`, 5000);
 
         // Animate the drawn card from deck to hand
         this.animationQueue.enqueue(async () => {
@@ -837,6 +1092,7 @@ export class GameScene {
       this.hud.showNotification('Error', 'Failed to draw', 5000);
     } finally {
       this.drawInProgress = false;
+      globalLoader.hide();
     }
   }
 

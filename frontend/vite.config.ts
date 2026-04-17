@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const managedDir = path.resolve(
   __dirname,
-  '../shared/contracts/midnight/go-fish-contract/src/managed',
+  '../packages/shared/contracts/midnight/go-fish-contract/src/managed',
 );
 const publicDir = path.resolve(__dirname, 'public');
 const cryptoShimPath = path.resolve(__dirname, 'src/shims/crypto.ts');
@@ -109,7 +109,7 @@ export default defineConfig({
           src: normalizePath(
             path.resolve(
               __dirname,
-              '../shared/contracts/midnight/go-fish-contract/src/managed/keys/*',
+              '../packages/shared/contracts/midnight/go-fish-contract/src/managed/keys/*',
             ),
           ),
           dest: 'keys',
@@ -118,7 +118,7 @@ export default defineConfig({
           src: normalizePath(
             path.resolve(
               __dirname,
-              '../shared/contracts/midnight/go-fish-contract/src/managed/zkir/*',
+              '../packages/shared/contracts/midnight/go-fish-contract/src/managed/zkir/*',
             ),
           ),
           dest: 'zkir',
@@ -127,7 +127,7 @@ export default defineConfig({
           src: normalizePath(
             path.resolve(
               __dirname,
-              '../shared/contracts/midnight/go-fish-contract.undeployed.json',
+              '../packages/shared/contracts/midnight/go-fish-contract.undeployed.json',
             ),
           ),
           dest: 'contract_address',

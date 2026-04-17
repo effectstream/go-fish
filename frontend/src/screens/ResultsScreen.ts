@@ -2,7 +2,7 @@
  * ResultsScreen - Shows Go Fish game results and statistics
  */
 
-import type { GoFishGameState, GoFishPlayer } from '../../../shared/data-types/src/go-fish-types';
+import type { GoFishGameState, GoFishPlayer } from '../../../packages/shared/data-types/src/go-fish-types';
 import { GoFishGameService } from '../services/GoFishGameService';
 import { CardComponent } from '../components/Card';
 

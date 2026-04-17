@@ -9,7 +9,7 @@ import type {
   GoFishPlayer,
   Lobby,
   ChatMessage,
-} from '../../../shared/data-types/src/go-fish-types';
+} from '../../../packages/shared/data-types/src/go-fish-types';
 
 import {
   checkForBook,
@@ -17,10 +17,12 @@ import {
   getCardsOfRank,
   hasRank,
   sortCards,
-} from '../../../shared/data-types/src/go-fish-types';
+} from '../../../packages/shared/data-types/src/go-fish-types';
 
 import * as EffectstreamBridge from '../effectstreamBridge';
 import { getWalletAddress } from '../effectstreamBridge';
+import * as GoFishContractService from './GoFishContractService';
+import * as PlayerKeyManager from './PlayerKeyManager';
 
 export class GoFishGameService {
   private static instance: GoFishGameService;
@@ -78,8 +80,15 @@ export class GoFishGameService {
       return null;
     }
 
-    // Create local lobby object
-    const lobbyId = result.lobbyId || `lobby_${Date.now()}`;
+    // The lobby ID is assigned by the Paima state machine (not predictable).
+    // effectstreamBridge.createLobby polls /user_lobbies with a snapshot-diff
+    // to discover it. If it couldn't find the ID within the timeout, we can't
+    // navigate to the lobby screen — return null so the UI stays on the list.
+    if (!result.lobbyId) {
+      console.error('Lobby created on-chain but could not discover the ID');
+      return null;
+    }
+    const lobbyId = result.lobbyId;
     const lobby: Lobby = {
       id: lobbyId,
       name: lobbyName,
@@ -157,6 +166,105 @@ export class GoFishGameService {
 
   getLobby(lobbyId: string): Lobby | undefined {
     return this.lobbies.get(lobbyId);
+  }
+
+  /**
+   * List all in-progress games the player can resume.
+   *
+   * For each EVM lobby where the player is a member and status is neither
+   * 'open' nor 'finished', validates:
+   *   1. Midnight contract has the game (not null, not game_over)
+   *   2. Local PlayerKeyManager has this player's secrets (required to
+   *      decrypt the masked hand). Keys are keyed by lobbyId+playerId.
+   *   3. Positional id (1 or 2) can be resolved via the lobby's player list.
+   *
+   * Lobbies failing any check are dropped silently (with a log). Returns
+   * the validated list — empty if nothing is resumable.
+   */
+  async findResumableGames(): Promise<Array<{
+    lobbyId: string;
+    playerId: 1 | 2;
+    lobbyName: string;
+    opponentName: string;
+    myScore: number;
+    opponentScore: number;
+    isMyTurn: boolean;
+    phase: number;
+  }>> {
+    const wallet = getWalletAddress();
+    if (!wallet) return [];
+
+    let candidates: any[];
+    try {
+      const result = await EffectstreamBridge.getUserLobbies(wallet, 0, 50);
+      if (!result.success || !result.lobbies) return [];
+      candidates = result.lobbies.filter(
+        (l: any) => l.status !== 'open' && l.status !== 'finished',
+      );
+    } catch (err) {
+      console.warn('[GoFishGameService] findResumableGames: /user_lobbies failed', err);
+      return [];
+    }
+
+    const resumable: Array<{
+      lobbyId: string;
+      playerId: 1 | 2;
+      lobbyName: string;
+      opponentName: string;
+      myScore: number;
+      opponentScore: number;
+      isMyTurn: boolean;
+      phase: number;
+    }> = [];
+    const { API_BASE_URL } = await import('../apiConfig');
+
+    for (const c of candidates) {
+      const lobbyId = String(c.lobby_id);
+      try {
+        const lobbyRes = await fetch(`${API_BASE_URL}/lobby_state?lobby_id=${lobbyId}`);
+        if (!lobbyRes.ok) continue;
+        const lobby = await lobbyRes.json();
+        const players = lobby.players ?? [];
+        const myIdx = players.findIndex(
+          (p: any) => p.wallet_address?.toLowerCase() === wallet.toLowerCase(),
+        );
+        if (myIdx < 0) continue;
+        const playerId = (myIdx + 1) as 1 | 2;
+        const opponent = players[myIdx === 0 ? 1 : 0];
+        const opponentName = opponent?.player_name ?? 'Opponent';
+
+        const contractState = await GoFishContractService.queryGameState(lobbyId);
+        if (!contractState) {
+          console.log(`[GoFishGameService] Resume skip ${lobbyId}: contract has no game`);
+          continue;
+        }
+        if (contractState.isGameOver) {
+          console.log(`[GoFishGameService] Resume skip ${lobbyId}: game_over`);
+          continue;
+        }
+        if (!PlayerKeyManager.hasExistingKeys(lobbyId, playerId)) {
+          console.log(`[GoFishGameService] Resume skip ${lobbyId}: no local keys`);
+          continue;
+        }
+
+        const opponentIdx = playerId === 1 ? 1 : 0;
+        const meIdx = playerId - 1;
+        resumable.push({
+          lobbyId,
+          playerId,
+          lobbyName: c.lobby_name || 'Unnamed Lobby',
+          opponentName,
+          myScore: contractState.scores[meIdx] ?? 0,
+          opponentScore: contractState.scores[opponentIdx] ?? 0,
+          isMyTurn: contractState.currentTurn === playerId,
+          phase: contractState.phase,
+        });
+      } catch (err) {
+        console.warn(`[GoFishGameService] findResumableGames: error on ${lobbyId}`, err);
+      }
+    }
+
+    return resumable;
   }
 
   async joinLobby(lobbyId: string): Promise<boolean> {

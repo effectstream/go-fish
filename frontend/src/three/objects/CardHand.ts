@@ -1,9 +1,13 @@
 import * as THREE from 'three';
-import type { Card } from '../../../../shared/data-types/src/go-fish-types';
+import type { Card } from '../../../../packages/shared/data-types/src/go-fish-types';
 import { Card3D } from './Card3D';
 import type { CardTextureAtlas } from '../textures/CardTextureAtlas';
 
-const FAN_SPREAD = 0.9;    // Horizontal spacing between cards
+// Horizontal spacing between cards. Card width is 1.0 world units, so anything
+// below 1.0 causes overlap (intentional fan look for larger hands). For small
+// hands we widen the spread so cards don't stack.
+const FAN_SPREAD_TIGHT = 0.9;   // Used when hand has 4+ cards (fan overlap)
+const FAN_SPREAD_WIDE = 1.15;   // Used when hand has <= 3 cards (no overlap)
 const FAN_ARC = 0.03;       // Vertical arc curvature
 const FAN_TILT = 0.02;      // Rotation tilt per card from center
 
@@ -41,14 +45,15 @@ export class CardHand {
     const count = this.cards.length;
     if (count === 0) return;
 
-    const totalWidth = (count - 1) * FAN_SPREAD;
+    const spread = count <= 3 ? FAN_SPREAD_WIDE : FAN_SPREAD_TIGHT;
+    const totalWidth = (count - 1) * spread;
     const startX = -totalWidth / 2;
 
     for (let i = 0; i < count; i++) {
       const card3d = this.cards[i];
       const t = count > 1 ? (i / (count - 1)) * 2 - 1 : 0; // -1 to 1
 
-      const x = startX + i * FAN_SPREAD;
+      const x = startX + i * spread;
       const y = 0.05 + i * 0.001; // Slight stacking so cards overlap correctly
       const z = -t * t * FAN_ARC * count; // Subtle arc
 

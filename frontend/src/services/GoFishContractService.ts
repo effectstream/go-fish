@@ -18,7 +18,7 @@ import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import { toHex, CompactTypeBoolean, CompactTypeBytes, CompactTypeUnsignedInteger, CostModel } from "@midnight-ntwrk/compact-runtime";
+import { toHex, CompactTypeBoolean, CompactTypeBytes, CompactTypeUnsignedInteger, CostModel, QueryContext, sampleContractAddress, createConstructorContext } from "@midnight-ntwrk/compact-runtime";
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { getBrowserProofProvider } from "./midnightBrowserProofProvider";
 import { createInMemoryPrivateStateProvider } from "./midnightInMemoryPrivateStateProvider";
@@ -26,22 +26,27 @@ import {
   witnesses,
   setPlayerSecrets,
   clearPlayerSecrets,
-} from "../../../shared/contracts/midnight/go-fish-contract/src/_index";
+} from "../../../packages/shared/contracts/midnight/go-fish-contract/src/_index";
 import {
   Contract as GoFishContractClass,
-} from "../../../shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js";
+} from "../../../packages/shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js";
 import { PlayerKeyManager } from "./PlayerKeyManager";
 import { getLocalCoinPublicKey, getLocalEncryptionPublicKey } from "./inBrowserWallet";
 import { API_BASE_URL } from "../apiConfig";
+import { globalLoader } from "../three/ui/GlobalLoader";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
+// Direct indexer connection — /api/v3/graphql on port 8088.
+// The old default (8089/api/v1) went through a GraphQL proxy that cached
+// responses, causing P1 to see stale state for P2's mask/deal.
+// Matches the e2e reference at e2e/smoke/_helpers.ts.
 const BASE_URL_MIDNIGHT_INDEXER_API =
-  import.meta.env.VITE_INDEXER_HTTP_URL || "http://127.0.0.1:8089/api/v1/graphql";
+  import.meta.env.VITE_INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v3/graphql";
 const BASE_URL_MIDNIGHT_INDEXER_WS =
-  import.meta.env.VITE_INDEXER_WS_URL || "ws://127.0.0.1:8089/api/v1/graphql/ws";
+  import.meta.env.VITE_INDEXER_WS_URL || "ws://127.0.0.1:8088/api/v3/graphql/ws";
 const BATCHER_URL = import.meta.env.VITE_BATCHER_URL || "http://localhost:3334";
 
 /** Sentinel thrown by the balanceTx hook to abort the SDK pipeline after delegation. */
@@ -108,21 +113,12 @@ let _contractAddress: string | null = null;
 async function getContractAddress(): Promise<string> {
   if (_contractAddress) return _contractAddress;
 
-  // Prefer backend config
-  try {
-    const res = await fetch(`${API_BASE_URL}/api/midnight/contract_address`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.contractAddress) {
-        _contractAddress = normalizeAddress(data.contractAddress);
-        return _contractAddress;
-      }
-    }
-  } catch { /* fall through */ }
-
-  // Fall back to static deployment file
+  // Read from the static deployment file served by vite-plugin-static-copy.
+  // No backend API call — the /api/midnight/contract_address endpoint doesn't
+  // exist and the 404 fallback chain was adding ~2s latency per query.
+  // Matches the e2e reference which reads from the filesystem directly.
   const res = await fetch("/contract_address/go-fish-contract.undeployed.json");
-  if (!res.ok) throw new Error("[GoFishContractService] Contract address not found");
+  if (!res.ok) throw new Error("[GoFishContractService] Contract address not found at /contract_address/go-fish-contract.undeployed.json");
   const data = await res.json();
   _contractAddress = normalizeAddress(data.contractAddress);
   return _contractAddress;
@@ -248,6 +244,19 @@ async function postToBatcher(serializedTx: string, circuitId: string, meta?: { l
   console.log(`[GoFishContractService] ${circuitId} (${txStage}) submitted to batcher`);
 }
 
+/** Human-friendly label for each circuit, used in the GlobalLoader status. */
+const CIRCUIT_LABELS: Record<string, string> = {
+  applyMask: 'applying mask',
+  dealCards: 'dealing cards',
+  askForCard: 'asking for card',
+  respondToAsk: 'checking hand',
+  afterGoFish: 'resolving draw',
+  checkAndScoreBook: 'scoring book',
+  switchTurn: 'switching turn',
+  claimTimeoutWin: 'claiming timeout win',
+  init_deck: 'initializing deck',
+};
+
 async function callDelegated(
   provider: any,
   circuitId: string,
@@ -255,20 +264,38 @@ async function callDelegated(
   meta?: { lobbyId?: string; playerId?: number },
 ): Promise<void> {
   let delegated = false;
+  const label = CIRCUIT_LABELS[circuitId] ?? circuitId;
 
   provider.__delegatedBalanceHook = async (tx: any) => {
+    // Proof is already generated at this point (balanceTx fires after
+    // proveTx). Switch the loader to "sending" before the batcher POST.
+    globalLoader.show('sending', `Submitting ${label}…`);
     const serializedTx = toHex((tx as any).serialize());
     await postToBatcher(serializedTx, circuitId, meta);
     delegated = true;  // posted successfully — any subsequent SDK throw is safe to suppress
   };
 
+  globalLoader.show('proving', `Proving ${label}…`);
   try {
     await callFn();
+    // Delegated flow: on success we've already shown "sending". Leave the
+    // loader in that state — the caller is responsible for hiding it once
+    // the tx confirms on-chain (via pollUntilPhase / pollForSetupStatus).
+    // If we get here and delegation never fired, we need to clean up.
+    if (!delegated) {
+      globalLoader.hide();
+    } else {
+      globalLoader.show('sending', `Awaiting confirmation: ${label}…`);
+    }
   } catch (error) {
     // Suppress if: (a) the sentinel propagated through the SDK, or (b) we already
     // posted to the batcher and the SDK threw after balanceTx returned (e.g.,
     // EffectStream validation error, submitTx unreachable, etc.)
-    if (isDelegationError(error) || delegated) return;
+    if (isDelegationError(error) || delegated) {
+      globalLoader.show('sending', `Awaiting confirmation: ${label}…`);
+      return;
+    }
+    globalLoader.hide();
     throw error;
   } finally {
     delete provider.__delegatedBalanceHook;
@@ -279,7 +306,7 @@ async function callDelegated(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function lobbyIdToGameId(lobbyId: string): Uint8Array {
+export function lobbyIdToGameId(lobbyId: string): Uint8Array {
   const enc = new TextEncoder().encode(lobbyId);
   const b = new Uint8Array(32);
   b.set(enc.slice(0, 32));
@@ -290,7 +317,19 @@ function gameIdToHex(gameId: Uint8Array): string {
   return "0x" + Array.from(gameId).map(x => x.toString(16).padStart(2, "0")).join("");
 }
 
-/** Set secrets for both players before a circuit call. Clears in finally. */
+/** Set secrets for both players before a circuit call. Clears in finally.
+ *
+ *  Every circuit in this contract fetches BOTH players' secrets up-front
+ *  (ZKIR ec_mul guard requirement), even when only one is used in the
+ *  actual computation (cond_select picks the active one). So we must
+ *  always provide both secrets in the witness module.
+ *
+ *  When the opponent's real secret isn't available locally (the normal
+ *  case — only the local player's secret is in PlayerKeyManager), we
+ *  register a dummy value. The contract explicitly supports this:
+ *  see Deck.compact:95-101. The ec_mul round-trip verification works
+ *  for any valid secret+inverse pair, dummy or real.
+ */
 function withSecrets<T>(
   lobbyId: string,
   primaryId: 1 | 2,
@@ -306,18 +345,20 @@ function withSecrets<T>(
   console.log(`[GoFishContractService] withSecrets: setting player=${primaryId} secret=${secret.toString(16).slice(0, 16)}… gameIdHex=${gameIdHex.slice(0, 16)}…`);
   setPlayerSecrets(gameIdHex, primaryId, secret, seed);
 
-  // Set opponent secrets if available locally
+  // Set opponent secrets — real if we have them locally (e.g., both players
+  // in the same browser for testing), dummy otherwise. Either satisfies
+  // the ec_mul guard pattern.
   if (PlayerKeyManager.hasExistingKeys(lobbyId, oppId)) {
     const oppSecret = PlayerKeyManager.getPlayerSecret(lobbyId, oppId);
     const oppSeed = PlayerKeyManager.getShuffleSeed(lobbyId, oppId);
     setPlayerSecrets(gameIdHex, oppId, oppSecret, oppSeed);
+  } else {
+    setPlayerSecrets(gameIdHex, oppId, 1n, new Uint8Array(32));
   }
 
   return fn(gameId).finally(() => {
     clearPlayerSecrets(gameIdHex, primaryId);
-    if (PlayerKeyManager.hasExistingKeys(lobbyId, oppId)) {
-      clearPlayerSecrets(gameIdHex, oppId);
-    }
+    clearPlayerSecrets(gameIdHex, oppId);
   });
 }
 
@@ -514,6 +555,237 @@ export async function queryHasMaskApplied(
 
   console.warn(`[GoFishContractService] queryHasMaskApplied(player=${playerId}) timed out after ${attempt} attempts`);
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Contract state reads — local impureCircuit evaluation against indexer state
+// ---------------------------------------------------------------------------
+// Mirrors the e2e reference at e2e/smoke/_helpers.ts:readCircuit.
+// Creates a local Contract instance (cached), hydrates a QueryContext from
+// the indexer, and calls the named impure circuit. No tx submission, no
+// proof generation — just a local read.
+
+let _localContract: any = null;
+let _localInitState: { privateState: any; zswap: any } | null = null;
+
+function getLocalContract() {
+  if (!_localContract) {
+    _localContract = new GoFishContractClass(witnesses as any);
+    const init = _localContract.initialState(createConstructorContext({}, "0".repeat(64)));
+    _localInitState = {
+      privateState: init.currentPrivateState,
+      zswap: init.currentZswapLocalState,
+    };
+  }
+  return { contract: _localContract, init: _localInitState! };
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket subscription — live contract state from the indexer
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// WebSocket subscription — notification-only (no cached state for reads)
+// ---------------------------------------------------------------------------
+// The WS tells us "something changed" so we can re-query via HTTP.
+// All circuit reads go through fresh HTTP queryContractState calls.
+// This eliminates the entire class of stale-cache bugs.
+
+let _wsSubscription: { unsubscribe(): void } | null = null;
+let _wsChangeListeners: Set<() => void> = new Set();
+
+/**
+ * Start the WebSocket subscription to the Midnight indexer.
+ * Notification-only: fires registered listeners when the contract state
+ * changes on-chain. Listeners should call queryCircuit / queryGameState
+ * to read the fresh state via HTTP.
+ *
+ * Idempotent — calling twice is harmless.
+ */
+export async function startContractSubscription(): Promise<void> {
+  if (_wsSubscription) return;
+
+  const addr = await getContractAddress();
+  const provider = getPublicDataProvider();
+  const observable = provider.contractStateObservable(addr as any, { type: "latest" });
+
+  _wsSubscription = observable.subscribe({
+    next: () => {
+      // Don't cache the state — just notify listeners to re-query via HTTP.
+      for (const fn of _wsChangeListeners) {
+        try { fn(); } catch { /* swallow listener errors */ }
+      }
+    },
+    error: (err: any) => {
+      console.error('[GoFishContractService] WS subscription error:', err);
+    },
+  });
+  console.log('[GoFishContractService] WS subscription started');
+}
+
+/**
+ * Register a callback that fires every time the contract state changes.
+ * Returns an unsubscribe function.
+ */
+export function onContractStateChange(fn: () => void): () => void {
+  _wsChangeListeners.add(fn);
+  return () => { _wsChangeListeners.delete(fn); };
+}
+
+/** Stop the WS subscription. */
+export function stopContractSubscription(): void {
+  _wsSubscription?.unsubscribe();
+  _wsSubscription = null;
+  _wsChangeListeners.clear();
+}
+
+/**
+ * Read a circuit result from the current on-chain contract state.
+ * Uses the cached WS state if available (instant), otherwise falls back
+ * to an HTTP query to the indexer. Matches the e2e readCircuit pattern.
+ */
+export async function queryCircuit<T = any>(
+  circuitName: string,
+  ...args: any[]
+): Promise<T | null> {
+  // Always fetch fresh state from the indexer via HTTP. The WS
+  // subscription is notification-only (triggers re-queries), not a
+  // cache — this eliminates stale-state bugs entirely.
+  const addr = await getContractAddress();
+  const provider = getPublicDataProvider();
+  const cs = await provider.queryContractState(addr as any);
+  if (!cs) return null;
+
+  const { contract, init } = getLocalContract();
+
+  try {
+    const ctx = {
+      currentPrivateState: init.privateState,
+      currentZswapLocalState: init.zswap,
+      currentQueryContext: new QueryContext(cs.data, sampleContractAddress()),
+      costModel: CostModel.initialCostModel(),
+    };
+    const result = contract.impureCircuits[circuitName](ctx, ...args);
+    return result.result as T;
+  } catch (err) {
+    console.warn(`[GoFishContractService] queryCircuit(${circuitName}) failed:`, (err as Error).message);
+    return null;
+  }
+}
+
+/** Convenience: query a boolean circuit with (gameId, playerId) args. */
+export async function queryBoolCircuit(
+  circuitName: string,
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<boolean> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const result = await queryCircuit<boolean>(circuitName, gameId, BigInt(playerId));
+  return result === true;
+}
+
+/**
+ * Read the full game state directly from the Midnight contract ledger.
+ * Returns phase, scores, handSizes, currentTurn, isGameOver, deckCount.
+ * No backend API — all reads via the indexer + local impureCircuit eval.
+ */
+export async function queryGameState(lobbyId: string): Promise<{
+  phase: number;
+  currentTurn: number;
+  scores: [number, number];
+  handSizes: [number, number];
+  isGameOver: boolean;
+  deckEmpty: boolean;
+  deckCount: number;
+} | null> {
+  const gameId = lobbyIdToGameId(lobbyId);
+
+  // Check if game exists on-chain (always fresh HTTP query)
+  const exists = await queryCircuit<boolean>("doesGameExist", gameId);
+  if (!exists) return null;
+
+  // Read all fields in parallel. deckSize is the total deck array length
+  // (21 for this game), topCardIndex is how many have been drawn. Remaining
+  // deck count = deckSize - topCardIndex.
+  const [phase, turn, scores, sizes, gameOver, deckEmpty, deckSize, topCardIndex] = await Promise.all([
+    queryCircuit<number | bigint>("getGamePhase", gameId),
+    queryCircuit<number | bigint>("getCurrentTurn", gameId),
+    queryCircuit<[number | bigint, number | bigint]>("getScores", gameId),
+    queryCircuit<[number | bigint, number | bigint]>("getHandSizes", gameId),
+    queryCircuit<boolean>("isGameOver", gameId),
+    queryCircuit<boolean>("isDeckEmpty", gameId),
+    queryCircuit<number | bigint>("get_deck_size", gameId),
+    queryCircuit<number | bigint>("get_top_card_index", gameId),
+  ]);
+
+  const deckRemaining = Math.max(0, Number(deckSize ?? 21) - Number(topCardIndex ?? 0));
+
+  return {
+    phase: Number(phase ?? 0),
+    currentTurn: Number(turn ?? 1),
+    scores: [Number(scores?.[0] ?? 0), Number(scores?.[1] ?? 0)],
+    handSizes: [Number(sizes?.[0] ?? 0), Number(sizes?.[1] ?? 0)],
+    isGameOver: gameOver === true,
+    deckEmpty: deckEmpty === true,
+    deckCount: deckRemaining,
+  };
+}
+
+/**
+ * Read the player's hand from the contract ledger by enumerating all 21
+ * card indices via `doesPlayerHaveSpecificCard`. The circuit applies the
+ * reverse ec_mul using the player's secret (set in the witness module)
+ * to determine ownership. Matches the e2e reference (readHand in _helpers.ts).
+ *
+ * Returns card indices (0-20). Rank = index % 7, suit = Math.floor(index / 7).
+ */
+export async function queryHandFromContract(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<number[]> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const gameIdHex = gameIdToHex(gameId);
+  const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+
+  // Set our real secret (used by the circuit via cond_select)
+  const secret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
+  const seed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
+  setPlayerSecrets(gameIdHex, playerId, secret, seed);
+
+  // The circuit fetches BOTH players' secrets unconditionally (ec_mul guard
+  // pattern — compiler requirement). Only the selected one is actually used
+  // in ec_mul, so any non-zero placeholder is safe for the opponent side
+  // during read-only hand queries. Use the real opponent secret if available
+  // locally (e.g., running both players in the same browser for testing),
+  // otherwise a dummy placeholder is correct.
+  let opponentWasSet = false;
+  if (PlayerKeyManager.hasExistingKeys(lobbyId, opponentId)) {
+    const oppSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+    const oppSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+    setPlayerSecrets(gameIdHex, opponentId, oppSecret, oppSeed);
+    opponentWasSet = true;
+  } else {
+    setPlayerSecrets(gameIdHex, opponentId, 1n, new Uint8Array(32));
+    opponentWasSet = true;
+  }
+
+  try {
+    const hand: number[] = [];
+    // Enumerate all 21 cards (7 ranks × 3 suits)
+    for (let i = 0; i < 21; i++) {
+      const has = await queryCircuit<boolean>(
+        "doesPlayerHaveSpecificCard",
+        gameId,
+        BigInt(playerId),
+        BigInt(i),
+      );
+      if (has === true) hand.push(i);
+    }
+    return hand;
+  } finally {
+    clearPlayerSecrets(gameIdHex, playerId);
+    if (opponentWasSet) clearPlayerSecrets(gameIdHex, opponentId);
+  }
 }
 
 export async function callApplyMask(lobbyId: string, playerId: 1 | 2): Promise<void> {

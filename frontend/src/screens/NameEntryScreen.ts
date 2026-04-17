@@ -17,8 +17,20 @@ export class NameEntryScreen {
     this.gameService = gameService;
   }
 
+  private static readonly STORAGE_KEY = 'gofish_player_name';
+
   async show() {
     await this.gameService.initializeWithWallet();
+
+    // Restore saved name — skip the entry screen entirely if we have one
+    const saved = localStorage.getItem(NameEntryScreen.STORAGE_KEY);
+    if (saved && saved.trim().length >= 2) {
+      this.gameService.setPlayerName(saved.trim());
+      console.log('Player name restored from localStorage:', saved.trim());
+      this.dispatchNavigate('lobby-list');
+      return;
+    }
+
     this.render();
 
     const address = EffectstreamBridge.getWalletAddress();
@@ -33,133 +45,36 @@ export class NameEntryScreen {
 
   private render() {
     this.container.innerHTML = `
-      <style>
-        .name-entry-container {
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          min-height: 100vh;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          padding: 20px;
-        }
+      <div class="name-entry-screen">
+        <header class="side-header">
+          <h1 class="title">Go Fish</h1>
+          <div class="welcome">Welcome, stranger</div>
+        </header>
 
-        .name-entry-card {
-          background: white;
-          border-radius: 16px;
-          padding: 48px;
-          max-width: 480px;
-          width: 100%;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-        }
+        <div class="side-content">
+          <div class="name-entry-body">
+            <p class="ne-subtitle">Pick a display name to get started.</p>
 
-        .wallet-badge {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-          padding: 12px 20px;
-          background: #f7fafc;
-          border-radius: 24px;
-          margin-bottom: 32px;
-          font-size: 14px;
-        }
+            <div class="form-group">
+              <input
+                type="text"
+                id="player-name-input"
+                placeholder="Enter your name"
+                maxlength="20"
+                autofocus
+              />
+            </div>
 
-        .wallet-label {
-          color: #718096;
-          font-weight: 500;
-        }
-
-        .wallet-address {
-          color: #667eea;
-          font-weight: 600;
-          font-family: 'Courier New', monospace;
-        }
-
-        .name-entry-card h2 {
-          font-size: 32px;
-          margin: 0 0 8px 0;
-          color: #1a202c;
-          text-align: center;
-        }
-
-        .subtitle {
-          font-size: 16px;
-          color: #718096;
-          margin: 0 0 32px 0;
-          text-align: center;
-        }
-
-        .form-group {
-          margin: 24px 0;
-        }
-
-        .name-input {
-          width: 100%;
-          padding: 16px 20px;
-          font-size: 18px;
-          border: 2px solid #e2e8f0;
-          border-radius: 12px;
-          transition: all 0.3s ease;
-          box-sizing: border-box;
-        }
-
-        .name-input:focus {
-          outline: none;
-          border-color: #667eea;
-          box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-
-        .btn-large {
-          padding: 16px 48px;
-          font-size: 18px;
-          font-weight: 600;
-          margin: 16px 0;
-          width: 100%;
-          transition: all 0.3s ease;
-          background: #667eea;
-          color: white;
-          border: none;
-          border-radius: 8px;
-          cursor: pointer;
-        }
-
-        .btn-large:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn-large:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-          transform: none;
-        }
-      </style>
-
-      <div class="name-entry-container">
-        <div class="name-entry-card">
-          <div class="wallet-badge">
-            <span class="wallet-label">Connected:</span>
-            <span class="wallet-address" id="wallet-display"></span>
+            <div class="wallet-badge">
+              <span class="wallet-label">Connected:</span>
+              <span class="wallet-address" id="wallet-display"></span>
+            </div>
           </div>
-
-          <h2>Welcome to Go Fish!</h2>
-          <p class="subtitle">Enter your display name</p>
-
-          <div class="form-group">
-            <input
-              type="text"
-              id="player-name-input"
-              class="name-input"
-              placeholder="Enter your name"
-              maxlength="20"
-              autofocus
-            />
-          </div>
-
-          <button id="submit-name-btn" class="btn-large">
-            Continue
-          </button>
         </div>
+
+        <footer class="side-footer">
+          <button id="submit-name-btn" class="btn btn-primary">Continue</button>
+        </footer>
       </div>
     `;
     this.attachEventListeners();
@@ -193,7 +108,8 @@ export class NameEntryScreen {
       return;
     }
 
-    // Set player name in game service
+    // Persist + set player name
+    localStorage.setItem(NameEntryScreen.STORAGE_KEY, name);
     this.gameService.setPlayerName(name);
 
     console.log('Player name set:', name);

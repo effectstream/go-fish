@@ -20,6 +20,7 @@
  */
 
 import MidnightOnChainService, { isOnChainReady, initializeOnChainService, isBatcherMode } from "./MidnightOnChainService";
+import * as GoFishContractService from "./GoFishContractService";
 import { isBatcherModeEnabled } from "../proving/batcher-providers";
 
 import { API_BASE_URL } from "../apiConfig";
@@ -51,15 +52,9 @@ export async function loadConfig(): Promise<AppConfig> {
     return appConfig;
   }
 
-  try {
-    const response = await fetch(`${BACKEND_URL}/api/config`);
-    if (response.ok) {
-      appConfig = await response.json();
-      console.log("[MidnightService] Config loaded:", appConfig);
-    }
-  } catch (error) {
-    console.warn("[MidnightService] Failed to load config, using defaults:", error);
-  }
+  // /api/config endpoint removed — use hardcoded defaults.
+  // The frontend reads contract state directly from the Midnight indexer,
+  // so no backend config is needed.
 
   configLoaded = true;
   return appConfig;
@@ -413,7 +408,13 @@ export async function getPlayerHandWithSecret(
 }
 
 /**
- * Get setup status
+ * Get setup status by reading directly from the Midnight contract ledger
+ * state via the indexer. No backend API calls — all reads use
+ * GoFishContractService.queryBoolCircuit which evaluates the contract's
+ * exported read circuits (hasMaskApplied, hasDealt) against the indexer's
+ * current ContractState.
+ *
+ * Matches the e2e reference at e2e/smoke/_helpers.ts (readCircuit pattern).
  */
 export async function getSetupStatus(
   lobbyId: string,
@@ -424,21 +425,29 @@ export async function getSetupStatus(
   opponentHasMaskApplied: boolean;
   opponentHasDealt: boolean;
 }> {
-  try {
-    const response = await fetch(
-      `${BACKEND_URL}/api/midnight/setup_status?lobby_id=${lobbyId}&player_id=${playerId}`
-    );
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch (error) {
-    console.error("[MidnightService] Failed to get setup status:", error);
+  const opponentId: 1 | 2 = playerId === 1 ? 2 : 1;
+  const gameId = GoFishContractService.lobbyIdToGameId(lobbyId);
+
+  // Check if game exists on-chain first. Many circuits (hasDealt, etc.)
+  // assert game existence and throw if called before applyMask creates it.
+  const exists = await GoFishContractService.queryCircuit<boolean>("doesGameExist", gameId);
+  if (!exists) {
+    // Game not on-chain yet — everything is false
+    return { hasMaskApplied: false, hasDealt: false, opponentHasMaskApplied: false, opponentHasDealt: false };
   }
+
+  // Each query does a fresh HTTP call to the indexer (no cache).
+  // Run sequentially to avoid indexer overload on parallel requests.
+  const myMask = await GoFishContractService.queryBoolCircuit("hasMaskApplied", lobbyId, playerId);
+  const oppMask = await GoFishContractService.queryBoolCircuit("hasMaskApplied", lobbyId, opponentId);
+  const myDealt = await GoFishContractService.queryBoolCircuit("hasDealt", lobbyId, playerId);
+  const oppDealt = await GoFishContractService.queryBoolCircuit("hasDealt", lobbyId, opponentId);
+
   return {
-    hasMaskApplied: false,
-    hasDealt: false,
-    opponentHasMaskApplied: false,
-    opponentHasDealt: false,
+    hasMaskApplied: myMask,
+    hasDealt: myDealt,
+    opponentHasMaskApplied: oppMask,
+    opponentHasDealt: oppDealt,
   };
 }
 
@@ -464,19 +473,112 @@ export interface GameStateResponse {
 /**
  * Get game state
  */
+/** Map contract phase numbers to frontend phase strings. */
+const PHASE_NAMES: Record<number, string> = {
+  0: 'dealing',
+  1: 'turn_start',
+  2: 'wait_response',
+  3: 'wait_transfer',
+  4: 'wait_draw',
+  5: 'wait_draw_check',
+  6: 'game_over',
+};
+
+/**
+ * Read the full game state by combining:
+ *   - Midnight contract reads (phase, scores, handSizes, currentTurn,
+ *     isGameOver) via GoFishContractService.queryGameState — directly
+ *     from the indexer, no backend API
+ *   - Lobby metadata (players, playerId) from the Paima REST endpoint
+ *     /lobby_state — the only backend read, for player names/wallets
+ *
+ * Falls back to the backend's /game_state if the contract game doesn't
+ * exist yet (still in EVM-only lobby phase before applyMask creates the
+ * Midnight game).
+ */
 export async function getGameState(
   lobbyId: string,
   wallet: string
 ): Promise<GameStateResponse | null> {
+  // Try reading game state directly from the Midnight contract
+  const contractState = await GoFishContractService.queryGameState(lobbyId);
+  if (contractState) {
+    console.log(`[MidnightService] getGameState: contract phase=${contractState.phase} turn=${contractState.currentTurn} hands=${contractState.handSizes} scores=${contractState.scores}`);
+  } else {
+    console.log(`[MidnightService] getGameState: contract returned null (game not on-chain yet)`);
+  }
+
+  // Get lobby metadata (players, playerId) from the Paima REST API
+  let players: GameStateResponse['players'] = [];
+  let playerId = 1;
+  let playerName: string | undefined;
+  let opponentName: string | undefined;
+
+  try {
+    const lobbyRes = await fetch(`${BACKEND_URL}/lobby_state?lobby_id=${lobbyId}`);
+    if (lobbyRes.ok) {
+      const lobby = await lobbyRes.json();
+      players = (lobby.players ?? []).map((p: any, i: number) => ({
+        accountId: p.account_id,
+        name: p.player_name,
+        walletAddress: p.wallet_address,
+      }));
+
+      // Determine which player we are by wallet address
+      const myIndex = players.findIndex(
+        (p) => p.walletAddress.toLowerCase() === wallet.toLowerCase()
+      );
+      playerId = myIndex >= 0 ? myIndex + 1 : 1;
+      playerName = players[playerId - 1]?.name;
+      opponentName = players[playerId === 1 ? 1 : 0]?.name;
+    }
+  } catch { /* best-effort */ }
+
+  if (contractState) {
+    return {
+      lobbyId,
+      phase: PHASE_NAMES[contractState.phase] ?? 'dealing',
+      currentTurn: contractState.currentTurn,
+      scores: contractState.scores,
+      handSizes: contractState.handSizes,
+      deckCount: contractState.deckCount,
+      isGameOver: contractState.isGameOver,
+      playerId,
+      players,
+      myHand: [],
+      myBooks: [],
+      gameLog: [],
+      playerName,
+      opponentName,
+    };
+  }
+
+  // Game doesn't exist on-chain yet (still in EVM dealing phase).
+  // Fall back to the backend for a basic 'dealing' response.
   try {
     const response = await fetch(`${BACKEND_URL}/game_state?lobby_id=${lobbyId}&wallet=${wallet}`);
     if (response.ok) {
       return await response.json();
     }
-  } catch (error) {
-    console.error("[MidnightService] Failed to get game state:", error);
-  }
-  return null;
+  } catch { /* fall through */ }
+
+  // Last resort: synthetic dealing state from lobby info
+  return {
+    lobbyId,
+    phase: 'dealing',
+    currentTurn: 1,
+    scores: [0, 0],
+    handSizes: [0, 0],
+    deckCount: 21,
+    isGameOver: false,
+    playerId,
+    players,
+    myHand: [],
+    myBooks: [],
+    gameLog: [],
+    playerName,
+    opponentName,
+  };
 }
 
 // ============================================================================

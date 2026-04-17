@@ -34,6 +34,10 @@ export class InputManager {
   onOpponentClick: (() => void) | null = null;
   /** Callback when opponent hover state changes (only in opponent-select mode). */
   onOpponentHoverChange: ((hovered: boolean) => void) | null = null;
+  /** Fires when the user clicks empty space while in opponent-select mode
+   *  (i.e. anywhere that isn't a card, the deck, or the opponent). Used to
+   *  cancel a pending card selection. */
+  onEmptyClickInSelectMode: (() => void) | null = null;
 
   constructor(camera: THREE.Camera, domElement: HTMLElement) {
     this.camera = camera;
@@ -145,6 +149,12 @@ export class InputManager {
     if (this.isOpponentHovered && this.onOpponentClick) {
       this.onOpponentClick();
       return;
+    }
+
+    // Fell through — clicked empty space. If we were in opponent-select mode,
+    // the user wants to cancel the pending ask.
+    if (this._opponentSelectMode && this.onEmptyClickInSelectMode) {
+      this.onEmptyClickInSelectMode();
     }
   };
 

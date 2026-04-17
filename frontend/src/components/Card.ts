@@ -2,7 +2,7 @@
  * Card Component - SVG card rendering for Go Fish
  */
 
-import type { Card, Rank, Suit } from '../../../shared/data-types/src/go-fish-types';
+import type { Card, Rank, Suit } from '../../../packages/shared/data-types/src/go-fish-types';
 
 export class CardComponent {
   /**

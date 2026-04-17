@@ -8,7 +8,7 @@ import { OpponentHand } from './objects/OpponentHand';
 import { InputManager } from './InputManager';
 import { createPostProcessing } from './effects/PostProcessing';
 import type { EffectComposer } from 'postprocessing';
-import type { Card } from '../../../shared/data-types/src/go-fish-types';
+import type { Card } from '../../../packages/shared/data-types/src/go-fish-types';
 
 /**
  * Root Three.js application — creates renderer, scene, camera, lights, and render loop.
@@ -28,15 +28,22 @@ export class ThreeApp {
   private deck: Deck3D;
   private composer: EffectComposer;
   private animationFrameId: number | null = null;
+  private canvasContainer: HTMLElement;
+
+  /** Current drawable width — the container's innerWidth, not window's,
+   *  so the canvas shrinks when the side panel takes space on desktop. */
+  private get viewportWidth(): number { return this.canvasContainer.clientWidth || window.innerWidth; }
+  private get viewportHeight(): number { return this.canvasContainer.clientHeight || window.innerHeight; }
 
   constructor(container: HTMLElement) {
+    this.canvasContainer = container;
     // Renderer
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: false,
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(this.viewportWidth, this.viewportHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
@@ -50,7 +57,7 @@ export class ThreeApp {
     // Camera — looking down at the table at ~45 degrees
     this.camera = new THREE.PerspectiveCamera(
       45,
-      window.innerWidth / window.innerHeight,
+      this.viewportWidth / this.viewportHeight,
       0.1,
       100,
     );
@@ -346,10 +353,12 @@ export class ThreeApp {
   };
 
   private onResize = (): void => {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
+    const w = this.viewportWidth;
+    const h = this.viewportHeight;
+    this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(w, h);
+    this.composer.setSize(w, h);
   };
 
   dispose(): void {

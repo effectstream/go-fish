@@ -23,66 +23,12 @@ const BATCHER_QUERY_URL = import.meta.env.VITE_BATCHER_QUERY_URL || "http://loca
 // Secret Registration
 // ============================================================================
 
-/**
- * Register (or refresh) this player's secret with the backend node.
- * Call this on game entry / page reload so the backend always has the latest
- * secrets for opponent-secret lookups, even after a node restart.
- */
-export async function registerSecret(lobbyId: string, playerId: 1 | 2): Promise<void> {
-  try {
-    const playerSecret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
-    const shuffleSeed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
-    const playerSecretHex = playerSecret.toString(16).padStart(64, '0');
-    const shuffleSeedHex = Array.from(shuffleSeed).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    const response = await fetch(`${API_BASE_URL}/api/midnight/register_secret`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lobby_id: lobbyId,
-        player_id: playerId,
-        player_secret: playerSecretHex,
-        shuffle_seed: shuffleSeedHex,
-      }),
-    });
-    if (response.ok) {
-      console.log(`[BatcherMidnight] registerSecret: secret registered for lobby=${lobbyId} player=${playerId}`);
-    } else {
-      console.warn(`[BatcherMidnight] registerSecret: backend returned ${response.status}`);
-    }
-  } catch (err) {
-    console.warn(`[BatcherMidnight] registerSecret failed:`, err);
-  }
-}
-
-/**
- * Register the player's Midnight shielded address with the backend so scores
- * can be attributed to them at game end.
- */
-export async function registerMidnightAddress(
-  lobbyId: string,
-  playerId: 1 | 2,
-  midnightAddress: string,
-): Promise<void> {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/midnight/register_address`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lobby_id: lobbyId,
-        player_id: playerId,
-        midnight_address: midnightAddress,
-      }),
-    });
-    if (response.ok) {
-      console.log(`[BatcherMidnight] registerMidnightAddress: registered for lobby=${lobbyId} player=${playerId}`);
-    } else {
-      console.warn(`[BatcherMidnight] registerMidnightAddress: backend returned ${response.status}`);
-    }
-  } catch (err) {
-    console.warn('[BatcherMidnight] registerMidnightAddress failed:', err);
-  }
-}
+// registerSecret and registerMidnightAddress removed — the backend endpoints
+// /api/midnight/register_secret and /api/midnight/register_address don't exist.
+// Player secrets are managed in-browser via PlayerKeyManager and the shared
+// witness module. No backend registration is needed.
+export async function registerSecret(_lobbyId: string, _playerId: 1 | 2): Promise<void> {}
+export async function registerMidnightAddress(_lobbyId: string, _playerId: 1 | 2, _addr: string): Promise<void> {}
 
 // ============================================================================
 // Hand Query

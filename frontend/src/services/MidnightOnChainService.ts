@@ -107,27 +107,8 @@ const BACKEND_API_URL = getBackendApiUrl();
  * Notify the backend about a successful setup action
  * This allows the backend to track state for coordination between players
  */
-async function notifyBackendSetupComplete(
-  lobbyId: string,
-  playerId: 1 | 2,
-  action: "mask_applied" | "dealt_complete"
-): Promise<void> {
-  console.log(`[MidnightOnChain] Notifying backend: ${action} player=${playerId} lobby=${lobbyId}`);
-  try {
-    const response = await fetch(`${BACKEND_API_URL}/api/midnight/notify_setup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lobby_id: lobbyId, player_id: playerId, action }),
-    });
-    if (!response.ok) {
-      console.warn(`[MidnightOnChain] Failed to notify backend: ${response.status}`);
-    } else {
-      console.log(`[MidnightOnChain] Backend notified OK: ${action} player=${playerId}`);
-    }
-  } catch (error) {
-    console.warn(`[MidnightOnChain] Could not notify backend:`, error);
-  }
-}
+// never existed. Setup status is now read directly from the contract ledger via
+// GoFishContractService.queryBoolCircuit (see MidnightService.getSetupStatus).
 
 // Service state
 let contractAddressRaw: string | null = null;  // 32-byte address for indexer queries
@@ -192,23 +173,8 @@ function normalizeContractAddress(address: string): string {
  * Returns both raw (32-byte) and normalized (34-byte) addresses
  */
 async function loadContractAddress(): Promise<{ raw: string; normalized: string } | null> {
-  // First try to get from backend config
-  try {
-    const { API_BASE_URL } = await import("../apiConfig");
-    const response = await fetch(`${API_BASE_URL}/api/midnight/contract_address`);
-    if (response.ok) {
-      const data = await response.json();
-      if (data.contractAddress) {
-        console.log("[MidnightOnChain] Got contract address from backend");
-        const raw = data.contractAddress;
-        return { raw, normalized: normalizeContractAddress(raw) };
-      }
-    }
-  } catch (error) {
-    console.warn("[MidnightOnChain] Could not fetch contract address from backend:", error);
-  }
-
-  // Fall back to static deployment file
+  // Read from the static deployment file served by vite-plugin-static-copy.
+  // No backend API call — /api/midnight/contract_address doesn't exist.
   try {
     const response = await fetch("/contract_address/go-fish-contract.undeployed.json");
     if (response.ok) {
@@ -231,7 +197,7 @@ async function loadContractAddress(): Promise<{ raw: string; normalized: string 
  */
 async function loadContractModule(): Promise<boolean> {
   try {
-    const contractModule = await import("../../../shared/contracts/midnight/go-fish-contract/src/_index.ts");
+    const contractModule = await import("../../../packages/shared/contracts/midnight/go-fish-contract/src/_index.ts");
     const { Contract: ContractNamespace, witnesses } = contractModule;
     goFishContractInstance = new ContractNamespace.Contract(witnesses);
 
@@ -818,7 +784,6 @@ export async function onChainApplyMask(
     console.log("[MidnightOnChain] Using GoFishContractService for applyMask (WASM proving)...");
     try {
       await GoFishContractService.callApplyMask(lobbyId, playerId);
-      await notifyBackendSetupComplete(lobbyId, playerId, "mask_applied");
       return { success: true };
     } catch (err: any) {
       const msg: string = err?.message || String(err);
@@ -835,7 +800,6 @@ export async function onChainApplyMask(
         msg.includes("Player has already applied");
       if (isDelegated || isAlreadyApplied) {
         console.log("[MidnightOnChain] applyMask threw after delegation or already-applied — notifying backend anyway");
-        await notifyBackendSetupComplete(lobbyId, playerId, "mask_applied");
         return { success: true };
       }
       return { success: false, errorMessage: msg };
@@ -889,7 +853,6 @@ export async function onChainDealCards(
     GoFishContractService.evictContractCache(lobbyId, playerId);
     try {
       await GoFishContractService.callDealCards(lobbyId, playerId);
-      await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
       return { success: true };
     } catch (err: any) {
       const msg: string = err?.message || String(err);
@@ -903,7 +866,6 @@ export async function onChainDealCards(
         msg.includes("Both players have already dealt");
       if (isDelegated || isAlreadyDealt) {
         console.log("[MidnightOnChain] dealCards threw after delegation or already-dealt — notifying backend anyway");
-        await notifyBackendSetupComplete(lobbyId, playerId, "dealt_complete");
         return { success: true };
       }
       return { success: false, errorMessage: msg };
@@ -971,25 +933,25 @@ export async function onChainRespondToAsk(
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using GoFishContractService for respondToAsk (WASM proving)...");
 
-    // Determine hasCards BEFORE queuing the circuit by checking the on-chain hand.
-    // The batcher queues asynchronously so the circuit result is not available synchronously.
+    // Determine hasCards BEFORE queuing the circuit by reading directly from
+    // the contract ledger. No backend endpoints involved — matches the e2e
+    // reference pattern.
     let hasCards = false;
     let cardCount = 0;
     try {
-      // Fetch the last asked rank from backend (on-chain state, no wallet needed)
-      const rankResp = await fetch(`${BACKEND_API_URL}/api/midnight/last_asked_rank?lobby_id=${encodeURIComponent(lobbyId)}`);
-      if (rankResp.ok) {
-        const { lastAskedRank } = await rankResp.json() as { lastAskedRank: number | null };
-        if (lastAskedRank !== null) {
-          // Query the responding player's current hand from the batcher's on-chain indexer
-          const hand = await BatcherMidnightService.queryHandFromBatcher(lobbyId, playerId);
-          if (hand !== null) {
-            const matchingCards = hand.filter(c => c.rank === lastAskedRank);
-            hasCards = matchingCards.length > 0;
-            cardCount = matchingCards.length;
-            console.log(`[MidnightOnChain] respondToAsk pre-check: lastAskedRank=${lastAskedRank} hand=${hand.length} cards, matching=${cardCount}`);
-          }
-        }
+      const gameId = GoFishContractService.lobbyIdToGameId(lobbyId);
+      const lastAskedRank = await GoFishContractService.queryCircuit<number | bigint>(
+        "getLastAskedRank",
+        gameId,
+      );
+      if (lastAskedRank !== null && lastAskedRank !== undefined) {
+        const rank = Number(lastAskedRank);
+        const cardIndices = await GoFishContractService.queryHandFromContract(lobbyId, playerId);
+        // Card index → rank: idx % 7 (0=A, 1=2, ..., 6=7)
+        const matching = cardIndices.filter(idx => (idx % 7) === rank);
+        hasCards = matching.length > 0;
+        cardCount = matching.length;
+        console.log(`[MidnightOnChain] respondToAsk pre-check: lastAskedRank=${rank} hand=${cardIndices.length} cards, matching=${cardCount}`);
       }
     } catch (preCheckErr) {
       console.warn("[MidnightOnChain] respondToAsk pre-check failed — defaulting hasCards=false:", preCheckErr);

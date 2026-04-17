@@ -20,7 +20,7 @@ import { ethers } from "ethers";
 const WALLET_MODE_EVM_ETHERS = 1;
 
 // Contract addresses from deployment (override with VITE_PAIMA_L2_CONTRACT_ADDRESS env var)
-const PAIMA_L2_CONTRACT_ADDRESS = (import.meta as any).env?.VITE_PAIMA_L2_CONTRACT_ADDRESS || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+const PAIMA_L2_CONTRACT_ADDRESS = (import.meta as any).env?.VITE_PAIMA_L2_CONTRACT_ADDRESS || "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 
 // EVM RPC URL (override with VITE_EVM_RPC_URL env var for remote deployments)
 const EVM_RPC_URL = (import.meta as any).env?.VITE_EVM_RPC_URL || "http://localhost:8545";
@@ -226,6 +226,11 @@ export function isWalletConnected(): boolean {
 /**
  * Create a new game lobby on-chain.
  * Go Fish is always a 2-player game; no maxPlayers argument is accepted.
+ *
+ * After submitting, polls `/user_lobbies` with a snapshot-diff to discover
+ * the lobby ID the Paima state machine assigned (the state machine generates
+ * its own ID, so the client can't predict it). Matches the e2e reference
+ * pattern at `e2e/smoke/_helpers.ts:runLobbyFlow`.
  */
 export async function createLobby(
   playerName: string,
@@ -237,10 +242,22 @@ export async function createLobby(
   }
 
   try {
+    const walletAddress = currentWallet.walletAddress;
+
+    // Snapshot existing lobby IDs BEFORE creating so we can diff after
+    const beforeRes = await fetch(
+      `${PAIMA_API_URL}/user_lobbies?wallet=${walletAddress}&page=0&count=50`
+    );
+    const beforeIds = new Set<string>();
+    if (beforeRes.ok) {
+      const beforeData = await beforeRes.json();
+      for (const l of (beforeData.lobbies ?? [])) {
+        beforeIds.add(String(l.lobby_id));
+      }
+    }
+
     // Grammar expects: createdLobby|playerName|lobbyName
     const params = ["createdLobby", playerName, lobbyName];
-
-    // Send transaction without waiting for processing (to avoid timeout)
     const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
 
     if (!result.success) {
@@ -249,28 +266,28 @@ export async function createLobby(
 
     console.log('Create lobby transaction submitted:', result);
 
-    // Wait longer for transaction to be processed and indexed by Paima Engine
-    // The backend needs time to process the block and index the lobby
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    // Query for the user's most recent lobby
-    const walletAddress = currentWallet.walletAddress;
-    const response = await fetch(
-      `${PAIMA_API_URL}/user_lobbies?wallet=${walletAddress}&page=0&count=1`
-    );
-
-    if (!response.ok) {
-      console.warn('Could not fetch lobby ID, but transaction succeeded');
-      return { success: true, lobbyId: undefined };
+    // Poll until a NEW lobby appears (one not in the before-snapshot).
+    // EVM settles in ~5s; we poll every 2s with a 30s timeout.
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const res = await fetch(
+        `${PAIMA_API_URL}/user_lobbies?wallet=${walletAddress}&page=0&count=50`
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const newLobby = (data.lobbies ?? []).find(
+        (l: any) => !beforeIds.has(String(l.lobby_id))
+      );
+      if (newLobby) {
+        const lobbyId = String(newLobby.lobby_id);
+        console.log(`[EffectstreamBridge] Discovered new lobby: ${lobbyId}`);
+        return { success: true, lobbyId };
+      }
     }
 
-    const data = await response.json();
-    const lobbyId = data.lobbies?.[0]?.lobby_id;
-
-    return {
-      success: true,
-      lobbyId: lobbyId ? String(lobbyId) : undefined,
-    };
+    console.warn('Lobby created but could not discover the lobby ID within 30s');
+    return { success: true, lobbyId: undefined };
   } catch (error) {
     console.error('Error creating lobby:', error);
     return {

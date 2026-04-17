@@ -68,22 +68,7 @@ export class WalletScreen {
   }
 
   private async fetchConfig(): Promise<void> {
-    try {
-      const { API_BASE_URL } = await import('../apiConfig');
-      const response = await fetch(`${API_BASE_URL}/api/config`);
-      if (response.ok) {
-        const serverConfig = await response.json();
-        // Override EVM requirement - we always use local wallet now
-        this.config = {
-          ...serverConfig,
-          requiresEvmWallet: false,
-        };
-        console.log('[WalletScreen] Config loaded:', this.config);
-      }
-    } catch (error) {
-      console.warn('[WalletScreen] Could not fetch config, using defaults:', error);
-      // Keep defaults
-    }
+    // /api/config endpoint removed — use hardcoded defaults.
   }
 
   private dispatchNavigate(screen: string, data: any = {}) {

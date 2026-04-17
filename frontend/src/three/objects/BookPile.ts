@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Rank } from '../../../../shared/data-types/src/go-fish-types';
+import type { Rank } from '../../../../packages/shared/data-types/src/go-fish-types';
 
 /**
  * Displays completed books (sets of 3 matching cards) as small stacked card piles.
