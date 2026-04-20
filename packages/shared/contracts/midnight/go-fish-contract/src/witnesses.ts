@@ -25,6 +25,31 @@ const dynamicSecrets = new Map<string, { secret: bigint; shuffleSeed: Uint8Array
 const secretRefCount = new Map<string, number>();
 
 /**
+ * V4.1: Admin secret for the contract. Global (one per deployed contract),
+ * separate from per-game player secrets. The Compact circuit stores only
+ * `h_hashField(admin_secret_key())` in the `owner` ledger; the secret itself
+ * never leaves the admin's client.
+ *
+ * Set by the operator via `setAdminSecret(...)` before calling `initialize`,
+ * `cleanupGame` (owner path), or any future owner-only circuit. Clear with
+ * `clearAdminSecret` after the tx settles.
+ */
+let adminSecret: bigint | null = null;
+
+export function setAdminSecret(secret: bigint): void {
+    if (secret === 0n) {
+        throw new Error("[Witnesses] setAdminSecret: refusing to set zero secret");
+    }
+    adminSecret = secret;
+    console.log(`[Witnesses] setAdminSecret: admin secret set (hash-derivable locally)`);
+}
+
+export function clearAdminSecret(): void {
+    adminSecret = null;
+    console.log(`[Witnesses] clearAdminSecret`);
+}
+
+/**
  * Last shuffle seed provided to the shuffle_seed witness.
  * Written by the shuffle_seed witness so get_sorted_deck_witness can generate
  * deterministic weights from it, making the shuffle reproducible across replays.
@@ -76,7 +101,6 @@ export function setPlayerSecrets(
   const prevCount = secretRefCount.get(key) ?? 0;
   dynamicSecrets.set(key, { secret, shuffleSeed });
   secretRefCount.set(key, prevCount + 1);
-  console.log(`[Witnesses] setPlayerSecrets: player=${playerId} refCount=${prevCount}->${prevCount + 1} secret=${secret}`);
 }
 
 /**
@@ -88,11 +112,9 @@ export function clearPlayerSecrets(gameIdHex: string, playerId: 1 | 2): void {
   const key = `${gameIdHex}-${playerId}`;
   const count = secretRefCount.get(key) ?? 0;
   if (count <= 1) {
-    console.log(`[Witnesses] clearPlayerSecrets: player=${playerId} refCount=${count}->0 (deleting)`);
     dynamicSecrets.delete(key);
     secretRefCount.delete(key);
   } else {
-    console.log(`[Witnesses] clearPlayerSecrets: player=${playerId} refCount=${count}->${count - 1} (keeping)`);
     secretRefCount.set(key, count - 1);
   }
 }
@@ -115,8 +137,6 @@ const getSecretKey = (gameIdHex: string | null, index: number) => {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
     if (dynamic) {
-      const refCount = secretRefCount.get(key) ?? 0;
-      console.log(`[Witnesses] player_secret_key: HIT player=${index} refCount=${refCount} secret=${dynamic.secret}`);
       return dynamic.secret;
     }
     const allKeys = [...dynamicSecrets.keys()].join(", ") || "(empty)";
@@ -278,17 +298,21 @@ const printCurvePoint = (
  * where cardIndex = suit * 7 + rank.
  * The circuit verifies via `rank < 7 && suit*7 + rank == cardIndex`, so a
  * malicious witness can't cheat — it would fail the reconstruction check.
+ *
+ * NOTE: return type is `[bigint, bigint]`, not `[number, number]`.
+ * compact-runtime 0.15.0 marshals `Uint<8>` across the witness boundary as
+ * bigint; returning plain numbers produces:
+ *   "type error: expected value of type [Uint<0..256>, Uint<0..256>] but
+ *    received [ 1, 3 ]"
  */
-function splitCardIndexWitness(cardIndex: bigint): [number, number] {
+function splitCardIndexWitness(cardIndex: bigint): [bigint, bigint] {
   if (cardIndex < 0n || cardIndex > 20n) {
     throw new Error(
       `[Witnesses] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`
     );
   }
   const n = Number(cardIndex);
-  const suit = Math.floor(n / 7);
-  const rank = n % 7;
-  return [suit, rank];
+  return [BigInt(Math.floor(n / 7)), BigInt(n % 7)];
 }
 
 export const witnesses = {
@@ -301,8 +325,30 @@ export const witnesses = {
   wit_split_card_index: (
     { privateState }: WitnessContext<Ledger, PrivateState>,
     cardIndex: bigint,
-  ): [PrivateState, [number, number]] => {
+  ): [PrivateState, [bigint, bigint]] => {
     return [privateState, splitCardIndexWitness(cardIndex)];
+  },
+
+  /**
+   * V4.1: Admin secret for the contract. Strict-fail — if the operator forgot
+   * to call `setAdminSecret(...)` before invoking initialize / cleanupGame
+   * (owner path), we throw loudly rather than silently authenticating as a
+   * phantom admin. The Compact `initialize` circuit computes
+   * `h_hashField(admin_secret_key())` and stores that in the `owner` ledger;
+   * subsequent owner-only circuits re-derive the hash and compare.
+   */
+  admin_secret_key: (
+    { privateState }: WitnessContext<Ledger, PrivateState>,
+  ): [PrivateState, bigint] => {
+    if (adminSecret === null) {
+      throw new Error(
+        "[Witnesses] admin_secret_key: MISSING admin secret — call setAdminSecret(...) before invoking owner-only circuits"
+      );
+    }
+    if (adminSecret >= JUBJUB_SCALAR_FIELD_ORDER) {
+      throw new Error(`[Witnesses] admin_secret_key: secret exceeds field order`);
+    }
+    return [privateState, adminSecret];
   },
 
   get_sorted_deck_witness: (

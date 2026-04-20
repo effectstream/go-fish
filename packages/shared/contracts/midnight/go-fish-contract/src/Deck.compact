@@ -7,7 +7,7 @@ import './HashTransient' prefix h_;
 // ============================================
 // STATIC CARD MAPPINGS (shared across all games)
 // ============================================
-// Map JubjubPoint to Card Value (0-14)
+// Map JubjubPoint to Card Value (0-20)
 export ledger deckCurveToCard: Map<JubjubPoint, Field>;
 // Map Card Value to JubjubPoint
 export ledger reverseDeckCurveToCard: Map<Uint<32>, JubjubPoint>;
@@ -15,54 +15,36 @@ export ledger reverseDeckCurveToCard: Map<Uint<32>, JubjubPoint>;
 export ledger staticDeckInitialized: Boolean;
 
 // ============================================
-// PER-GAME STATE
+// PER-GAME STATE (V4: all nested Map<gid, Map<…>> so cleanupGame can drop
+// everything for a game in one `remove(gid)` call per map.)
 // ============================================
-// Player secret hash per game: maps (gameId, secretHash) -> playerId
-export ledger gamePlayersKeysHashes: Map<Bytes<32>, Uint<64>>;
-// Player secret inverse per game: maps (gameId, secretHash) -> inverseHash
-export ledger gamePlayersKeysInverses: Map<Bytes<32>, Bytes<32>>;
-// Shuffled deck per game: maps (gameId, cardIndex) -> JubjubPoint
-export ledger gameDeck: Map<Bytes<32>, JubjubPoint>;
-// Size of the deck per game
+// Player secret hash per game: gid → {secretHash → playerId}
+export ledger gamePlayersKeysHashes: Map<Bytes<32>, Map<Bytes<32>, Uint<64>>>;
+// Player secret inverse per game: gid → {secretHash → inverseHash}
+export ledger gamePlayersKeysInverses: Map<Bytes<32>, Map<Bytes<32>, Bytes<32>>>;
+// Shuffled deck per game: gid → {cardIndex → JubjubPoint}
+export ledger gameDeck: Map<Bytes<32>, Map<Uint<32>, JubjubPoint>>;
+// Size of the deck per game (directly gid-keyed)
 export ledger gameDeckSize: Map<Bytes<32>, Uint<64>>;
-// Index of the top card per game
+// Index of the top card per game (directly gid-keyed)
 export ledger gameTopCardIndex: Map<Bytes<32>, Uint<32>>;
-// Map from semi-encrypted (player's hand) to fully-encrypted (deck) points per game
-export ledger gameSemiMaskedToFullyMasked: Map<Bytes<32>, JubjubPoint>;
+// Semi→fully-masked mapping per game: gid → {semiMaskedHash → fullyMaskedPoint}
+export ledger gameSemiMaskedToFullyMasked: Map<Bytes<32>, Map<Bytes<32>, JubjubPoint>>;
 
 // Witnesses
 witness getFieldInverse(x: Field): Field;
 witness player_secret_key(gameId: Bytes<32>, player: Field): Field;
 witness split_field_bits(f: Field): [Field, Uint<64>];
 witness shuffle_seed(gameId: Bytes<32>, player: Field): Bytes<32>;
-// CHANGED: Vector size from 18 to 21 (7 Ranks * 3 Suits)
 witness get_sorted_deck_witness(input: Vector<21, JubjubPoint>): Vector<21, JubjubPoint>;
-
-// Helper to create composite key for deck cards
-circuit makeDeckCardKey(gameId: Bytes<32>, cardIndex: Field): Bytes<32> {
-    const indexHash = h_hashField(cardIndex);
-    return h_hashVector([disclose(gameId), indexHash]);
-}
-
-// Helper to create composite key for player keys
-circuit makePlayerKeyHash(gameId: Bytes<32>, secretHash: Bytes<32>): Bytes<32> {
-    return h_hashVector([disclose(gameId), disclose(secretHash)]);
-}
-
-// Helper to create composite key for semi-masked to fully-masked mapping
-circuit makeSemiMaskedKey(gameId: Bytes<32>, semiMaskedPoint: JubjubPoint): Bytes<32> {
-    const pointHash = h_hashCurvePoint(semiMaskedPoint);
-    return h_hashVector([disclose(gameId), disclose(pointHash)]);
-}
 
 // Initialize static deck mappings (only needs to be called once, ever)
 export circuit init_static_deck(): [] {
     if (staticDeckInitialized) {
         return [];
     }
-    
-    // CHANGED: Loop 0..21 (7 ranks * 3 suits)
-    for (const i of 0..21) { 
+
+    for (const i of 0..21) {
         const cardPoint: JubjubPoint = getPointFromValue(i);
         deckCurveToCard.insert(cardPoint, (i) as Field);
         reverseDeckCurveToCard.insert((i) as Uint<32>, cardPoint);
@@ -74,31 +56,43 @@ export circuit init_static_deck(): [] {
 // Initialize deck for a specific game
 export circuit init_deck(gameId: Bytes<32>): [] {
     const gid = disclose(gameId);
-    
+
     // Ensure static deck is initialized
     assert(staticDeckInitialized, "Static deck not initialized - call init_static_deck first");
-    
+
+    // V4: init all nested per-game Maps.
+    gameDeck.insert(gid, default<Map<Uint<32>, JubjubPoint>>);
+    gameSemiMaskedToFullyMasked.insert(gid, default<Map<Bytes<32>, JubjubPoint>>);
+    gamePlayersKeysHashes.insert(gid, default<Map<Bytes<32>, Uint<64>>>);
+    gamePlayersKeysInverses.insert(gid, default<Map<Bytes<32>, Bytes<32>>>);
+
     gameTopCardIndex.insert(gid, 0 as Uint<32>);
-    // CHANGED: Deck size is 21
     gameDeckSize.insert(gid, 21 as Uint<64>);
-    
+
     // Copy base deck to game deck (unshuffled initially)
-    // CHANGED: Loop 0..21
-    for (const i of 0..21) { 
+    for (const i of 0..21) {
         const cardPoint = reverseDeckCurveToCard.lookup((i) as Uint<32>) as JubjubPoint;
-        const deckKey = makeDeckCardKey(gid, (i) as Field);
-        gameDeck.insert(disclose(deckKey), cardPoint);
+        gameDeck.lookup(gid).insert((i) as Uint<32>, cardPoint);
     }
+    return [];
+}
+
+// V4: Cleanup — drop everything this module owns for a game. Single remove per
+// outer map; nested inner maps go away entirely along with every per-game entry.
+export circuit clearGameState(gameId: Bytes<32>): [] {
+    const gid = disclose(gameId);
+    if (gameDeck.member(gid))                    { gameDeck.remove(gid); }
+    if (gameDeckSize.member(gid))                { gameDeckSize.remove(gid); }
+    if (gameTopCardIndex.member(gid))            { gameTopCardIndex.remove(gid); }
+    if (gameSemiMaskedToFullyMasked.member(gid)) { gameSemiMaskedToFullyMasked.remove(gid); }
+    if (gamePlayersKeysHashes.member(gid))       { gamePlayersKeysHashes.remove(gid); }
+    if (gamePlayersKeysInverses.member(gid))     { gamePlayersKeysInverses.remove(gid); }
     return [];
 }
 
 // Get the secret and inverse scalar for a player in a game.
 // Verifies via ec_mul round-trip: ecMul(ecMul(point, secret), inverse) == point.
 // This works for both real secrets and ZKIR-guard dummy secrets (any valid secret+inverse pair).
-// OPT-F (hash-based verification) was attempted but breaks the player-isolated witness model:
-// the dummy secret's hash doesn't match the registered hash, causing the assert to fail.
-// The ec_mul round-trip is mathematically valid for any secret+inverse pair regardless of
-// whether it's the "real" registered secret or a dummy.
 export circuit getSecretFromPlayerId(gameId: Bytes<32>, _playerId: Uint<64>): [Field, Field, Bytes<32>, Bytes<32>] {
     const gid = disclose(gameId);
     const playerId = disclose(_playerId);
@@ -129,14 +123,12 @@ export circuit getSecretHashForPlayer(gameId: Bytes<32>, _playerId: Uint<64>): B
 export circuit apply_mask_to_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
     const gid = disclose(gameId);
     const [secret, invScalar, secret_hash, invScalar_hash] = getSecretFromPlayerId(gid, playerIndex);
-    
-    // Create composite key for this game + secret hash
-    const playerKeyHash = makePlayerKeyHash(gid, secret_hash);
 
-    // Disallow multiple shuffles/masks with the same secret key in this game
-    assert(!gamePlayersKeysHashes.member(disclose(playerKeyHash)), "Player secret key already used in this game");
-    gamePlayersKeysHashes.insert(disclose(playerKeyHash), disclose(playerIndex));
-    gamePlayersKeysInverses.insert(disclose(playerKeyHash), disclose(invScalar_hash));
+    // Disallow multiple shuffles/masks with the same secret key in this game.
+    // V4: inner key is just the secret hash (gid is the outer key).
+    assert(!gamePlayersKeysHashes.lookup(gid).member(disclose(secret_hash)), "Player secret key already used in this game");
+    gamePlayersKeysHashes.lookup(gid).insert(disclose(secret_hash), disclose(playerIndex));
+    gamePlayersKeysInverses.lookup(gid).insert(disclose(secret_hash), disclose(invScalar_hash));
     shuffle_deck(gid, playerIndex);
 }
 
@@ -158,20 +150,19 @@ export circuit getDeckSize(gameId: Bytes<32>): Uint<64> {
     return gameDeckSize.lookup(gid) as Uint<64>;
 }
 
-// This function will remove the mask applied by playerId.
+// Remove the mask applied by playerId.
 export circuit partial_decryption(gameId: Bytes<32>, point: JubjubPoint, playerId: Uint<64>): JubjubPoint {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
     const secret = player_secret_key(gid, disclosed_playerId);
     const secret_hash = h_hashField(secret);
-    
-    // Create composite key for verification
-    const playerKeyHash = makePlayerKeyHash(gid, disclose(secret_hash));
-    assert(gamePlayersKeysHashes.member(disclose(playerKeyHash)), "Player secret key unknown in this game");
+
+    // V4: verify via nested lookup (inner key = secretHash, no gid mixing).
+    assert(gamePlayersKeysHashes.lookup(gid).member(disclose(secret_hash)), "Player secret key unknown in this game");
 
     const invScalar = getFieldInverse(disclose(secret));
     const invScalar_hash = h_hashField(invScalar);
-    const expected_invScalar_hash = gamePlayersKeysInverses.lookup(disclose(playerKeyHash)) as Bytes<32>;
+    const expected_invScalar_hash = gamePlayersKeysInverses.lookup(gid).lookup(disclose(secret_hash)) as Bytes<32>;
     assert(invScalar_hash == expected_invScalar_hash, "Witness failed: Invalid Field inverse");
 
     const decrypted_point = std_ecMul(disclose(point), disclose(invScalar));
@@ -183,8 +174,8 @@ export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): JubjubPoint {
     const disclosed_playerId = disclose(_playerId);
 
     const topIndex = gameTopCardIndex.lookup(gid) as Uint<32>;
-    const deckKey = makeDeckCardKey(gid, disclose(topIndex) as Field);
-    const point = gameDeck.lookup(disclose(deckKey)) as JubjubPoint;
+    // V4: inner key is just the cardIndex.
+    const point = gameDeck.lookup(gid).lookup(disclose(topIndex)) as JubjubPoint;
 
     // Increment top card index
     gameTopCardIndex.insert(gid, topIndex + 1 as Uint<32>);
@@ -192,8 +183,6 @@ export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): JubjubPoint {
     assert(topIndex + 1 as Uint<32> <= deckSize as Uint<32>, "Top card index is greater than deck size");
 
     // Both player branches call partial_decryption identically — no conditional needed.
-    // This ensures the ec_mul inside partial_decryption is unconditional in the ZKIR,
-    // preventing the proof server from receiving zero/invalid curve point inputs.
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
     const masked_card = partial_decryption(gid, disclose(point), _playerId);
     return masked_card;
@@ -202,23 +191,24 @@ export circuit getTopCard(gameId: Bytes<32>, _playerId: Uint<64>): JubjubPoint {
 // Get a card from the deck at a specific index without removing it
 export circuit getDeckCard(gameId: Bytes<32>, cardIndex: Field): JubjubPoint {
     const gid = disclose(gameId);
-    const deckKey = makeDeckCardKey(gid, disclose(cardIndex));
-    return gameDeck.lookup(disclose(deckKey)) as JubjubPoint;
+    // V4: inner key is the cardIndex cast to Uint<32>.
+    return gameDeck.lookup(gid).lookup(disclose(cardIndex) as Uint<32>) as JubjubPoint;
 }
 
 // Store semi-masked to fully-masked mapping for a game
 export circuit storeSemiMaskedMapping(gameId: Bytes<32>, semiMasked: JubjubPoint, fullyMasked: JubjubPoint): [] {
     const gid = disclose(gameId);
-    const mappingKey = makeSemiMaskedKey(gid, disclose(semiMasked));
-    gameSemiMaskedToFullyMasked.insert(disclose(mappingKey), disclose(fullyMasked));
+    // V4: inner key is just the hash of the semi-masked point (no gid mixing).
+    const innerKey = h_hashCurvePoint(disclose(semiMasked));
+    gameSemiMaskedToFullyMasked.lookup(gid).insert(disclose(innerKey), disclose(fullyMasked));
     return [];
 }
 
 // Lookup fully-masked point from semi-masked for a game
 export circuit lookupFullyMasked(gameId: Bytes<32>, semiMasked: JubjubPoint): JubjubPoint {
     const gid = disclose(gameId);
-    const mappingKey = makeSemiMaskedKey(gid, disclose(semiMasked));
-    return gameSemiMaskedToFullyMasked.lookup(disclose(mappingKey)) as JubjubPoint;
+    const innerKey = h_hashCurvePoint(disclose(semiMasked));
+    return gameSemiMaskedToFullyMasked.lookup(gid).lookup(disclose(innerKey)) as JubjubPoint;
 }
 
 circuit getPointFromValue(value: Field): JubjubPoint {
@@ -237,18 +227,15 @@ export circuit shuffle_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
         14, 15, 16, 17, 18, 19, 20
     ];
 
-    // Read + mask with pre-computed secret (no per-card witness calls)
-    const cardKeys = map((idx) => makeDeckCardKey(gid, disclose(idx as Field)), INDICES_21);
-    const cards = map((key) => {
-        const point = gameDeck.lookup(disclose(key)) as JubjubPoint;
+    // Read + mask with pre-computed secret. V4: inner-key lookup per index.
+    const cards = map((idx) => {
+        const point = gameDeck.lookup(gid).lookup(disclose(idx) as Uint<32>) as JubjubPoint;
         return std_ecMul(disclose(point), disclose(secret));
-    }, cardKeys);
+    }, INDICES_21);
 
     const sorted_cards = get_sorted_deck_witness(cards);
 
     // Coordinate-based grand product — no hashing of card points.
-    // Before: 42 h_hashCurvePoint + 2 h_hashVector2 + 1 h_hashVector = 45 transient hashes
-    // After:  jubjubPointX (free field extraction) + 1 h_hashField for Fiat-Shamir
     const xsum = fold((acc, c) => acc + jubjubPointX(c), 0 as Field, cards);
     const gamma: Field = h_hashField(xsum) as Field;
 
@@ -257,8 +244,9 @@ export circuit shuffle_deck(gameId: Bytes<32>, playerIndex: Uint<64>): [] {
 
     assert(prod_original == prod_sorted, "Witness failed: Cheating detected (cards modified)");
 
+    // V4: write sorted deck back via nested inner map (one inner insert per index).
     for (const i of 0..21) {
-        gameDeck.insert(disclose(cardKeys[i]), disclose(sorted_cards[i]));
+        gameDeck.lookup(gid).insert((i) as Uint<32>, disclose(sorted_cards[i]));
     }
 }
 

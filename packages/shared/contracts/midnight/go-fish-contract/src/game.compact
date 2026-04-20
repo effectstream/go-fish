@@ -18,7 +18,11 @@ pragma language_version >= 0.19.0;
 // EXPORTED (PUBLIC) METHODS:
 //   Setup:     applyMask(gameId, playerId), dealCards(gameId, playerId)
 //   Gameplay:  askForCard, respondToAsk, goFish, afterGoFish, switchTurn
-//   Scoring:   scoreInitialBooks (one-shot post-deal), checkAndEndGame (auto in respondToAsk/afterGoFish)
+//   Scoring:   scoreInitialBooks (one-shot post-deal, optional),
+//              checkAndScoreBook (asker calls after respondToAsk with transfer),
+//              inline auto-book in afterGoFish (drawer's context only).
+//   End game:  checkAndEndGame — MUST be called by the frontend after each turn;
+//              the contract does NOT auto-invoke it. Fires on deck==0 && any hand==0.
 //   Queries:   getGamePhase, getCurrentTurn, getScores, getHandSizes, etc.
 //
 // ============================================
@@ -49,6 +53,42 @@ circuit split_card_index(cardIndex: Field): [Uint<8>, Uint<8>] {
     const reconstructed: Field = ((sd as Field) * (7 as Field)) + (rd as Field);
     assert(reconstructed == d, "split witness verification failed");
     return [sd, rd];
+}
+
+// V4.1 AUTH HELPERS
+//
+// Previously `go_fish_assertCallerIsPlayer` and `go_fish_registerPlayer` used
+// `ownPublicKey()` to identify the caller. That's unsafe: `ownPublicKey()` is
+// a witness value the caller supplies — there's NO cryptographic binding to
+// anything. Any client can inject any public key and pass the auth check.
+//
+// These helpers replace that with the "secret-hash" pattern: the caller's
+// identity is `h_hashField(player_secret_key(gid, playerId))`. Derivation goes
+// through `deck_getSecretHashForPlayer`, which calls the witness and hashes in
+// one shot. The hash is stored on registration and re-derived on every check.
+// Injecting a different witness value simply produces a different hash, so the
+// comparison fails — the caller cannot spoof another player without knowing
+// their actual secret.
+
+// Derive the caller's secret hash for `playerId` and assert it matches the
+// hash registered at applyMask time for that player slot. Call this at the
+// top of every state-mutating circuit to authenticate the caller.
+circuit verifyCallerIsPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const pid = disclose(playerId);
+    const hash = deck_getSecretHashForPlayer(gid, pid);
+    go_fish_assertPlayerHash(gid, pid, hash);
+    return [];
+}
+
+// Register the caller as `playerId` by storing their witness-derived secret
+// hash. Called once, during applyMask.
+circuit registerCallerAsPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const pid = disclose(playerId);
+    const hash = deck_getSecretHashForPlayer(gid, pid);
+    go_fish_setPlayerHash(gid, pid, hash);
+    return [];
 }
 
 // Constructor only initializes the static deck mappings (shared across all games)
@@ -89,7 +129,7 @@ export circuit applyMask(gameId: Bytes<32>, playerId: Uint<64>): [] {
     assert(!go_fish_hasMaskApplied(gid, playerId), "Player has already applied their mask");
 
     // AUTH: Register caller's public key on first move
-    go_fish_registerPlayer(gid, playerId);
+    registerCallerAsPlayer(gid, playerId);
 
     deck_apply_mask_to_deck(gid, playerId);
     go_fish_markMaskApplied(gid, playerId);
@@ -110,7 +150,7 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
     // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, playerId);
+    verifyCallerIsPlayer(gid,playerId);
 
     // RULE 1: Must be in Setup phase
     const currentPhase = go_fish_getPhase(gid);
@@ -126,17 +166,13 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
     // RULE 4: This player hasn't already dealt
     assert(!go_fish_hasDealt(gid, playerId), "Player has already dealt cards");
 
-    // Determine how many players have dealt so far
+    // Determine how many players have dealt so far. V4.2: ordering is no longer
+    // enforced (was a gratuitous latency tax — if P2 was faster they had to wait
+    // for P1). RULE 4's hasDealt check already enforces each player deals at
+    // most once, and the deck top index is a shared counter so the two calls
+    // serialize naturally at the ledger level.
     const playersDealt = go_fish_getPlayersDealtCount(gid);
-
-    // Enforce deal ordering using assertions only (no ec_mul inside these branches)
-    if (playersDealt == 0 as Uint<8>) {
-        assert(disclosed_playerId == 1 as Uint<64>, "First player to deal must use player ID 1");
-    } else if (playersDealt == 1 as Uint<8>) {
-        assert(disclosed_playerId == 2 as Uint<64>, "Second player to deal must use player ID 2");
-    } else {
-        assert(false, "Both players have already dealt");
-    }
+    assert(playersDealt < 2 as Uint<8>, "Both players have already dealt");
 
     // Compute opponentId unconditionally (simple cond_select in ZKIR, no ec_mul).
     // Each player deals cards to their opponent.
@@ -198,100 +234,11 @@ export circuit partial_decryption(gameId: Bytes<32>, point: JubjubPoint, playerI
     return deck_partial_decryption(disclose(gameId), point, playerId);
 }
 
-// Transfer all cards of a rank from opponent to current player
-circuit transferAllCardsOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>): [] {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(fromPlayerId);
-    const disclosed_rank = disclose(targetRank);
-    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
-    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-
-    for (const suit of 0..3) {
-        transferCardOfRank(gid, fromPlayerId, targetRank, suit as Uint<32>);
-    }
-}
-
-// OPT-A: Variant that accepts pre-computed secrets (avoids re-deriving per suit)
-circuit transferAllCardsOfRank_withSecrets(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>, secret1: Field, secret2: Field): [] {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(fromPlayerId);
-    const disclosed_rank = disclose(targetRank);
-    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
-    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-
-    for (const suit of 0..3) {
-        transferCardOfRank_withSecrets(gid, fromPlayerId, targetRank, suit as Uint<32>, secret1, secret2);
-    }
-}
-
-// Transfer a single card of a specific rank
-circuit transferCardOfRank(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>, cardSuit: Uint<32>): Boolean {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(fromPlayerId);
-    const disclosed_rank = disclose(targetRank);
-    const disclosed_suit = disclose(cardSuit);
-
-    const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.WaitForResponse ||
-           currentPhase == go_fish_GamePhase.WaitForTransfer,
-           "Can only transfer cards during response/transfer phase");
-
-    const currentTurn = go_fish_getCurrentTurn(gid);
-    assert(disclosed_playerId != currentTurn, "Cannot transfer cards from current player - must be opponent");
-
-    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
-    assert(disclosed_suit >= 0 && disclosed_suit < 3, "Invalid card suit");
-
-    const cardIndex = (disclosed_rank + (disclosed_suit * 7 as Uint<32>)) as Uint<32>;
-    const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as JubjubPoint;
-
-    const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
-    const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
-    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
-    const maskedCard = std_ecMul(baseCard, secret);
-    const opponentPlayerId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
-
-    const hasCard = hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard));
-
-    if (hasCard) {
-        hand_removeCardFromHand(gid, disclosed_playerId, disclose(maskedCard));
-        // OPT-H: Insert UNMASKED base point
-        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(baseCard));
-        return true;
-    }
-
-    return false;
-}
-
-// OPT-A + OPT-H: Pre-computed secrets, UNMASKED transfer.
-// Inserts the raw baseCard point into opponent's hand — no opponent secret needed.
-circuit transferCardOfRank_withSecrets(gameId: Bytes<32>, fromPlayerId: Uint<64>, targetRank: Uint<32>, cardSuit: Uint<32>, secret1: Field, secret2: Field): Boolean {
-    const gid = disclose(gameId);
-    const disclosed_playerId = disclose(fromPlayerId);
-    const disclosed_rank = disclose(targetRank);
-    const disclosed_suit = disclose(cardSuit);
-
-    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
-    assert(disclosed_suit >= 0 && disclosed_suit < 3, "Invalid card suit");
-
-    const cardIndex = (disclosed_rank + (disclosed_suit * 7 as Uint<32>)) as Uint<32>;
-    const baseCard = deck_reverseDeckCurveToCard.lookup(cardIndex) as JubjubPoint;
-
-    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
-    const maskedCard = std_ecMul(baseCard, secret);
-    const opponentPlayerId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
-
-    const hasCard = hand_doesPlayerHaveCard(gid, disclosed_playerId, disclose(maskedCard));
-
-    if (hasCard) {
-        hand_removeCardFromHand(gid, disclosed_playerId, disclose(maskedCard));
-        // OPT-H: Insert UNMASKED base point — no opponent secret needed
-        hand_insertCardIntoHand(gid, opponentPlayerId, disclose(baseCard));
-        return true;
-    }
-
-    return false;
-}
+// V4.2: removed unused transfer helpers (transferAllCardsOfRank,
+// transferAllCardsOfRank_withSecrets, transferCardOfRank,
+// transferCardOfRank_withSecrets). Their bodies had the same
+// masked-only-transfer bug as respondToAsk pre-V4.2, and they were dead
+// after respondToAsk inlined the count+transfer logic.
 
 // ============================================
 // ASKING FOR CARDS
@@ -306,17 +253,18 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
     // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, askingPlayerId);
+    verifyCallerIsPlayer(gid,askingPlayerId);
 
     // RULE 1: Must be in TurnStart phase
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.TurnStart, "Can only ask for cards at turn start");
 
-    // RULE: Both players must have completed the mandatory post-deal initial book scan.
-    // Implicit gate — no dedicated phase needed; each scoreInitialBooks TX only writes its
-    // own player's flag, so two parallel txs can't collide on shared state.
-    assert(go_fish_hasInitialBooksScored(gid, 1 as Uint<64>), "Player 1 must score initial books first");
-    assert(go_fish_hasInitialBooksScored(gid, 2 as Uint<64>), "Player 2 must score initial books first");
+    // NOTE (V3.2): initial-book scoring is NOT enforced here. `scoreInitialBooks`
+    // is still available for players who want to claim an opening book, but the
+    // frontend decides whether to call it. Most 4-card hands have no book, so
+    // forcing 2 txs at game start (~60s total) was pure latency for no gain.
+    // Players who do have an initial book can call `checkAndScoreBook` at their
+    // leisure — no rule blocks normal play.
 
     // RULE 2: Must be the asking player's turn
     const currentTurn = go_fish_getCurrentTurn(gid);
@@ -338,14 +286,13 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
     const currentCount = countCardsOfRank_withSecrets(gid, askingPlayerId, targetRank, secret1, secret2);
 
-    // RULE 5: Asking player must have ≥ 1 card of the requested rank —
-    // EXCEPT when the hand is empty. An empty-hand ask is the real-Go-Fish
-    // "draw from deck" move and flows through respondToAsk's existing
-    // go-fish branch (no standalone draw circuit needed).
+    // RULE 5: Asking player must have a non-empty hand AND hold at least one
+    // card of the asked rank. Empty-hand players use the dedicated
+    // requestToDrawCard (deck has cards) or skipTurn (deck empty) flow —
+    // askForCard is for "real" asks only.
     const askerHandSize = hand_getHandSize(gid, disclosed_playerId);
-    if (askerHandSize > 0 as Uint<64>) {
-        assert(currentCount > 0 as Uint<8>, "Cannot ask for a rank you don't have in your hand");
-    }
+    assert(askerHandSize > 0 as Uint<64>, "Empty hand — call requestToDrawCard or skipTurn");
+    assert(currentCount > 0 as Uint<8>, "Cannot ask for a rank you don't have in your hand");
 
     // Store the asked rank and asking player for the response phase
     go_fish_setLastAskedRank(gid, targetRank);
@@ -369,7 +316,7 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
     // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, respondingPlayerId);
+    verifyCallerIsPlayer(gid,respondingPlayerId);
 
     // RULE 1: Must be in WaitForResponse phase
     const currentPhase = go_fish_getPhase(gid);
@@ -415,27 +362,49 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     const rc3u: Uint<8> = hand_doesPlayerHaveCardN(gid, disclosed_respondingId, disclose(rBase3));
     const respondingCardCount: Uint<8> = (rc1m + rc1u + rc2m + rc2u + rc3m + rc3u) as Uint<8>;
 
-    // Transfer masked-form cards to the opponent (asker). Unmasked cards stay put —
-    // matches existing transferCardOfRank_withSecrets behavior.
+    // V4.2 FIX: transfer BOTH masked and unmasked forms. The responder can
+    // legitimately hold unmasked cards of the asked rank (received via a prior
+    // transfer on an earlier turn). The old version only moved masked cards,
+    // but respondingCardCount's dual check already counts unmasked ones — so a
+    // successful ask with responder-holds-unmasked would return [true, N]
+    // while no cards actually moved. That desynced hand sizes and broke
+    // subsequent book checks.
+    //
+    // Both branches are ZKIR-safe: no ec_mul inside — just hand_remove and
+    // hand_insert (the masked points rMasked{1,2,3} and base points rBase{1,2,3}
+    // were all computed unconditionally above).
     if (rc1m > 0 as Uint<8>) {
         hand_removeCardFromHand(gid, disclosed_respondingId, rMasked1);
+        hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase1));
+    }
+    if (rc1u > 0 as Uint<8>) {
+        hand_removeCardFromHand(gid, disclosed_respondingId, rBase1);
         hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase1));
     }
     if (rc2m > 0 as Uint<8>) {
         hand_removeCardFromHand(gid, disclosed_respondingId, rMasked2);
         hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase2));
     }
+    if (rc2u > 0 as Uint<8>) {
+        hand_removeCardFromHand(gid, disclosed_respondingId, rBase2);
+        hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase2));
+    }
     if (rc3m > 0 as Uint<8>) {
         hand_removeCardFromHand(gid, disclosed_respondingId, rMasked3);
         hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase3));
     }
+    if (rc3u > 0 as Uint<8>) {
+        hand_removeCardFromHand(gid, disclosed_respondingId, rBase3);
+        hand_insertCardIntoHand(gid, opponentIdR, disclose(rBase3));
+    }
 
-    // Auto-book scoring for the asker at the asked rank — UNCONDITIONAL (helper contains
-    // ec_mul, must not live inside a conditional branch). When no transfer happened
-    // (respondingCardCount == 0), this is a no-op: asker's rank count can't reach 3 without
-    // the transfer. Ternary-select asker's secret from pre-fetched secrets.
-    const askerSecret: Field = (askingPlayerId == 1 as Uint<64>) ? secret1 : secret2;
-    const [_askerBookScored, _askerCount] = _tryScoreBook(gid, askingPlayerId, targetRank as Uint<8>, askerSecret);
+    // Asker book scoring happens in a SEPARATE circuit (`checkAndScoreBook`) that the
+    // asker calls from their own browser. respondToAsk runs in the RESPONDER's context,
+    // where the asker's secret is a frontend-supplied dummy (= 1) — if we tried to
+    // _tryScoreBook here, masked and base points would collapse to the same value and
+    // the OPT-H dual check would double-count transferred cards (counting each as both
+    // masked + unmasked), so cardCount would be 4 not 3 and no book would fire.
+    // See the CONTRACT_V3 "Dummy-secret bug" note for the full explanation.
 
     // OPT-I: UNCONDITIONAL draw — compute partial decryption for the asking player.
     // The responding player removes their OWN mask. The result (baseCard * askingPlayerSecret)
@@ -527,7 +496,7 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>)
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
     // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, playerId);
+    verifyCallerIsPlayer(gid,playerId);
 
     // RULE 1: Must be waiting for draw check
     const currentPhase = go_fish_getPhase(gid);
@@ -754,6 +723,184 @@ circuit _tryScoreBook(gameId: Bytes<32>, playerId: Uint<64>, rank: Uint<8>, secr
     return [false, cardCount];
 }
 
+// Asker-side book claim, called post-transfer.
+//
+// WHY THIS EXISTS: `respondToAsk` runs in the RESPONDER's witness context, where the
+// asker's secret is a frontend-supplied dummy (= 1). Calling `_tryScoreBook` there
+// with `askerSecret=1` collapses `maskedCard_i = baseCard_i × 1 = baseCard_i`, which
+// makes the OPT-H dual check (masked + unmasked) double-count transferred cards:
+// each is found in both forms, cardCount = 4 instead of 3, and no book fires.
+//
+// The asker's browser has their REAL secret, so they call this circuit themselves
+// immediately after a successful transfer to score the book. The contract cannot do
+// this in respondToAsk without either (a) a witness-verified secret (rejected — same
+// dummy-vs-real problem) or (b) moving to the asker's execution context.
+//
+// Also doubles as a general "score any book the caller has" circuit — useful for
+// stuck-book recovery and test scenarios.
+export circuit checkAndScoreBook(gameId: Bytes<32>, playerId: Uint<64>, targetRank: Uint<32>): Boolean {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+    const disclosed_rank = disclose(targetRank);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    verifyCallerIsPlayer(gid,playerId);
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+    assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
+
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase != go_fish_GamePhase.Setup, "Cannot score books during setup");
+    assert(currentPhase != go_fish_GamePhase.GameOver, "Game is already over");
+
+    // Fetch caller's real secret (both fetched for ec_mul guard safety via ternary).
+    const [secret1, inv1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, inv2] = deck_getSecretFromPlayerId(gid, 2);
+    const secret: Field = (disclosed_playerId == 1 as Uint<64>) ? secret1 : secret2;
+
+    const [scored, _count] = _tryScoreBook(gid, playerId, disclosed_rank as Uint<8>, secret);
+    return scored;
+}
+
+// ============================================
+// EMPTY-HAND TURN FLOW (V3.3)
+// ============================================
+//
+// askForCard requires a non-empty hand + holding the asked rank. When a player's
+// hand is empty, they use one of these two circuits instead:
+//
+//   - requestToDrawCard  → deck has cards  → opponent calls drawCard → turn ends
+//   - skipTurn           → deck is empty   → turn switches immediately
+
+// Empty-hand player asks the opponent to draw a card from the deck for them.
+// Preconditions: caller has 0 cards, deck has cards, it's their turn at TurnStart.
+// Transitions phase to WaitForDraw; opponent completes with drawCard.
+export circuit requestToDrawCard(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    verifyCallerIsPlayer(gid,playerId);
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase == go_fish_GamePhase.TurnStart, "Can only request draw at turn start");
+
+    const currentTurn = go_fish_getCurrentTurn(gid);
+    assert(disclosed_playerId == currentTurn, "Not your turn");
+
+    // Must have empty hand.
+    const handSize = hand_getHandSize(gid, disclosed_playerId);
+    assert(handSize == 0 as Uint<64>, "requestToDrawCard is only for empty-handed players");
+
+    // Deck must have cards — otherwise use skipTurn.
+    const topIndex = deck_getTopCardIndex(gid);
+    const deckSize = deck_getDeckSize(gid);
+    assert(topIndex as Uint<64> < deckSize, "Deck is empty — use skipTurn instead");
+
+    assert(
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
+        "Claimed timestamp is too far in the future"
+    );
+
+    // Record caller as the asking player so drawCard knows who to target.
+    // V4.2: no sentinel lastAskedRank write — nothing on-chain reads it in this
+    // flow; clients key on phase == WaitForDraw instead.
+    go_fish_setLastAskingPlayer(gid, playerId);
+    go_fish_setLastMoveAt(gid, now);
+    go_fish_setPhase(gid, go_fish_GamePhase.WaitForDraw);
+    return [];
+}
+
+// Opponent fulfills a requestToDrawCard by decrypting the top deck card for the
+// empty-handed asker (same mask-removal pattern as respondToAsk's go-fish draw:
+// opponent uses their own invScalar, which cancels their mask and leaves the
+// card as baseCard × askerSecret — identical to a dealt card).
+// No book check — asker's hand went 0→1, can't complete a book.
+// Switches turn after the draw.
+export circuit drawCard(gameId: Bytes<32>, opponentPlayerId: Uint<64>, now: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_opponentId = disclose(opponentPlayerId);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    verifyCallerIsPlayer(gid,opponentPlayerId);
+    assert(disclosed_opponentId == 1 as Uint<64> || disclosed_opponentId == 2 as Uint<64>, "Invalid player index");
+
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase == go_fish_GamePhase.WaitForDraw, "Not waiting for a draw");
+
+    const askingPlayerId = go_fish_getLastAskingPlayer(gid);
+    assert(disclosed_opponentId != askingPlayerId, "Asking player cannot call drawCard for themselves");
+
+    assert(
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
+        "Claimed timestamp is too far in the future"
+    );
+
+    // Fetch both secrets (the caller's is real; the asker's is a dummy here, but
+    // only the caller's invScalar is actually USED — dummy inv is discarded via
+    // ternary, satisfying the ec_mul guard rule).
+    const [secret1, invScalar1] = deck_getSecretFromPlayerId(gid, 1);
+    const [secret2, invScalar2] = deck_getSecretFromPlayerId(gid, 2);
+
+    // Read the top deck card.
+    const topIndex = deck_getTopCardIndex(gid);
+    const deckSize = deck_getDeckSize(gid);
+    assert(topIndex as Uint<64> < deckSize, "Deck is empty");
+    const fullyMaskedPoint = deck_getDeckCard(gid, topIndex as Field);
+
+    // Opponent strips their own mask. Result: baseCard × askerSecret (dealt-card format).
+    const opponentInv: Field = (disclosed_opponentId == 1 as Uint<64>) ? invScalar1 : invScalar2;
+    const drawnCardForAsker = std_ecMul(fullyMaskedPoint, opponentInv);
+
+    // Insert into asker's hand + record mapping for state recovery.
+    hand_insertCardIntoHand(gid, disclose(askingPlayerId), disclose(drawnCardForAsker));
+    deck_storeSemiMaskedMapping(gid, disclose(drawnCardForAsker), disclose(fullyMaskedPoint));
+
+    // Advance deck top.
+    deck_gameTopCardIndex.insert(gid, topIndex + 1 as Uint<32>);
+
+    // Clear + switch turn (single-card hand can't form a book — no afterGoFish needed).
+    go_fish_clearLastAskedRank(gid);
+    go_fish_setLastMoveAt(gid, now);
+    go_fish_switchTurn(gid);
+    return [];
+}
+
+// Empty-hand player skips their turn because the deck is also empty.
+// Preconditions: caller has 0 cards, deck has 0 cards, their turn at TurnStart.
+export circuit skipTurn(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    verifyCallerIsPlayer(gid,playerId);
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase == go_fish_GamePhase.TurnStart, "Can only skip at turn start");
+
+    const currentTurn = go_fish_getCurrentTurn(gid);
+    assert(disclosed_playerId == currentTurn, "Not your turn");
+
+    // Empty hand required.
+    const handSize = hand_getHandSize(gid, disclosed_playerId);
+    assert(handSize == 0 as Uint<64>, "skipTurn is only for empty-handed players");
+
+    // Empty deck required — if deck has cards, use requestToDrawCard.
+    const topIndex = deck_getTopCardIndex(gid);
+    const deckSize = deck_getDeckSize(gid);
+    assert(topIndex as Uint<64> >= deckSize, "Deck has cards — use requestToDrawCard instead");
+
+    assert(
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
+        "Claimed timestamp is too far in the future"
+    );
+
+    go_fish_setLastMoveAt(gid, now);
+    go_fish_switchTurn(gid);
+    return [];
+}
+
 // Mandatory post-deal book scoring.
 // Both players call this once (parallel-safe — each only writes to their own ledger slots).
 // askForCard asserts both players' flags.
@@ -788,7 +935,7 @@ export circuit scoreInitialBooks(
     const i3 = disclose(bookIndices[2]);
 
     assert(go_fish_doesGameExist(gid), "Game does not exist");
-    go_fish_assertCallerIsPlayer(gid, playerId);
+    verifyCallerIsPlayer(gid,playerId);
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
 
     // Dealing must be complete.
@@ -944,7 +1091,7 @@ export circuit switchTurn(gameId: Bytes<32>, playerId: Uint<64>): [] {
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
     // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, playerId);
+    verifyCallerIsPlayer(gid,playerId);
 
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.TurnStart,
@@ -1093,7 +1240,7 @@ export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
     // AUTH: Verify caller is the registered player
-    go_fish_assertCallerIsPlayer(gid, claimingPlayerId);
+    verifyCallerIsPlayer(gid,claimingPlayerId);
 
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase != go_fish_GamePhase.Setup, "Game has not started yet");
@@ -1113,6 +1260,110 @@ export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [
 
     // V4: End the game — the claiming player wins by default (timeout)
     go_fish_endGameWithWinner(gid, claimingPlayerId);
+    return [];
+}
+
+// ============================================
+// CONCEDE
+// ============================================
+
+// Voluntarily end the game — the OTHER player wins. Any active game, any turn,
+// no timeout required. Caller must be the registered player for the claimed
+// playerId (enforced by assertCallerIsPlayer: the caller's public key must match
+// what was registered at applyMask time), so this can't be called on behalf of
+// someone else.
+export circuit concede(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+
+    // AUTH: caller's public key must match the registered key for this playerId.
+    verifyCallerIsPlayer(gid,playerId);
+
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    // Game must be in progress.
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase != go_fish_GamePhase.Setup, "Game has not started yet");
+    assert(currentPhase != go_fish_GamePhase.GameOver, "Game is already over");
+
+    // Timestamp drift check (consistent with other player-initiated circuits).
+    assert(
+        blockTimeLt(disclose(now + 120 as Uint<64>)),
+        "Claimed timestamp is too far in the future"
+    );
+
+    // Opponent wins.
+    const winnerId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+    go_fish_setLastMoveAt(gid, now);
+    go_fish_endGameWithWinner(gid, winnerId);
+    return [];
+}
+
+// ============================================
+// ADMIN + CLEANUP (V4.1)
+// ============================================
+//
+// Owner identity: `h_hashField(admin_secret_key())`. Set once via `initialize()`.
+// Modeled after pvp.compact's owner pattern.
+//
+// Cleanup access:
+//   - Owner: any game, any phase.
+//   - Participant: only their OWN game, only when phase == GameOver.
+// Identity is verified via the hash-based scheme described at the top of this
+// file — `ownPublicKey()` is deliberately NOT used anywhere.
+
+// One-shot owner initialization. Re-exported at the top-level ABI so the
+// operator's deploy script can call it right after deploy. The admin's secret
+// is supplied to the witness `admin_secret_key`; the contract stores only its
+// hash.
+export circuit initialize(): [] {
+    return go_fish_initialize();
+}
+
+// Public getter for the owner's stored hash (reverts if not initialized).
+// Frontends can compute `h_hashField(adminSecret)` locally and compare to
+// decide whether to render admin UI without revealing the secret.
+export circuit getOwner(): Bytes<32> {
+    return go_fish_getOwner();
+}
+
+// True iff the caller's witness-derived admin hash matches the stored owner.
+export circuit isOwner(): Boolean {
+    return go_fish_isOwner();
+}
+
+// Cleanup a game's on-chain state. `callerPlayerId` must be:
+//   - 0  → caller is the owner (verified via the admin witness).
+//   - 1 or 2 → caller is a game participant (verified via their secret hash);
+//              game must be in GameOver phase.
+// Drops ALL per-game ledger entries across GoFish, Deck, and Hand in one tx.
+export circuit cleanupGame(gameId: Bytes<32>, callerPlayerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const cpid = disclose(callerPlayerId);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+
+    if (cpid == 0 as Uint<64>) {
+        // Owner path.
+        go_fish_assertCallerIsOwner();
+    } else {
+        // Participant path — must be a registered player for this game, and
+        // the game must be finished.
+        assert(cpid == 1 as Uint<64> || cpid == 2 as Uint<64>, "Invalid callerPlayerId");
+        verifyCallerIsPlayer(gid, callerPlayerId);
+
+        const currentPhase = go_fish_getPhase(gid);
+        assert(currentPhase == go_fish_GamePhase.GameOver, "Participants can only cleanup finished games");
+    }
+
+    // Order: drop hand state, then deck state, then GoFish state. No
+    // cross-module transactional constraint — all writes commit atomically —
+    // but this reads left-to-right cleanly.
+    hand_clearGameState(gid);
+    deck_clearGameState(gid);
+    go_fish_clearGameState(gid);
     return [];
 }
 
