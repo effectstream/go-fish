@@ -284,27 +284,88 @@ export async function afterGoFish(
 }
 
 /**
- * Score a book (3 cards of the same rank). Call after any hand-changing
- * action when the player holds ≥3 of a rank. The contract removes the 3
- * cards, increments the score, and checks the early-win threshold (≥4).
+ * V3.1 (2026-04-17): restored. `respondToAsk` can't auto-book for the asker
+ * (dummy-secret issue), so the asker calls this targeted at the just-asked
+ * rank after a successful transfer.
  */
 export async function checkAndScoreBook(
   lobbyId: string,
   playerId: 1 | 2,
   targetRank: number,
-): Promise<{ success: boolean; scored: boolean; errorMessage?: string }> {
+): Promise<{ success: boolean; errorMessage?: string }> {
   if (await shouldUseOnChainAsync()) {
-    console.log(`[MidnightService] checkAndScoreBook(P${playerId}, rank=${targetRank}) via on-chain`);
+    console.log("[MidnightService] checkAndScoreBook via on-chain");
     return MidnightOnChainService.checkAndScoreBook(lobbyId, playerId, targetRank);
   }
-
-  console.log(`[MidnightService] checkAndScoreBook via backend`);
-  const result = await callBackendAction("check_and_score_book", {
+  console.log("[MidnightService] checkAndScoreBook via backend");
+  return callBackendAction("check_and_score_book", {
     lobby_id: lobbyId,
     player_id: playerId,
     target_rank: targetRank,
   });
-  return { ...result, scored: result.success };
+}
+
+/**
+ * V3.3 (2026-04-17): empty-hand draw request. Caller has 0 cards, deck has
+ * cards, it's their turn. Opponent resolves via `drawCard`.
+ */
+export async function requestToDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log("[MidnightService] requestToDrawCard via on-chain");
+    return MidnightOnChainService.requestToDrawCard(lobbyId, playerId);
+  }
+  console.log("[MidnightService] requestToDrawCard via backend");
+  return callBackendAction("request_to_draw_card", { lobby_id: lobbyId, player_id: playerId });
+}
+
+/**
+ * V3.3 (2026-04-17): opponent fulfils an empty-hand draw request. Caller is
+ * the NON-asking player.
+ */
+export async function drawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log("[MidnightService] drawCard via on-chain");
+    return MidnightOnChainService.drawCard(lobbyId, playerId);
+  }
+  console.log("[MidnightService] drawCard via backend");
+  return callBackendAction("draw_card", { lobby_id: lobbyId, player_id: playerId });
+}
+
+/**
+ * V3.3 (2026-04-17): empty-hand AND empty-deck skip. Just switches turn.
+ */
+export async function skipTurn(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log("[MidnightService] skipTurn via on-chain");
+    return MidnightOnChainService.skipTurn(lobbyId, playerId);
+  }
+  console.log("[MidnightService] skipTurn via backend");
+  return callBackendAction("skip_turn", { lobby_id: lobbyId, player_id: playerId });
+}
+
+/**
+ * V4.2 (2026-04-18): frontend must call this after each turn to trigger
+ * the exhaustion game-over transition (deck empty + either hand empty).
+ */
+export async function checkAndEndGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log("[MidnightService] checkAndEndGame via on-chain");
+    return MidnightOnChainService.checkAndEndGame(lobbyId, playerId);
+  }
+  console.log("[MidnightService] checkAndEndGame via backend");
+  return callBackendAction("check_and_end_game", { lobby_id: lobbyId, player_id: playerId });
 }
 
 /**
@@ -496,6 +557,12 @@ const PHASE_NAMES: Record<number, string> = {
  * exist yet (still in EVM-only lobby phase before applyMask creates the
  * Midnight game).
  */
+/** Per-lobby cache of the last emitted getGameState signature — used to
+ *  dedupe the "contract phase=…" log line across identical polls. Polling
+ *  fires every 5-30s; without this the console is dominated by repeated
+ *  unchanged snapshots. */
+const _lastGameStateLog = new Map<string, string>();
+
 export async function getGameState(
   lobbyId: string,
   wallet: string
@@ -503,9 +570,16 @@ export async function getGameState(
   // Try reading game state directly from the Midnight contract
   const contractState = await GoFishContractService.queryGameState(lobbyId);
   if (contractState) {
-    console.log(`[MidnightService] getGameState: contract phase=${contractState.phase} turn=${contractState.currentTurn} hands=${contractState.handSizes} scores=${contractState.scores}`);
+    const sig = `phase=${contractState.phase} turn=${contractState.currentTurn} hands=${contractState.handSizes} scores=${contractState.scores}`;
+    if (_lastGameStateLog.get(lobbyId) !== sig) {
+      _lastGameStateLog.set(lobbyId, sig);
+      console.log(`[MidnightService] getGameState: contract ${sig}`);
+    }
   } else {
-    console.log(`[MidnightService] getGameState: contract returned null (game not on-chain yet)`);
+    if (_lastGameStateLog.get(lobbyId) !== '__null__') {
+      _lastGameStateLog.set(lobbyId, '__null__');
+      console.log(`[MidnightService] getGameState: contract returned null (game not on-chain yet)`);
+    }
   }
 
   // Get lobby metadata (players, playerId) from the Paima REST API
@@ -535,6 +609,16 @@ export async function getGameState(
   } catch { /* best-effort */ }
 
   if (contractState) {
+    // Convert the 7-wide booked-ranks vector into a user-facing list of
+    // rank labels for the current player ("A", "2", …, "7"). 3 cards per
+    // booked rank live in the contract as well — those are reconstructable
+    // via indices [r, r+7, r+14] when the UI needs to render actual cards.
+    const RANK_LABELS = ['A', '2', '3', '4', '5', '6', '7'];
+    const myBooksVec = playerId === 1 ? contractState.booksP1 : contractState.booksP2;
+    const myBooks = myBooksVec
+      .map((b, r) => (b ? RANK_LABELS[r] : null))
+      .filter((s): s is string => s !== null);
+
     return {
       lobbyId,
       phase: PHASE_NAMES[contractState.phase] ?? 'dealing',
@@ -546,10 +630,12 @@ export async function getGameState(
       playerId,
       players,
       myHand: [],
-      myBooks: [],
+      myBooks,
       gameLog: [],
       playerName,
       opponentName,
+      booksP1: contractState.booksP1,
+      booksP2: contractState.booksP2,
     };
   }
 
@@ -621,9 +707,14 @@ export const MidnightService = {
   askForCard,
   respondToAsk,
   afterGoFish,
-  checkAndScoreBook,
   skipDrawDeckEmpty,
   claimTimeoutWin,
+  // V3.1 / V3.3 / V4.2 additions
+  checkAndScoreBook,
+  requestToDrawCard,
+  drawCard,
+  skipTurn,
+  checkAndEndGame,
   // Queries
   getPlayerHand,
   getPlayerHandWithSecret,

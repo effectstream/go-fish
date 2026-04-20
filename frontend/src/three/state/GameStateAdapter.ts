@@ -49,18 +49,30 @@ export class GameStateAdapter {
   private pollIntervalId: number | null = null;
   private pollIntervalMs = 5000;
   private previousState: GameSceneState | null = null;
+  /** Signature (stringified sorted index list) of the last hand logged —
+   *  used to dedupe the "contract hand:" poll log. */
+  private lastHandLog: string | null = null;
   private onChange: GameStateChangeHandler;
   private polling = false;
   private midnightAddressRegistered = false;
 
   /** Frontend-driven action log — entries added by GameScene action handlers. */
   private localGameLog: string[] = [];
+  /** Max entries retained in localGameLog. Background sessions can run for
+   *  hours; uncapped the log would balloon memory. The HUD only shows the
+   *  last 20 entries anyway, so trimming past 200 is invisible. */
+  private static readonly GAME_LOG_CAP = 200;
 
   /** Push a timestamped entry to the game log. The next state emission
-   *  includes it so the HUD renders it immediately. */
+   *  includes it so the HUD renders it immediately. Trims the oldest
+   *  entries once the log exceeds {@link GAME_LOG_CAP}. */
   addLog(msg: string): void {
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     this.localGameLog.push(`[${time}] ${msg}`);
+    const cap = GameStateAdapter.GAME_LOG_CAP;
+    if (this.localGameLog.length > cap) {
+      this.localGameLog.splice(0, this.localGameLog.length - cap);
+    }
   }
 
   /** Get the current local log (used when building state). */
@@ -143,16 +155,32 @@ export class GameStateAdapter {
     intervalMs = 2_000,
   ): Promise<GameSceneState | null> {
     const deadline = Date.now() + timeoutMs;
+    // Two-stage polling: first wait for the chain to ENTER `currentPhase`
+    // (the tx we just submitted is landing), then wait for it to LEAVE
+    // (the other player's response / next action lands).
+    //
+    // `targetPhases` is a hint — we don't actually require a specific next
+    // phase, just that we've moved past `currentPhase`. This is robust
+    // across contract phase-flow changes (e.g., V3.1+ transfer goes
+    // wait_response → turn_start directly instead of via wait_transfer).
+    let everSawCurrent = false;
     while (Date.now() < deadline) {
       await this.forcePoll();
       const state = this.previousState;
-      if (state && (targetPhases.includes(state.phase) || state.phase !== currentPhase)) {
-        return state;
+      if (state) {
+        if (state.phase === currentPhase) {
+          everSawCurrent = true;
+        } else if (everSawCurrent) {
+          // We entered and then left currentPhase — this is a real
+          // transition. Return regardless of whether state.phase matches
+          // any entry in `targetPhases`.
+          return state;
+        }
+        // else: haven't observed currentPhase yet; keep polling.
       }
-      // Wait before next poll
       await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
     }
-    console.warn(`[GameStateAdapter] pollUntilPhase: timed out waiting to leave '${currentPhase}'`);
+    console.warn(`[GameStateAdapter] pollUntilPhase: timed out waiting to leave '${currentPhase}' (everSawCurrent=${everSawCurrent})`);
     return this.previousState;
   }
 
@@ -195,7 +223,14 @@ export class GameStateAdapter {
             rank: INDEX_TO_RANK[idx % 7] ?? 'A',
             suit: INDEX_TO_SUIT[Math.floor(idx / 7)] ?? 'hearts',
           }));
-          console.log(`[GameStateAdapter] contract hand: ${sorted.length} cards idx=${JSON.stringify(sorted)} mapped=${JSON.stringify(myHand)}`);
+          // Dedupe: polling fires every 5-30s and the hand usually doesn't
+          // change between polls. Only log when the sorted index list
+          // actually differs from the last emission.
+          const sig = JSON.stringify(sorted);
+          if (this.lastHandLog !== sig) {
+            this.lastHandLog = sig;
+            console.log(`[GameStateAdapter] contract hand: ${sorted.length} cards idx=${sig} mapped=${JSON.stringify(myHand)}`);
+          }
         } catch (err) {
           console.warn('[GameStateAdapter] Contract hand query failed:', err instanceof Error ? err.message : String(err));
         }

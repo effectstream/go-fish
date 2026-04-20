@@ -202,6 +202,11 @@ export class UIManager {
     // Show new screen
     this.currentScreen = screenId;
 
+    // Blur the 3D canvas (and run its idle-demo animation) whenever we're
+    // NOT inside a live game — so the random table activity reads as
+    // ambient background, not gameplay the player should react to.
+    document.body.classList.toggle('canvas-idle', screenId !== 'game');
+
     switch (screenId) {
       case 'wallet':
         this.walletScreen.show();

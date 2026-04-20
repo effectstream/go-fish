@@ -3,6 +3,8 @@ import { UIManager } from './UIManager';
 import { MidnightService } from './services/MidnightService';
 import { ThreeApp } from './three/ThreeApp';
 import { SceneManager } from './three/SceneManager';
+import { backgroundNotifier } from './game/BackgroundNotifier';
+import { GameSessionManager } from './game/GameSessionManager';
 
 // IMPORTANT: Set Midnight network ID at top level before any other SDK imports
 // This must happen before any Midnight SDK modules are used
@@ -29,6 +31,24 @@ class App {
     // Initialize managers
     this.gameManager = new GameManager();
     this._uiManager = new UIManager(this.gameManager);
+
+    // Wire background notifier — surfaces "your turn" toasts for games
+    // the user isn't currently watching on the 3D canvas. Must come
+    // after the DOM is ready but before any game session is created.
+    backgroundNotifier.start();
+
+    // Dev inspector — `window.__sessions()` in the console dumps a table
+    // of all live sessions with their inFlight state. Non-production
+    // convenience; safe to ship since it only reads manager state.
+    (window as unknown as { __sessions?: () => unknown }).__sessions = () =>
+      GameSessionManager.instance.debugDump();
+
+    // Test hook — exposes the live session manager so headless tests can
+    // drive actions directly (askForCard, etc.) without going through the
+    // 3D canvas input layer. Safe to ship: same methods already callable
+    // via GameScene event paths; this just short-circuits the UI.
+    (window as unknown as { __sessionManager?: unknown }).__sessionManager =
+      GameSessionManager.instance;
 
     // Start the application
     this.init();

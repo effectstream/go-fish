@@ -31,10 +31,106 @@
         bottom: 0;
         z-index: 0;
         pointer-events: none;
-        transition: right 0.25s ease;
+        transition: right 0.25s ease, filter 0.4s ease;
       }
       #three-canvas-container canvas {
         display: block;
+      }
+      /* Idle mode: blur + dim the canvas so the random demo table is clearly
+         "background ambience" and not confused for a live game. Toggled by
+         UIManager via body.canvas-idle. */
+      body.canvas-idle #three-canvas-container {
+        filter: blur(5px) saturate(85%) brightness(0.7);
+      }
+      /* A soft gold vignette on top of the blurred canvas, to sell the
+         "casino lounge" ambience while idle. */
+      body.canvas-idle #three-canvas-container::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse at 50% 45%,
+          transparent 0%,
+          rgba(12, 6, 10, 0.25) 50%,
+          rgba(5, 2, 5, 0.7) 100%);
+        pointer-events: none;
+      }
+
+      /* ───────── Idle overlay: big gold "use the menu" prompt ───────── */
+      #idle-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: var(--side-panel-width);
+        bottom: 0;
+        z-index: 40;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        transition: right 0.25s ease;
+      }
+      body.canvas-idle #idle-overlay { display: flex; }
+
+      #idle-overlay .idle-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        padding: 28px 46px;
+        text-align: center;
+      }
+      #idle-overlay .idle-symbol {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 78px;
+        line-height: 1;
+        color: var(--gold-bright);
+        text-shadow:
+          0 0 20px rgba(250, 204, 21, 0.55),
+          0 0 44px rgba(250, 204, 21, 0.3);
+        animation: idle-beat 2.4s ease-in-out infinite;
+      }
+      #idle-overlay .idle-title {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 34px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: var(--gold-bright);
+        text-shadow:
+          0 2px 0 rgba(0, 0, 0, 0.6),
+          0 0 28px rgba(250, 204, 21, 0.4);
+      }
+      #idle-overlay .idle-tagline {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-style: italic;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        color: #fde68a;
+        opacity: 0.8;
+        margin-top: -4px;
+      }
+      #idle-overlay .idle-sub {
+        font-family: 'Inter', sans-serif;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: #fde68a;
+        opacity: 0.85;
+      }
+      @keyframes idle-beat {
+        0%, 100% {
+          transform: scale(1.00) rotate(0deg);
+          text-shadow: 0 0 18px rgba(250, 204, 21, 0.55), 0 0 40px rgba(250, 204, 21, 0.28);
+        }
+        35% {
+          transform: scale(1.12) rotate(-5deg);
+          text-shadow: 0 0 28px rgba(250, 204, 21, 0.95), 0 0 60px rgba(250, 204, 21, 0.55);
+        }
+        65% {
+          transform: scale(1.06) rotate(4deg);
+          text-shadow: 0 0 24px rgba(250, 204, 21, 0.8), 0 0 52px rgba(250, 204, 21, 0.45);
+        }
       }
 
       /* DOM overlay sits on top of canvas; follows the same viewport. */
@@ -595,11 +691,33 @@
         font-size: 14px;
         line-height: 1;
       }
-      /* Slight fan rotation for a casino-hand feel */
-      .mini-card:nth-child(1) { transform: rotate(-4deg) translateY(1px); }
-      .mini-card:nth-child(2) { transform: rotate(-1deg); }
-      .mini-card:nth-child(3) { transform: rotate(2deg); }
-      .mini-card:nth-child(4) { transform: rotate(5deg) translateY(1px); }
+      /* Slight fan rotation for a casino-hand feel. Beyond 5 cards we
+         render a `+N` chip instead, so only the first 5 need rotations. */
+      .mini-card:nth-child(1) { transform: rotate(-6deg) translateY(2px); }
+      .mini-card:nth-child(2) { transform: rotate(-3deg); }
+      .mini-card:nth-child(3) { transform: rotate(0deg); }
+      .mini-card:nth-child(4) { transform: rotate(3deg); }
+      .mini-card:nth-child(5) { transform: rotate(6deg) translateY(2px); }
+
+      /* `+N` chip shown when the real hand is larger than the fan cap. */
+      .mini-card-more {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 22px;
+        height: 40px;
+        padding: 0 5px;
+        margin-left: 2px;
+        background: rgba(12, 6, 10, 0.75);
+        border: 1px solid rgba(212, 175, 55, 0.35);
+        border-radius: 3px;
+        color: var(--gold-bright);
+        font-family: 'Inter', sans-serif;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        flex-shrink: 0;
+      }
 
       .lobby-info {
         display: flex;
@@ -815,6 +933,14 @@
   </head>
   <body>
     <div id="three-canvas-container"></div>
+    <div id="idle-overlay" aria-hidden="true">
+      <div class="idle-card">
+        <div class="idle-symbol">♣</div>
+        <div class="idle-title">Go Fish</div>
+        <div class="idle-tagline">A ZK Card Game on the Midnight Network</div>
+        <div class="idle-sub">Use the menu to start a game</div>
+      </div>
+    </div>
     <button id="side-toggle" type="button" aria-label="Toggle menu" title="Toggle menu">☰</button>
     <aside id="side-panel"></aside>
     <script>

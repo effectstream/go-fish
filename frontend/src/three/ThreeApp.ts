@@ -7,6 +7,7 @@ import { Deck3D } from './objects/Deck3D';
 import { OpponentHand } from './objects/OpponentHand';
 import { InputManager } from './InputManager';
 import { createPostProcessing } from './effects/PostProcessing';
+import { animateDeal, animateTransfer } from './animations/CardAnimations';
 import type { EffectComposer } from 'postprocessing';
 import type { Card } from '../../../packages/shared/data-types/src/go-fish-types';
 
@@ -108,7 +109,9 @@ export class ThreeApp {
     this.showDemoScene();
   }
 
-  /** Display sample cards so the scene isn't empty during coexistence mode. */
+  /** Display sample cards so the scene isn't empty during coexistence mode.
+   *  Kicks off the idle demo loop — random card add/remove + deck shifts so
+   *  the scene always looks like *something* is happening. */
   private showDemoScene(): void {
     const demoCards: Card[] = [
       { rank: 'A', suit: 'hearts' },
@@ -119,15 +122,125 @@ export class ThreeApp {
 
     this.playerHand.setCards(demoCards);
     this.inputManager.setInteractiveCards(this.playerHand.getCards());
-    this.inputManager.onCardClick = (card3d) => {
-      card3d.setSelected(!card3d.selected);
-      console.log(`[ThreeApp] Card clicked: ${card3d.card.rank} of ${card3d.card.suit}`);
-    };
 
     this.opponentHand.setCardCount(4);
-    this.opponentHand.setName('Opponent');
+    this.opponentHand.setName('');
 
     this.deck.setCount(13);
+
+    this.startIdleAnimation();
+  }
+
+  // ───────── Idle / "demo table" animation ─────────
+
+  private idleIntervalId: number | null = null;
+
+  /** Begin randomly mutating the demo scene every ~1.8-3.5s (add a card,
+   *  remove a card, swap a card, nudge opponent count, shift deck). Runs
+   *  until `stopIdleAnimation()` is called (typically when a real game
+   *  scene takes over). */
+  startIdleAnimation(): void {
+    if (this.idleIntervalId !== null) return;
+    const tick = () => {
+      this.mutateDemoScene();
+      const delay = 1800 + Math.random() * 1700;
+      this.idleIntervalId = window.setTimeout(tick, delay);
+    };
+    this.idleIntervalId = window.setTimeout(tick, 1500);
+  }
+
+  stopIdleAnimation(): void {
+    if (this.idleIntervalId !== null) {
+      clearTimeout(this.idleIntervalId);
+      this.idleIntervalId = null;
+    }
+  }
+
+  private mutateDemoScene(): void {
+    const RANKS: Array<Card['rank']> = ['A', '2', '3', '4', '5', '6', '7'];
+    const SUITS: Array<Card['suit']> = ['hearts', 'diamonds', 'clubs'];
+    const randCard = (): Card => ({
+      rank: RANKS[Math.floor(Math.random() * RANKS.length)]!,
+      suit: SUITS[Math.floor(Math.random() * SUITS.length)]!,
+    });
+
+    // Compute deck position in hand-local coords (for animation source/target)
+    const deckWorld = new THREE.Vector3();
+    this.deck.mesh.getWorldPosition(deckWorld);
+    const handGroup = this.playerHand.group;
+    const deckLocal = handGroup.worldToLocal(deckWorld.clone());
+
+    const currentHand = this.playerHand.getCards().map(c => c.card);
+    // Weighted actions:
+    //   40% add a card from deck (up to 6)
+    //   35% send a card back to deck (down to 1)
+    //   20% swap one card (no deck animation, just a flip)
+    //   5%  full reshuffle
+    const roll = Math.random();
+
+    if (roll < 0.40 && currentHand.length < 6) {
+      // ADD — setCards first so the new Card3D is created at its rest pose,
+      // then replay the deal animation on JUST the new card, from the deck.
+      const newCard = randCard();
+      const next = [...currentHand, newCard];
+      this.playerHand.setCards(next);
+      this.inputManager.setInteractiveCards(this.playerHand.getCards());
+      const cards3d = this.playerHand.getCards();
+      const added = cards3d[cards3d.length - 1];
+      if (added) {
+        const restPos = added.mesh.position.clone();
+        animateDeal(added, deckLocal, restPos, 0, 0.55).catch(() => {});
+      }
+    } else if (roll < 0.75 && currentHand.length > 1) {
+      // REMOVE — animate the target card flying to the deck, THEN setCards
+      // without it so the remaining cards re-layout into the gap.
+      const idx = Math.floor(Math.random() * currentHand.length);
+      const cards3d = this.playerHand.getCards();
+      const removed = cards3d[idx];
+      const next = currentHand.slice(0, idx).concat(currentHand.slice(idx + 1));
+      if (removed) {
+        animateTransfer(removed, removed.mesh.position.clone(), deckLocal, 0.55)
+          .then(() => {
+            this.playerHand.setCards(next);
+            this.inputManager.setInteractiveCards(this.playerHand.getCards());
+          })
+          .catch(() => {
+            this.playerHand.setCards(next);
+            this.inputManager.setInteractiveCards(this.playerHand.getCards());
+          });
+      } else {
+        this.playerHand.setCards(next);
+        this.inputManager.setInteractiveCards(this.playerHand.getCards());
+      }
+    } else if (roll < 0.95 && currentHand.length > 0) {
+      // SWAP — in-place replace a card; simple re-render (no deck motion).
+      const idx = Math.floor(Math.random() * currentHand.length);
+      const next = currentHand.slice();
+      next[idx] = randCard();
+      this.playerHand.setCards(next);
+      this.inputManager.setInteractiveCards(this.playerHand.getCards());
+    } else {
+      // FULL RESHUFFLE — new random hand, dealt-in from the deck.
+      const n = 2 + Math.floor(Math.random() * 4); // 2-5 cards
+      const next: Card[] = [];
+      for (let i = 0; i < n; i++) next.push(randCard());
+      this.playerHand.setCards(next);
+      this.inputManager.setInteractiveCards(this.playerHand.getCards());
+      const cards3d = this.playerHand.getCards();
+      for (let i = 0; i < cards3d.length; i++) {
+        const c = cards3d[i]!;
+        const restPos = c.mesh.position.clone();
+        animateDeal(c, deckLocal, restPos, i * 0.08, 0.5).catch(() => {});
+      }
+    }
+
+    // Opponent count drifts 3..5
+    const opp = 3 + Math.floor(Math.random() * 3);
+    this.opponentHand.setCardCount(opp);
+
+    // Deck count drifts 8..15
+    const deck = 8 + Math.floor(Math.random() * 8);
+    this.deck.setCount(deck);
   }
 
   /** Get the deck group for click targeting. */

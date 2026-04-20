@@ -131,6 +131,49 @@ export const witnesses: any = {
     return [context.privateState, inverse];
   },
 
+  /**
+   * V3 (2026-04-17): Split a card index (0..20) into [suit, rank] where
+   * cardIndex = suit*7 + rank. Used by `afterGoFish` to recover a drawn
+   * card's rank from its decrypted curve point. Circuit verifies the
+   * reconstruction, so a malicious witness can't cheat.
+   *
+   * Return type MUST be `[bigint, bigint]` — compact-runtime 0.15.0
+   * marshals `Uint<N>` across the witness boundary as bigint; returning
+   * plain numbers throws "expected value of type [Uint<0..256>,
+   * Uint<0..256>] but received [ 1, 3 ]".
+   */
+  wit_split_card_index: (
+    context: WitnessContext<Ledger, PrivateState>,
+    cardIndex: bigint,
+  ): [PrivateState, [bigint, bigint]] => {
+    if (cardIndex < 0n || cardIndex > 20n) {
+      throw new Error(
+        `[MidnightBridge] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`,
+      );
+    }
+    const n = Number(cardIndex);
+    return [context.privateState, [BigInt(Math.floor(n / 7)), BigInt(n % 7)]];
+  },
+
+  /**
+   * V4.1 (2026-04-18): admin secret for owner-only circuits (initialize,
+   * cleanupGame). The local-simulation Contract constructor validates that
+   * every witness name declared in the compact source has an implementation
+   * here — so this MUST be defined even though the frontend never runs
+   * owner-only circuits through midnightBridge (those go through an admin
+   * tool path). Returns a throwing stub: if anything ever does try to run
+   * an admin circuit via this path, fail loudly rather than authenticate
+   * as a phantom admin.
+   */
+  admin_secret_key: (
+    context: WitnessContext<Ledger, PrivateState>,
+  ): [PrivateState, bigint] => {
+    throw new Error(
+      '[MidnightBridge] admin_secret_key: not supported in the local-simulation bridge. ' +
+      'Admin circuits must use the shared witnesses module via GoFishContractService.',
+    );
+  },
+
   player_secret_key: (
     context: WitnessContext<Ledger, PrivateState>,
     gameIdBytes: Uint8Array,
@@ -417,42 +460,152 @@ export async function afterGoFish(
 }
 
 /**
- * Check and score a book (set of 4 cards of same rank)
+ * V3.1: restored. Asker's frontend calls this after a successful respondToAsk
+ * transfer to score any resulting book at the just-asked rank.
  */
 export async function checkAndScoreBook(
   lobbyId: string,
   playerId: 1 | 2,
-  targetRank: number
-): Promise<{ success: boolean; completedBook?: boolean; errorMessage?: string }> {
+  targetRank: number,
+): Promise<{ success: boolean; scored?: boolean; errorMessage?: string }> {
   try {
     if (!isMidnightConnected() || !contract || !circuitContext) {
       return { success: false, errorMessage: 'Midnight contract not initialized' };
     }
-
-    // Set game context for witness functions
     setGameContext(lobbyId, playerId);
-
     const gameId = lobbyIdToGameId(lobbyId);
-
-    console.log(`[MidnightBridge] checkAndScoreBook(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${targetRank})`);
-
-    // Call contract circuit - returns boolean (true if book was completed)
     const result = contract.provableCircuits.checkAndScoreBook(
       circuitContext,
       gameId,
       BigInt(playerId),
-      BigInt(targetRank)
+      BigInt(targetRank),
     );
-
-    // Update circuit context with result
     circuitContext = result.context;
-
-    const completedBook = result.result;
-
-    console.log(`[MidnightBridge] checkAndScoreBook succeeded: completedBook=${completedBook}`);
-    return { success: true, completedBook };
+    return { success: true, scored: Boolean(result.result) };
   } catch (error) {
     console.error('[MidnightBridge] checkAndScoreBook failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.3: empty-hand draw request. Caller has 0 cards, deck has cards.
+ * Opponent resolves with `drawCard`.
+ */
+export async function requestToDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.requestToDrawCard(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] requestToDrawCard failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.3: opponent fulfils an empty-hand draw request. Caller is the
+ * NON-asking player.
+ */
+export async function drawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.drawCard(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] drawCard failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.3: empty-hand AND empty-deck skip. Just switches turn.
+ */
+export async function skipTurn(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.skipTurn(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] skipTurn failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V4.2: detect and finalize exhaustion game-over. Returns the contract's
+ * boolean verdict ("did this call end the game?"). Caller is any player
+ * (no playerId argument on the circuit — just gameId).
+ */
+export async function checkAndEndGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; ended?: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = contract.provableCircuits.checkAndEndGame(circuitContext, gameId);
+    circuitContext = result.context;
+    return { success: true, ended: Boolean(result.result) };
+  } catch (error) {
+    console.error('[MidnightBridge] checkAndEndGame failed:', error);
     return {
       success: false,
       errorMessage: error instanceof Error ? error.message : 'Unknown error',
@@ -592,7 +745,6 @@ export const MidnightBridge = {
   askForCard,
   respondToAsk,
   afterGoFish,
-  checkAndScoreBook,
   getGamePhase,
   getScores,
   getPlayerHand,

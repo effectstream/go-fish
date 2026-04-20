@@ -23,7 +23,10 @@ function ensureStyles(): void {
     #${ROOT_ID} {
       position: fixed;
       bottom: 28px;
-      left: 50%;
+      /* Center within the canvas region, not the whole viewport, so the
+         indicator stays visually centered even when the side panel is in
+         the layout on desktop (--side-panel-width = 340px). */
+      left: calc(50% - var(--side-panel-width, 0px) / 2);
       transform: translateX(-50%) translateY(12px);
       z-index: 9000;
       display: flex;

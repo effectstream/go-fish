@@ -46,8 +46,12 @@ export class GameHUD {
   constructor() {
     this.container = document.createElement('div');
     this.container.id = 'game-hud';
+    // Constrain to the canvas region (not the side panel) by anchoring with
+    // top/left/right/bottom instead of width:100%. On desktop --side-panel-width
+    // is 340px, so the HUD stops at the sidebar; on mobile it's 0 and the HUD
+    // still spans the full viewport (sidebar overlays on top when opened).
     this.container.style.cssText = `
-      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      position: fixed; top: 0; left: 0; right: var(--side-panel-width, 0px); bottom: 0;
       z-index: 10; pointer-events: none;
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       color: #e0e0e0;
@@ -88,10 +92,10 @@ export class GameHUD {
     `;
     this.container.appendChild(this.actionPanel);
 
-    // Game log (right side)
+    // Game log (under the Score panel, left column)
     this.logPanel = document.createElement('div');
     this.logPanel.style.cssText = `
-      position: absolute; top: 50px; right: 20px; width: 280px; max-height: 50vh;
+      position: absolute; top: 210px; left: 20px; width: 280px; max-height: calc(100vh - 280px);
       overflow-y: auto; background: rgba(0, 0, 0, 0.5);
       backdrop-filter: blur(4px);
       border-radius: 12px; padding: 14px;

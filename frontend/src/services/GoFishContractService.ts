@@ -248,10 +248,15 @@ async function postToBatcher(serializedTx: string, circuitId: string, meta?: { l
 const CIRCUIT_LABELS: Record<string, string> = {
   applyMask: 'applying mask',
   dealCards: 'dealing cards',
+  scoreInitialBooks: 'scoring initial book',
   askForCard: 'asking for card',
   respondToAsk: 'checking hand',
   afterGoFish: 'resolving draw',
   checkAndScoreBook: 'scoring book',
+  requestToDrawCard: 'requesting draw',
+  drawCard: 'drawing for opponent',
+  skipTurn: 'skipping turn',
+  checkAndEndGame: 'checking end game',
   switchTurn: 'switching turn',
   claimTimeoutWin: 'claiming timeout win',
   init_deck: 'initializing deck',
@@ -448,11 +453,16 @@ export async function queryIsStaticDeckInitialized(): Promise<boolean | null> {
     if (!contractState) return null;
 
     // _descriptor_7 = CompactTypeUnsignedInteger(255n, 1) — used for ledger array/map keys
-    // Path mirrors _init_static_deck_0 queryLedgerState ops: [1n, 0n]
-    // (contract restructure moved staticDeckInitialized from [0n,2n] to [1n,0n])
+    // V3 ledger layout (2026-04-17): path moved back to [0n, 2n]. The V3
+    // contract added four new ledger fields (booksP1/P2,
+    // initialBooksScoredP1/P2), which shifted compact-runtime slot indices.
+    // The old [1n, 0n] path now lands on a Map and throws
+    // "expected a cell, received map". Any further contract refactor that
+    // touches ledger layout requires re-validating this against
+    // managed/contract/index.js::_init_static_deck_0 queryLedgerState ops.
     const keyType = new CompactTypeUnsignedInteger(255n, 1);
-    const key1 = { value: keyType.toValue(1n), alignment: keyType.alignment() };
     const key0 = { value: keyType.toValue(0n), alignment: keyType.alignment() };
+    const key2 = { value: keyType.toValue(2n), alignment: keyType.alignment() };
 
     const results = contractState.query(
       [
@@ -462,8 +472,8 @@ export async function queryIsStaticDeckInitialized(): Promise<boolean | null> {
             cached: false,
             pushPath: false,
             path: [
-              { tag: 'value' as const, value: key1 },
               { tag: 'value' as const, value: key0 },
+              { tag: 'value' as const, value: key2 },
             ],
           },
         },
@@ -697,6 +707,10 @@ export async function queryGameState(lobbyId: string): Promise<{
   isGameOver: boolean;
   deckEmpty: boolean;
   deckCount: number;
+  /** Booked ranks per player. Each is a 7-wide boolean vector where
+   *  index r is true iff that player has booked rank r. */
+  booksP1: boolean[];
+  booksP2: boolean[];
 } | null> {
   const gameId = lobbyIdToGameId(lobbyId);
 
@@ -707,18 +721,22 @@ export async function queryGameState(lobbyId: string): Promise<{
   // Read all fields in parallel. deckSize is the total deck array length
   // (21 for this game), topCardIndex is how many have been drawn. Remaining
   // deck count = deckSize - topCardIndex.
-  const [phase, turn, scores, sizes, gameOver, deckEmpty, deckSize, topCardIndex] = await Promise.all([
-    queryCircuit<number | bigint>("getGamePhase", gameId),
-    queryCircuit<number | bigint>("getCurrentTurn", gameId),
-    queryCircuit<[number | bigint, number | bigint]>("getScores", gameId),
-    queryCircuit<[number | bigint, number | bigint]>("getHandSizes", gameId),
-    queryCircuit<boolean>("isGameOver", gameId),
-    queryCircuit<boolean>("isDeckEmpty", gameId),
-    queryCircuit<number | bigint>("get_deck_size", gameId),
-    queryCircuit<number | bigint>("get_top_card_index", gameId),
-  ]);
+  const [phase, turn, scores, sizes, gameOver, deckEmpty, deckSize, topCardIndex, books1, books2] =
+    await Promise.all([
+      queryCircuit<number | bigint>("getGamePhase", gameId),
+      queryCircuit<number | bigint>("getCurrentTurn", gameId),
+      queryCircuit<[number | bigint, number | bigint]>("getScores", gameId),
+      queryCircuit<[number | bigint, number | bigint]>("getHandSizes", gameId),
+      queryCircuit<boolean>("isGameOver", gameId),
+      queryCircuit<boolean>("isDeckEmpty", gameId),
+      queryCircuit<number | bigint>("get_deck_size", gameId),
+      queryCircuit<number | bigint>("get_top_card_index", gameId),
+      queryCircuit<boolean[]>("getBookedRanks", gameId, 1n),
+      queryCircuit<boolean[]>("getBookedRanks", gameId, 2n),
+    ]);
 
   const deckRemaining = Math.max(0, Number(deckSize ?? 21) - Number(topCardIndex ?? 0));
+  const fallbackRanks = [false, false, false, false, false, false, false];
 
   return {
     phase: Number(phase ?? 0),
@@ -728,6 +746,8 @@ export async function queryGameState(lobbyId: string): Promise<{
     isGameOver: gameOver === true,
     deckEmpty: deckEmpty === true,
     deckCount: deckRemaining,
+    booksP1: books1 ?? fallbackRanks,
+    booksP2: books2 ?? fallbackRanks,
   };
 }
 
@@ -788,6 +808,78 @@ export async function queryHandFromContract(
   }
 }
 
+/**
+ * V3 impure read — returns the 21-wide boolean vector of which card indices
+ * are in the given player's hand right now. Requires the player's secret
+ * (same reason as queryHandFromContract — the circuit reverses the mask).
+ * An opponent dummy secret is set for the ec_mul guard pattern.
+ */
+export async function queryDiscoverHand(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<boolean[]> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const gameIdHex = gameIdToHex(gameId);
+  const opponentId = (playerId === 1 ? 2 : 1) as 1 | 2;
+
+  const secret = PlayerKeyManager.getPlayerSecret(lobbyId, playerId);
+  const seed = PlayerKeyManager.getShuffleSeed(lobbyId, playerId);
+  setPlayerSecrets(gameIdHex, playerId, secret, seed);
+
+  let oppWasSet = false;
+  if (PlayerKeyManager.hasExistingKeys(lobbyId, opponentId)) {
+    const oppSecret = PlayerKeyManager.getPlayerSecret(lobbyId, opponentId);
+    const oppSeed = PlayerKeyManager.getShuffleSeed(lobbyId, opponentId);
+    setPlayerSecrets(gameIdHex, opponentId, oppSecret, oppSeed);
+    oppWasSet = true;
+  } else {
+    setPlayerSecrets(gameIdHex, opponentId, 1n, new Uint8Array(32));
+    oppWasSet = true;
+  }
+
+  try {
+    const result = await queryCircuit<boolean[]>(
+      "discoverHand",
+      gameId,
+      BigInt(playerId),
+    );
+    return result ?? [];
+  } finally {
+    clearPlayerSecrets(gameIdHex, playerId);
+    if (oppWasSet) clearPlayerSecrets(gameIdHex, opponentId);
+  }
+}
+
+/** V3 impure read — returns [r0, r1, …, r6] where rN=true iff the player
+ *  has booked rank N. No witness dependency (pure ledger read). */
+export async function queryBookedRanks(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<boolean[]> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const result = await queryCircuit<boolean[]>(
+    "getBookedRanks",
+    gameId,
+    BigInt(playerId),
+  );
+  return result ?? [false, false, false, false, false, false, false];
+}
+
+/** V3 impure read — has the given player completed their post-deal
+ *  scoreInitialBooks scan? Used to gate the first askForCard. */
+export async function queryHasInitialBooksScored(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<boolean> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const result = await queryCircuit<boolean>(
+    "hasInitialBooksScored",
+    gameId,
+    BigInt(playerId),
+  );
+  return result === true;
+}
+
 export async function callApplyMask(lobbyId: string, playerId: 1 | 2): Promise<void> {
   console.log(`[GoFishContractService] callApplyMask: lobbyId=${lobbyId} playerId=${playerId}`);
   const addr = await getContractAddress();
@@ -808,6 +900,38 @@ export async function callDealCards(lobbyId: string, playerId: 1 | 2): Promise<v
   await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "dealCards", () =>
       contract.callTx.dealCards(gameId, BigInt(playerId)),
+      { lobbyId, playerId },
+    );
+  });
+}
+
+/**
+ * V3 post-deal scan. Each player submits exactly one of these after
+ * dealCards and before askForCard:
+ *   - If the dealt hand contains a 3-of-rank book: pass the three card
+ *     indices (sorted, in [0,20]).
+ *   - Otherwise: pass the sentinel [255n, 255n, 255n].
+ * The contract verifies the claim algebraically (rank-equality + distinct
+ * + card-in-hand), removes the booked cards, and sets initialBooksScoredP<x>.
+ */
+export async function callScoreInitialBooks(
+  lobbyId: string,
+  playerId: 1 | 2,
+  bookIndices: [bigint, bigint, bigint],
+): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+  const now = BigInt(Math.floor(Date.now() / 1000));
+
+  await withSecrets(lobbyId, playerId, async (gameId) => {
+    await callDelegated(provider, "scoreInitialBooks", () =>
+      contract.callTx.scoreInitialBooks(
+        gameId,
+        BigInt(playerId),
+        // Vector<3, Uint<8>> — compact-runtime expects bigints at every slot.
+        bookIndices as unknown as bigint[],
+        now,
+      ),
       { lobbyId, playerId },
     );
   });
@@ -873,6 +997,15 @@ export async function callSwitchTurn(lobbyId: string, playerId: 1 | 2): Promise<
   );
 }
 
+/**
+ * V3.1 (2026-04-17): re-exported. `respondToAsk` cannot safely auto-book for
+ * the asker (dummy-secret problem — see CONTRACT_V3.md V3.1 section), so the
+ * asker's frontend must call this after a successful transfer to claim any
+ * resulting book at the just-asked rank.
+ *
+ * Signature: `checkAndScoreBook(gameId, playerId, targetRank)` — no `now`
+ * parameter; returns Boolean but we don't read it (tx-style call).
+ */
 export async function callCheckAndScoreBook(
   lobbyId: string,
   playerId: 1 | 2,
@@ -887,6 +1020,83 @@ export async function callCheckAndScoreBook(
       { lobbyId, playerId },
     );
   });
+}
+
+/**
+ * V3.3 (2026-04-17): empty-hand dispatch. Caller has 0 cards, deck has cards,
+ * it's their turn at TurnStart. Contract flips phase to WaitForDraw; the
+ * opponent must then call `drawCard` to resolve the draw for the asker.
+ */
+export async function callRequestToDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+  const now = BigInt(Math.floor(Date.now() / 1000));
+
+  await callDelegated(provider, "requestToDrawCard", () =>
+    contract.callTx.requestToDrawCard(lobbyIdToGameId(lobbyId), BigInt(playerId), now),
+    { lobbyId, playerId },
+  );
+}
+
+/**
+ * V3.3 (2026-04-17): opponent-side counterpart to requestToDrawCard. Caller
+ * (the NON-asking player) strips their mask from the top deck card and hands
+ * it to the asker. Uses ec_mul — needs secrets.
+ */
+export async function callDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+  const now = BigInt(Math.floor(Date.now() / 1000));
+
+  await withSecrets(lobbyId, playerId, async (gameId) => {
+    await callDelegated(provider, "drawCard", () =>
+      contract.callTx.drawCard(gameId, BigInt(playerId), now),
+      { lobbyId, playerId },
+    );
+  });
+}
+
+/**
+ * V3.3 (2026-04-17): empty-hand skip when the deck is also empty. Caller has
+ * 0 cards, deck has 0 cards, their turn at TurnStart. Just switches turn.
+ */
+export async function callSkipTurn(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+  const now = BigInt(Math.floor(Date.now() / 1000));
+
+  await callDelegated(provider, "skipTurn", () =>
+    contract.callTx.skipTurn(lobbyIdToGameId(lobbyId), BigInt(playerId), now),
+    { lobbyId, playerId },
+  );
+}
+
+/**
+ * V4.2 (2026-04-18): frontend must call this after each turn to flip the
+ * contract's phase to GameOver when the deck is empty AND either hand is
+ * empty. The early-win-at-4-books path is automatic inside `addScore`, so
+ * this is only needed for the exhaustion terminal state.
+ */
+export async function callCheckAndEndGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+
+  await callDelegated(provider, "checkAndEndGame", () =>
+    contract.callTx.checkAndEndGame(lobbyIdToGameId(lobbyId)),
+    { lobbyId, playerId },
+  );
 }
 
 export async function callClaimTimeoutWin(lobbyId: string, playerId: 1 | 2): Promise<void> {

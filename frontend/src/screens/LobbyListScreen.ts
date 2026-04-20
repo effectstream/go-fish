@@ -5,12 +5,20 @@
 import { GoFishGameService } from '../services/GoFishGameService';
 import type { Lobby } from '../../../packages/shared/data-types/src/go-fish-types';
 import { getWalletAddress, switchAccount, getLobbyState } from '../effectstreamBridge';
+import { GameSessionManager } from '../game/GameSessionManager';
+import type { GameSession } from '../game/GameSession';
+import type { InFlightState, SessionSnapshot } from '../game/types';
+import { getCachedGame, listCachedGames, type CachedGame } from '../services/HandCache';
 
 export class LobbyListScreen {
   private container: HTMLElement;
   private gameService: GoFishGameService;
   private refreshInterval?: number;
   private pendingJoinLobbyId: string | null = null; // Track which lobby we're joining
+  /** Teardown for manager event listeners wired in show(). */
+  private managerUnsub: (() => void) | null = null;
+  /** Debounce guard for re-renders driven by session events. */
+  private renderScheduled = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -22,12 +30,41 @@ export class LobbyListScreen {
     // Refresh lobby list every 4 seconds to reduce database pressure
     // The lobby list doesn't need to be super responsive
     this.refreshInterval = window.setInterval(() => this.render(), 4000);
+    // Re-render whenever a live game session updates — keeps the Active
+    // Games badges (PROVING / SENDING / YOUR TURN) fresh without waiting
+    // for the 4-second interval.
+    this.managerUnsub = this.subscribeToSessionManager();
   }
 
   hide() {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }
+    this.managerUnsub?.();
+    this.managerUnsub = null;
+  }
+
+  /** Listen for session lifecycle + state changes; re-render (debounced) so
+   *  per-card badges stay live. Returns a teardown closure. */
+  private subscribeToSessionManager(): () => void {
+    const manager = GameSessionManager.instance;
+    const schedule = () => {
+      if (this.renderScheduled) return;
+      this.renderScheduled = true;
+      setTimeout(() => {
+        this.renderScheduled = false;
+        this.render();
+      }, 300);
+    };
+    const onAny = () => schedule();
+    manager.addEventListener('anyChange', onAny);
+    manager.addEventListener('sessionAdded', onAny);
+    manager.addEventListener('sessionRemoved', onAny);
+    return () => {
+      manager.removeEventListener('anyChange', onAny);
+      manager.removeEventListener('sessionAdded', onAny);
+      manager.removeEventListener('sessionRemoved', onAny);
+    };
   }
 
   private async render() {
@@ -44,6 +81,17 @@ export class LobbyListScreen {
         return [] as Array<{ lobbyId: string; playerId: 1 | 2; lobbyName: string; opponentName: string }>;
       }),
     ]);
+
+    // Live sessions take precedence over the point-in-time resumable-games
+    // snapshot — scores, turn, phase, and inFlight state all come from the
+    // session when it exists so the sidebar reflects proofs / txs in real
+    // time. Sessions not yet in findResumableGames (just-created games)
+    // still show up via the sessions-only tail below.
+    const liveSessions = GameSessionManager.instance.list();
+    const sessionsByLobby = new Map<string, GameSession>(
+      liveSessions.map(s => [s.lobbyId, s]),
+    );
+    const enrichedGames = this.mergeWithLiveSessions(resumableGames, sessionsByLobby);
 
     // Check if modal is open - if so, don't re-render
     const existingModal = document.getElementById('create-lobby-modal') as HTMLElement;
@@ -84,7 +132,7 @@ export class LobbyListScreen {
     // duplicates in the sidebar list; the contract doesn't care.
     const existingNames = new Set<string>([
       ...lobbies.map(l => l.name),
-      ...resumableGames.map(g => g.lobbyName),
+      ...enrichedGames.map(g => g.lobbyName),
     ]);
     const defaultLobbyName = this.nextAvailableLobbyName(`${playerName}'s game`, existingNames);
 
@@ -102,10 +150,10 @@ export class LobbyListScreen {
         </header>
 
         <div class="side-content">
-          ${resumableGames.length > 0 ? `
-            <h2>My Active Games (${resumableGames.length})</h2>
+          ${enrichedGames.length > 0 ? `
+            <h2>My Active Games (${enrichedGames.length})</h2>
             <div class="resume-list">
-              ${resumableGames.map(g => this.renderResumableGame(g)).join('')}
+              ${enrichedGames.map(g => this.renderResumableGame(g)).join('')}
             </div>
           ` : ''}
 
@@ -148,22 +196,20 @@ export class LobbyListScreen {
     this.attachEventListeners();
   }
 
-  private renderResumableGame(game: {
-    lobbyId: string;
-    playerId: 1 | 2;
-    lobbyName: string;
-    opponentName: string;
-    myScore: number;
-    opponentScore: number;
-    isMyTurn: boolean;
-    phase: number;
-  }): string {
+  private renderResumableGame(game: EnrichedResumable): string {
     // Phase → user-facing status. 0=dealing, 1=turn_start, 2=wait_response,
     // 3=wait_transfer, 4=wait_draw, 5=wait_draw_check, 6=game_over
     const inSetup = game.phase === 0;
     const finished = game.phase === 6;
-    // Turn states use the in-row dealer chip; only setup/finished show a pill
-    const showStatusPill = inSetup || finished;
+
+    // Live session inFlight takes precedence over the phase-based pill —
+    // even in a "your turn" state, a proving/sending spinner is more
+    // informative while the player has a tx queued.
+    const inFlightPill = this.inFlightBadge(game.inFlight);
+
+    // Turn states use the in-row dealer chip; only setup/finished show a
+    // phase-based pill (when no inFlight override wins).
+    const showStatusPill = !inFlightPill && (inSetup || finished);
     const statusText = inSetup ? 'Setup' : 'Finished';
     const statusClass = inSetup ? 'in_progress' : 'finished';
 
@@ -173,24 +219,33 @@ export class LobbyListScreen {
     const meActive = !inSetup && !finished && game.isMyTurn;
     const themActive = !inSetup && !finished && !game.isMyTurn;
 
-    // Mocked mini-hand preview — NOT connected to the contract. Seeded off
-    // the lobby id so each card shows a stable (but card-specific) mini hand
-    // without an extra witness query per render.
-    const mockHand = this.mockMiniHand(game.lobbyId);
+    // Mini-hand preview: prefer the real hand from the HandCache (written
+    // by each live GameSession after every poll) — falls back to a seeded
+    // mock only when no cache exists yet (e.g., a resumable game from a
+    // prior tab that hasn't been foregrounded in this session).
+    //
+    // Real hands can range from 0 (all booked or drained) up to ~7+ mid-
+    // game. We render up to MINI_HAND_FAN_CAP as a fanned preview, with a
+    // `+N` chip when the full hand exceeds the cap.
+    const miniHand = this.miniHandFor(game.lobbyId);
+    const MINI_HAND_FAN_CAP = 5;
+    const visibleCards = miniHand.cards.slice(0, MINI_HAND_FAN_CAP);
+    const hiddenCount = Math.max(0, miniHand.total - visibleCards.length);
 
     return `
       <div class="lobby-card resume-card" data-lobby-id="${game.lobbyId}">
         <div class="lobby-header">
           <h3>${game.lobbyName}</h3>
-          ${showStatusPill ? `<span class="lobby-status ${statusClass}">${statusText}</span>` : ''}
+          ${inFlightPill ?? (showStatusPill ? `<span class="lobby-status ${statusClass}">${statusText}</span>` : '')}
         </div>
         <div class="mini-hand">
-          ${mockHand.map(c => `
+          ${visibleCards.map(c => `
             <div class="mini-card ${c.red ? 'red' : ''}">
               <span class="mc-rank">${c.rank}</span>
               <span class="mc-suit">${c.suit}</span>
             </div>
           `).join('')}
+          ${hiddenCount > 0 ? `<div class="mini-card-more">+${hiddenCount}</div>` : ''}
         </div>
         <div class="score-row">
           <div class="score-side me ${meActive ? 'active' : ''}">
@@ -210,6 +265,151 @@ export class LobbyListScreen {
     `;
   }
 
+  /** Overlay live session state (score, turn, phase, inFlight) onto the
+   *  chain-snapshot resumable-games list. Sessions not in the resumable
+   *  list (e.g., freshly created this tab) are appended as synthetic
+   *  entries so they still appear in the sidebar. */
+  private mergeWithLiveSessions(
+    resumableGames: Array<{
+      lobbyId: string;
+      playerId: 1 | 2;
+      lobbyName: string;
+      opponentName: string;
+      myScore: number;
+      opponentScore: number;
+      isMyTurn: boolean;
+      phase: number;
+    }>,
+    sessions: Map<string, GameSession>,
+  ): EnrichedResumable[] {
+    const enriched: EnrichedResumable[] = resumableGames.map(g => {
+      const s = sessions.get(g.lobbyId);
+      if (s) return this.overlaySessionOntoGame(g, s);
+      // No live session — try the localStorage cache next. Written on every
+      // poll of any session, so even after the user navigates away and
+      // back (or reloads the tab) the sidebar can show accurate scores /
+      // inFlight without reaching the contract.
+      const cached = getCachedGame(g.lobbyId);
+      if (cached) return this.overlayCacheOntoGame(g, cached);
+      return { ...g, inFlight: null };
+    });
+
+    // Sessions that aren't yet reflected in findResumableGames — keep them
+    // visible rather than making the user wait for the next chain fetch.
+    const seen = new Set(resumableGames.map(g => g.lobbyId));
+    for (const session of sessions.values()) {
+      if (seen.has(session.lobbyId)) continue;
+      const snap = session.getSnapshot();
+      const state = snap.state;
+      const synthetic: EnrichedResumable = {
+        lobbyId: session.lobbyId,
+        playerId: (snap.playerId || 1) as 1 | 2,
+        lobbyName: session.lobbyId.slice(0, 12),
+        opponentName: state?.opponentName ?? 'Opponent',
+        myScore: state ? state.scores[state.playerId - 1] : 0,
+        opponentScore: state ? state.scores[state.playerId === 1 ? 1 : 0] : 0,
+        isMyTurn: state ? state.currentTurn === state.playerId : false,
+        phase: PHASE_STRING_TO_NUMBER[state?.phase ?? 'dealing'] ?? 0,
+        inFlight: snap.inFlight,
+      };
+      enriched.push(synthetic);
+      seen.add(session.lobbyId);
+    }
+
+    // Cached games that are neither in findResumableGames nor in active
+    // sessions — typically happens on a fresh tab load before the chain
+    // fetch completes, or after a transient backend hiccup. Hydrate from
+    // cache so the sidebar doesn't briefly go empty.
+    for (const [lobbyId, cached] of listCachedGames()) {
+      if (seen.has(lobbyId)) continue;
+      enriched.push({
+        lobbyId,
+        playerId: cached.playerId,
+        lobbyName: cached.lobbyName || lobbyId.slice(0, 12),
+        opponentName: cached.opponentName,
+        myScore: cached.myScore,
+        opponentScore: cached.opponentScore,
+        isMyTurn: cached.isMyTurn,
+        phase: cached.phase,
+        inFlight: cached.inFlight,
+      });
+    }
+    return enriched;
+  }
+
+  /** Overlay cached sidebar data on the chain-snapshot row. Preserves the
+   *  `lobbyName` from findResumableGames (which comes from the Paima lobby
+   *  table — more canonical than whatever the session may have stored).
+   *  Everything else comes from the cache. */
+  private overlayCacheOntoGame(
+    g: {
+      lobbyId: string;
+      playerId: 1 | 2;
+      lobbyName: string;
+      opponentName: string;
+      myScore: number;
+      opponentScore: number;
+      isMyTurn: boolean;
+      phase: number;
+    },
+    cached: CachedGame,
+  ): EnrichedResumable {
+    return {
+      ...g,
+      opponentName: cached.opponentName || g.opponentName,
+      myScore: cached.myScore,
+      opponentScore: cached.opponentScore,
+      isMyTurn: cached.isMyTurn,
+      phase: cached.phase,
+      inFlight: cached.inFlight,
+    };
+  }
+
+  /** Compose one row from (chain snapshot, live session). Session fields
+   *  win where present — they reflect the latest poll + local inFlight. */
+  private overlaySessionOntoGame(
+    g: {
+      lobbyId: string;
+      playerId: 1 | 2;
+      lobbyName: string;
+      opponentName: string;
+      myScore: number;
+      opponentScore: number;
+      isMyTurn: boolean;
+      phase: number;
+    },
+    session: GameSession,
+  ): EnrichedResumable {
+    const snap: SessionSnapshot = session.getSnapshot();
+    const state = snap.state;
+    if (!state) {
+      return { ...g, inFlight: snap.inFlight };
+    }
+    const myIdx = state.playerId - 1;
+    const oppIdx = state.playerId === 1 ? 1 : 0;
+    return {
+      ...g,
+      opponentName: state.opponentName || g.opponentName,
+      myScore: state.scores[myIdx],
+      opponentScore: state.scores[oppIdx],
+      isMyTurn: state.currentTurn === state.playerId,
+      phase: PHASE_STRING_TO_NUMBER[state.phase] ?? g.phase,
+      inFlight: snap.inFlight,
+    };
+  }
+
+  /** Render the live-status badge (PROVING / SENDING / WAITING) if the
+   *  session has a tx or proof in flight. Returns null when idle so the
+   *  caller can fall back to the phase-based pill. */
+  private inFlightBadge(inFlight: InFlightState): string | null {
+    if (!inFlight) return null;
+    const label =
+      inFlight === 'proving' ? '♥ PROVING…' :
+      inFlight === 'sending' ? '♦ SENDING…' :
+      '♠ WAITING';
+    return `<span class="lobby-status in_progress">${label}</span>`;
+  }
+
   /** Find the first name in the sequence "base", "base #2", "base #3", … that
    *  isn't already taken by an existing lobby. Comparison is case-insensitive
    *  and trim-insensitive so we don't accept near-duplicates. */
@@ -225,6 +425,33 @@ export class LobbyListScreen {
     }
     // Fallback — extremely unlikely to hit, but keep it stable.
     return `${base} #${Date.now().toString().slice(-4)}`;
+  }
+
+  /** Result of {@link miniHandFor} — the rendered mini-cards plus the
+   *  total count, so the sidebar can show `5 cards` next to a fan of just
+   *  the first few. */
+  private miniHandFor(lobbyId: string): {
+    cards: Array<{ rank: string; suit: string; red: boolean }>;
+    total: number;
+    /** True when the data is from the real-time cache, false when it's
+     *  the seeded mock (no poll has populated the cache yet). */
+    live: boolean;
+  } {
+    const cached = getCachedGame(lobbyId);
+    if (cached && cached.cards.length > 0) {
+      const cards = cached.cards.map(c => {
+        // Contract stores suits as names — map back to display glyphs.
+        const suitGlyph =
+          c.suit === 'hearts'   ? '♥' :
+          c.suit === 'diamonds' ? '♦' :
+          c.suit === 'clubs'    ? '♣' :
+          /* spades */            '♠';
+        const red = c.suit === 'hearts' || c.suit === 'diamonds';
+        return { rank: c.rank, suit: suitGlyph, red };
+      });
+      return { cards, total: cached.cards.length, live: true };
+    }
+    return { cards: this.mockMiniHand(lobbyId), total: 0, live: false };
   }
 
   /** Deterministic mock hand derived from the lobby id. Shows 4 cards so
@@ -489,3 +716,29 @@ export class LobbyListScreen {
     this.container.dispatchEvent(new CustomEvent(type, { detail, bubbles: true }));
   }
 }
+
+/** Shape consumed by `renderResumableGame`. Union of the chain-snapshot
+ *  fields and live-session overrides (inFlight). */
+interface EnrichedResumable {
+  lobbyId: string;
+  playerId: 1 | 2;
+  lobbyName: string;
+  opponentName: string;
+  myScore: number;
+  opponentScore: number;
+  isMyTurn: boolean;
+  phase: number;
+  inFlight: InFlightState;
+}
+
+/** Phase string (from session.state) → numeric phase used by sidebar UI.
+ *  Mirrors the mapping baked into findResumableGames so both sources agree. */
+const PHASE_STRING_TO_NUMBER: Record<string, number> = {
+  dealing:         0,
+  turn_start:      1,
+  wait_response:   2,
+  wait_transfer:   3,
+  wait_draw:       4,
+  wait_draw_check: 5,
+  game_over:       6,
+};

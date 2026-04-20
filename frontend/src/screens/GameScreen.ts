@@ -1230,55 +1230,11 @@ export class GameScreen {
     `;
   }
 
-  /**
-   * After any hand-changing action, check if the player has 3 of a rank
-   * and submit checkAndScoreBook for each. The contract removes the 3
-   * cards and increments the score. At ≥4 books, it sets GameOver.
-   *
-   * Mirrors _helpers.ts:autoScoreBooks from the e2e reference.
-   */
+  // `autoScoreBooks` removed in V3 (2026-04-17). Book scoring is automatic
+  // on-chain via scoreInitialBooks (post-deal) and inline booking inside
+  // respondToAsk / afterGoFish.
   private async autoScoreBooks(): Promise<void> {
-    if (!this.gameState) return;
-    const playerId = this.gameState.playerId as 1 | 2;
-
-    try {
-      const hand = await MidnightService.getPlayerHand(this.lobbyId, playerId);
-      if (!hand || hand.length < 3) return;
-
-      // Group cards by rank and find any with 3 (a complete book)
-      const rankCounts = new Map<number, number>();
-      for (const card of hand) {
-        rankCounts.set(card.rank, (rankCounts.get(card.rank) ?? 0) + 1);
-      }
-
-      const RANK_NAMES = ['A', '2', '3', '4', '5', '6', '7'];
-      for (const [rank, count] of rankCounts) {
-        if (count >= 3) {
-          console.log(`[GameScreen] autoScoreBooks: P${playerId} has ${count} of ${RANK_NAMES[rank]} — scoring book`);
-          try {
-            this.log(`📚 Scoring book of ${RANK_NAMES[rank]}s — proving...`);
-            const result = await MidnightService.checkAndScoreBook(this.lobbyId, playerId, rank);
-            if (result.success) {
-              this.log(`★ Book of ${RANK_NAMES[rank]}s scored!`);
-              this.showNotification({
-                type: 'book',
-                rank: RANK_NAMES[rank] as any,
-              });
-              console.log(`[GameScreen] ★ Book of ${RANK_NAMES[rank]} scored!`);
-            } else {
-              console.warn(`[GameScreen] checkAndScoreBook(${RANK_NAMES[rank]}) failed: ${result.errorMessage}`);
-            }
-          } catch (err) {
-            // BACKEND_ISSUES #1: local hand read may disagree with the
-            // contract's internal rank counting. Log and continue — the
-            // on-chain state is authoritative.
-            console.warn(`[GameScreen] checkAndScoreBook(${RANK_NAMES[rank]}) threw:`, err);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[GameScreen] autoScoreBooks hand read failed:', err);
-    }
+    /* no-op — retained only so existing call sites still compile */
   }
 
   private renderGameOverPanel(): string {

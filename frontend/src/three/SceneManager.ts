@@ -1,6 +1,7 @@
 import type { ThreeApp } from './ThreeApp';
 import { GameScene } from './scenes/GameScene';
 import { getWalletAddress } from '../effectstreamBridge';
+import { GameSessionManager } from '../game/GameSessionManager';
 
 type ActiveScene = 'menu' | 'game';
 
@@ -20,6 +21,9 @@ export class SceneManager {
   private app: ThreeApp;
   private activeScene: ActiveScene = 'menu';
   private gameScene: GameScene;
+  /** Lobby currently attached to gameScene. Tracked so we can swap to a
+   *  different session in-place without leaving game mode. */
+  private currentLobbyId: string | null = null;
 
   constructor(app: ThreeApp) {
     this.app = app;
@@ -46,11 +50,19 @@ export class SceneManager {
   };
 
   private enterGame(lobbyId: string): void {
-    if (this.activeScene === 'game') return;
-    this.activeScene = 'game';
+    // Same lobby, already in game → no-op. Different lobby while in game →
+    // swap the session without tearing the scene down (multi-game support).
+    if (this.activeScene === 'game' && this.currentLobbyId === lobbyId) return;
 
     const walletAddress = getWalletAddress() || '';
-    console.log(`[SceneManager] Entering game scene: lobby=${lobbyId}`);
+    const swapping = this.activeScene === 'game';
+    console.log(
+      `[SceneManager] ${swapping ? 'Swapping' : 'Entering'} game scene: lobby=${lobbyId}` +
+      (swapping ? ` (was ${this.currentLobbyId})` : ''),
+    );
+
+    this.activeScene = 'game';
+    this.currentLobbyId = lobbyId;
 
     // Hide DOM overlay so Three.js scene is fully visible and interactive
     const appContainer = document.getElementById('app-container');
@@ -64,12 +76,22 @@ export class SceneManager {
       canvasContainer.style.pointerEvents = 'auto';
     }
 
+    // gameScene.start handles both first-mount and session swap — it only
+    // mounts the HUD / wires input once, and resolves the session through
+    // GameSessionManager so background sessions are reused.
     this.gameScene.start(lobbyId, walletAddress);
+
+    // Tell the manager which session is now foreground. BackgroundNotifier
+    // uses this to suppress toasts for the session the user is actively
+    // watching (3D turn indicator already signals the same thing there).
+    GameSessionManager.instance.setForeground(lobbyId);
   }
 
   private enterMenu(): void {
     if (this.activeScene === 'menu') return;
     this.activeScene = 'menu';
+    this.currentLobbyId = null;
+    GameSessionManager.instance.setForeground(null);
 
     console.log('[SceneManager] Entering menu scene');
     this.gameScene.stop();

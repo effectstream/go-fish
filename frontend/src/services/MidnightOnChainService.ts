@@ -840,12 +840,18 @@ export async function onChainDealCards(
   // In batcher mode, use GoFishContractService (WASM proving in browser)
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Using GoFishContractService for dealCards (WASM proving)...");
-    // Before attempting the circuit, verify BOTH masks are confirmed on-chain via
-    // a direct indexer query. The circuit simulation runs against a local state
-    // snapshot that may be stale even after cache eviction, so we gate on the
-    // real indexer state to avoid wasting time on a doomed circuit call.
+    // Before attempting the circuit, verify BOTH masks are confirmed on-chain.
+    // Use the exported `hasMaskApplied` impure circuit (auto-tracks with
+    // ledger layout changes) rather than a hardcoded raw-VM path — V4 added
+    // nested per-game maps and four new ledger fields, which invalidate any
+    // slot-index-based reads. Circuit simulation is slightly slower but
+    // correct across refactors.
     const opponentId = playerId === 1 ? 2 : 1;
-    const opponentMaskOnChain = await GoFishContractService.queryHasMaskApplied(lobbyId, opponentId as 1 | 2);
+    const opponentMaskOnChain = await GoFishContractService.queryBoolCircuit(
+      "hasMaskApplied",
+      lobbyId,
+      opponentId as 1 | 2,
+    );
     console.log(`[MidnightOnChain] dealCards pre-check: opponent(player${opponentId}) maskOnChain=${opponentMaskOnChain}`);
     if (opponentMaskOnChain !== true) {
       return { success: false, errorMessage: "Player 2 must apply mask before dealing" };
@@ -1056,38 +1062,171 @@ export async function onChainSkipDrawDeckEmpty(
 }
 
 /**
- * Score a book (3 cards of the same rank). Called after any hand-changing
- * action when the player holds ≥3 of a rank. The contract removes the 3
- * cards and increments the player's score. If score reaches ≥4, the
- * contract sets phase=GameOver and writes the winner.
+ * V3.1: re-exported per the V3.1 bug fix. Asker's frontend calls this after
+ * a successful respondToAsk transfer to score any resulting book.
  */
 export async function onChainCheckAndScoreBook(
   lobbyId: string,
   playerId: 1 | 2,
   targetRank: number,
-): Promise<{ success: boolean; scored: boolean; errorMessage?: string }> {
+): Promise<{ success: boolean; errorMessage?: string }> {
   if (batcherModeActive) {
-    console.log(`[MidnightOnChain] checkAndScoreBook(P${playerId}, rank=${targetRank}) via WASM...`);
+    console.log("[MidnightOnChain] Using GoFishContractService for checkAndScoreBook (WASM proving)...");
     try {
       await GoFishContractService.callCheckAndScoreBook(lobbyId, playerId, targetRank);
-      return { success: true, scored: true };
+      return { success: true };
     } catch (err: any) {
-      return { success: false, scored: false, errorMessage: err?.message || String(err) };
+      return { success: false, errorMessage: err?.message || String(err) };
     }
   }
 
   if (!isOnChainReady()) {
-    return { success: false, scored: false, errorMessage: "On-chain mode not active" };
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
   }
 
   try {
     const callTx = getCallTx();
     const gameId = lobbyIdToGameId(lobbyId);
     await callTx.checkAndScoreBook(gameId, BigInt(playerId), BigInt(targetRank));
-    return { success: true, scored: true };
+    return { success: true };
   } catch (error) {
     console.error("[MidnightOnChain] checkAndScoreBook failed:", error);
-    return { success: false, scored: false, errorMessage: String(error) };
+    return { success: false, errorMessage: String(error) };
+  }
+}
+
+/**
+ * V3.3: empty-hand dispatcher. Caller has 0 cards, deck has cards. Phase
+ * flips to WaitForDraw; opponent resolves via drawCard.
+ */
+export async function onChainRequestToDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using GoFishContractService for requestToDrawCard (WASM proving)...");
+    try {
+      await GoFishContractService.callRequestToDrawCard(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.requestToDrawCard(gameId, BigInt(playerId), now);
+    return { success: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] requestToDrawCard failed:", error);
+    return { success: false, errorMessage: String(error) };
+  }
+}
+
+/**
+ * V3.3: opponent-side resolution for an empty-hand draw request. Caller is
+ * the NON-asking player; strips their mask from the top deck card and hands
+ * it to the asker, then switches turn.
+ */
+export async function onChainDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using GoFishContractService for drawCard (WASM proving)...");
+    try {
+      await GoFishContractService.callDrawCard(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.drawCard(gameId, BigInt(playerId), now);
+    return { success: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] drawCard failed:", error);
+    return { success: false, errorMessage: String(error) };
+  }
+}
+
+/**
+ * V3.3: skipTurn — empty hand AND empty deck. Just switches turn.
+ */
+export async function onChainSkipTurn(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using GoFishContractService for skipTurn (WASM proving)...");
+    try {
+      await GoFishContractService.callSkipTurn(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.skipTurn(gameId, BigInt(playerId), now);
+    return { success: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] skipTurn failed:", error);
+    return { success: false, errorMessage: String(error) };
+  }
+}
+
+/**
+ * V4.2: frontend-initiated game-over detector. Flips phase to GameOver when
+ * deck is empty AND either hand is empty. Idempotent — safe to spam.
+ */
+export async function onChainCheckAndEndGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using GoFishContractService for checkAndEndGame (WASM proving)...");
+    try {
+      await GoFishContractService.callCheckAndEndGame(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    await callTx.checkAndEndGame(gameId);
+    return { success: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] checkAndEndGame failed:", error);
+    return { success: false, errorMessage: String(error) };
   }
 }
 
@@ -1165,9 +1304,14 @@ export const MidnightOnChainService = {
   askForCard: onChainAskForCard,
   respondToAsk: onChainRespondToAsk,
   afterGoFish: onChainAfterGoFish,
-  checkAndScoreBook: onChainCheckAndScoreBook,
   skipDrawDeckEmpty: onChainSkipDrawDeckEmpty,
   claimTimeoutWin: onChainClaimTimeoutWin,
+  // V3.1 / V3.3 / V4.2 additions
+  checkAndScoreBook: onChainCheckAndScoreBook,
+  requestToDrawCard: onChainRequestToDrawCard,
+  drawCard: onChainDrawCard,
+  skipTurn: onChainSkipTurn,
+  checkAndEndGame: onChainCheckAndEndGame,
 };
 
 export default MidnightOnChainService;
