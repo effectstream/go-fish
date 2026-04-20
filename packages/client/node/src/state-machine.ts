@@ -25,6 +25,7 @@ import {
   countLobbyPlayers,
   deleteLobbyPlayers,
   deleteLobby,
+  setHostMaskApplied,
 } from "@go-fish/database";
 
 const stm = new PaimaSTM<typeof grammar, any>(grammar);
@@ -254,6 +255,50 @@ stm.addStateTransition("closedLobby", function* (data) {
   yield* World.resolve(deleteLobby, { lobbyId: lobbyID });
 
   console.log(`✅ [closedLobby] ${lobbyID} deleted`);
+});
+
+/**
+ * Handle hostReady - host's Midnight applyMask has been confirmed on-chain.
+ * Flips lobbies.host_mask_applied so other clients stop showing "Preparing".
+ */
+stm.addStateTransition("hostReady", function* (data) {
+  const { lobbyID } = data.parsedInput;
+  const walletAddress = data.signerAddress;
+  if (!walletAddress) {
+    console.error('[hostReady] No signer address');
+    return;
+  }
+
+  const lobbyState = yield* World.resolve(getLobbyState, { lobbyId: lobbyID });
+  if (!lobbyState || lobbyState.length === 0) {
+    console.warn('[hostReady] Lobby not found:', lobbyID);
+    return;
+  }
+  const lobby = lobbyState[0];
+
+  // Only the host may flip the flag.
+  const signerResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress }
+  );
+  const signerAccountId = signerResult?.[0]?.account_id;
+  if (signerAccountId == null || signerAccountId !== lobby.host_account_id) {
+    console.warn('[hostReady] Non-host ready attempt:', signerAccountId, '!=', lobby.host_account_id);
+    return;
+  }
+
+  yield* World.resolve(setHostMaskApplied, { lobbyId: lobbyID });
+  console.log(`✅ [hostReady] ${lobbyID} marked ready`);
+});
+
+/**
+ * Handle event_midnight - ledger-state events from the Midnight Go Fish contract.
+ * Fired by the parallelMidnight sync protocol whenever the contract's ledger changes.
+ * For now we just log the payload — a minimal observability hook.
+ */
+stm.addStateTransition("event_midnight", function* (data) {
+  // const { payload } = data.parsedInput as { payload: unknown };
+  console.log(`🎉 [MIDNIGHT] block=${data.blockHeight} payload:`, data.parsedInput);
 });
 
 /**

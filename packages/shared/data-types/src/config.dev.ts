@@ -8,10 +8,17 @@ import {
   ConfigNetworkType,
   ConfigSyncProtocolType,
 } from "@paimaexample/config";
-import { PrimitiveTypeEVMPaimaL2 } from "@paimaexample/sm/builtin";
+import {
+  PrimitiveTypeEVMPaimaL2,
+  PrimitiveTypeMidnightGeneric,
+} from "@paimaexample/sm/builtin";
 import { hardhat } from "viem/chains";
+import * as path from "@std/path";
 import { grammar } from "@go-fish/data-types/grammar";
 import { contractAddressesEvmMain } from "@go-fish/evm-contracts";
+import { readMidnightContract } from "@paimaexample/midnight-contracts/read-contract";
+import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
+import * as GoFishContract from "@go-fish/midnight-contract/contract";
 
 const mainSyncProtocolName = "mainNtp";
 
@@ -36,6 +43,12 @@ export const config = new ConfigBuilder()
       .addViemNetwork({
         ...hardhat,
         name: "evmMain",
+      })
+      .addNetwork({
+        name: "midnight",
+        type: ConfigNetworkType.MIDNIGHT,
+        networkId: midnightNetworkConfig.id,
+        nodeUrl: midnightNetworkConfig.node,
       })
   )
   .buildDeployments((builder) => builder)
@@ -65,17 +78,50 @@ export const config = new ConfigBuilder()
           confirmationDepth: 1,
         })
       )
+      .addParallel(
+        (networks) => networks.midnight,
+        (network, deployments) => ({
+          name: "parallelMidnight",
+          type: ConfigSyncProtocolType.MIDNIGHT_PARALLEL,
+          startBlockHeight: 1,
+          pollingInterval: 1000,
+          indexer: midnightNetworkConfig.indexer,
+          indexerWs: midnightNetworkConfig.indexerWS,
+        })
+      )
   )
   .buildPrimitives((builder) =>
-    builder.addPrimitive(
-      (syncProtocols) => syncProtocols.mainEvmRPC,
-      (network, deployments, syncProtocol) => ({
-        name: "GoFish_PaimaL2",
-        type: PrimitiveTypeEVMPaimaL2,
-        startBlockHeight: 0,
-        contractAddress: paimaL2Address,
-        paimaL2Grammar: grammar,
-      })
-    )
+    builder
+      .addPrimitive(
+        (syncProtocols) => syncProtocols.mainEvmRPC,
+        (network, deployments, syncProtocol) => ({
+          name: "GoFish_PaimaL2",
+          type: PrimitiveTypeEVMPaimaL2,
+          startBlockHeight: 0,
+          contractAddress: paimaL2Address,
+          paimaL2Grammar: grammar,
+        })
+      )
+      .addPrimitive(
+        (syncProtocols) => syncProtocols.parallelMidnight,
+        (network, deployments, syncProtocol) => ({
+          name: "GoFish_MidnightEvents",
+          type: PrimitiveTypeMidnightGeneric,
+          startBlockHeight: 1,
+          contractAddress: readMidnightContract(
+            "go-fish-contract",
+            {
+              baseDir: path.resolve(
+                import.meta.dirname!,
+                "..", "..", "contracts", "midnight",
+              ),
+              networkId: midnightNetworkConfig.id,
+            },
+          ).contractAddress,
+          stateMachinePrefix: "event_midnight",
+          contract: { ledger: GoFishContract.ledger },
+          networkId: midnightNetworkConfig.id,
+        })
+      )
   )
   .build();
