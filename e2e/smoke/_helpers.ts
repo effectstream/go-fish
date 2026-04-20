@@ -63,6 +63,21 @@ export const JUBJUB_R =
   0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7n;
 
 /**
+ * Fixed scalar used as the admin witness in e2e tests. Reproducible across
+ * runs so that a later run against the same deploy picks up its own prior
+ * `initialize()` (stored `owner == h_hashField(TEST_ADMIN_SECRET)`).
+ *
+ * Value is arbitrary — any non-zero scalar in [1, JUBJUB_R). Override via
+ * `TEST_ADMIN_SECRET` env var if you need to impersonate a different admin.
+ */
+export const TEST_ADMIN_SECRET: bigint = (() => {
+  const raw = Deno.env.get("TEST_ADMIN_SECRET");
+  if (raw && /^0x[0-9a-fA-F]+$/.test(raw)) return BigInt(raw);
+  // Default: a readable constant in the Jubjub scalar field.
+  return 0x5e1c33e17a1e600d5eed9a1c01f135cf5e1e7a5e1f1e5e1e5e1e5e1e5e1e5e1en;
+})();
+
+/**
  * Wait timing budgets — based on observed backend latencies.
  * EVM (lobby): ~5s typical → 30s headroom.
  * Midnight (indexer / API / DB): up to 2 minutes for state confirmation.
@@ -82,14 +97,18 @@ export const ADDRESS_TYPE_EVM = 0;
 
 /**
  * GamePhase enum values (from GoFish.compact:4 — authoritative order).
- * `WaitForDraw` is deprecated (index 4 reserved for enum stability).
+ *
+ * Contract V3.3: `WaitForDraw` is active again — it's set by
+ * `requestToDrawCard` (empty-handed player with a non-empty deck) and
+ * cleared by the opponent's `drawCard`. `WaitForDrawCheck` still covers
+ * the post-`respondToAsk` go-fish branch resolved by `afterGoFish`.
  */
 export const PHASE = {
   Setup: 0,
   TurnStart: 1,
   WaitForResponse: 2,
   WaitForTransfer: 3,
-  WaitForDraw: 4, // deprecated, merged into respondToAsk
+  WaitForDraw: 4, // V3.3: requestToDrawCard → drawCard flow
   WaitForDrawCheck: 5,
   GameOver: 6,
 } as const;
@@ -550,6 +569,7 @@ export async function createSmokeSession(
   // read contract use the SAME instance — they cannot diverge on what a
   // player's secret is.
   const witnessState = new WitnessState();
+  witnessState.setAdminSecret(TEST_ADMIN_SECRET);
   const testWitnesses = makeTestWitnesses(witnessState);
 
   const compiledContract = CompiledContract.make("go-fish", GoFishContract as any)
@@ -700,6 +720,107 @@ export async function ensureStaticDeckInitialized(
 }
 
 // ---------------------------------------------------------------------------
+// One-shot owner initialization (Contract V4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Contract V4 adds a one-shot `initialize()` that stores
+ * `h_hashField(admin_secret_key())` as the contract `owner`. Subsequent
+ * owner-only ops (`cleanupGame(callerPlayerId=0)`) re-derive the hash from
+ * the witness and compare.
+ *
+ * Our test session sets `TEST_ADMIN_SECRET` on the witness state at session
+ * construction. This helper:
+ *   - Reads `isOwner()` — if true, we're already the registered owner
+ *     (same `TEST_ADMIN_SECRET`); nothing to do.
+ *   - Otherwise submits `initialize()` and polls until `isOwner()` becomes
+ *     true.
+ *   - If the call reverts with "Owner already initialized" (somebody else
+ *     initialized with a different secret), polls once more; if still
+ *     `false`, logs a warning and continues. Gameplay isn't gated on
+ *     admin identity — only the owner-path of `cleanupGame` is, so
+ *     non-owner sessions can still play but can't run owner-cleanup.
+ */
+export async function ensureOwnerInitialized(session: SmokeSession): Promise<void> {
+  const { contract, walletProvider, read } = session;
+
+  const already = await read<boolean>("isOwner");
+  if (!isMissing(already) && already === true) {
+    console.log("  owner: already initialized (TEST_ADMIN_SECRET matches stored owner)");
+    return;
+  }
+
+  console.log("\n── initialize() (V4 one-shot owner setup) ──");
+  try {
+    await callDelegated(
+      walletProvider,
+      "initialize",
+      () => contract.callTx.initialize(),
+    );
+  } catch (err) {
+    // callDelegated swallows the balance-delegation sentinel; anything
+    // that escapes here is a pre-serialization contract assert. Most
+    // likely: "Owner already initialized" under a different secret.
+    console.log(`  [warn] initialize() threw: ${(err as Error).message}`);
+  }
+
+  // Poll — with a shorter budget than MIDNIGHT_WAIT_MS. If this times out
+  // the tx landed but our secret doesn't match the stored owner; gameplay
+  // still works, only the owner-cleanup path is unreachable.
+  const ownerWaitMs = Math.min(MIDNIGHT_WAIT_MS, 90_000);
+  try {
+    await waitFor(
+      "isOwner(): false → true",
+      ownerWaitMs,
+      () => read<boolean>("isOwner"),
+      v => v === true,
+    );
+  } catch {
+    console.log(
+      "  [warn] isOwner() did not flip to true — session is not the registered owner.\n" +
+      "          Gameplay proceeds; owner-path cleanupGame will be unavailable.",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup (Contract V4) — optional post-game tidy
+// ---------------------------------------------------------------------------
+
+/**
+ * Submit `cleanupGame(gameId, callerPlayerId)`. Two modes:
+ *   - `callerPlayerId = 0n` — owner path. Requires the session's admin
+ *     secret to match the stored owner hash (see `ensureOwnerInitialized`).
+ *     Works at any phase, any game.
+ *   - `callerPlayerId = 1n | 2n` — participant path. The contract requires
+ *     `phase == GameOver`. Caller's player-secret hash must match the
+ *     player slot's registered hash (our test witness provides it).
+ *
+ * Gated in the full e2e by env flag `RUN_CLEANUP=1` to avoid adding a
+ * ~2-min tx to every run.
+ */
+export async function runCleanupGame(
+  session: SmokeSession,
+  gameId: Uint8Array,
+  callerPlayerId: 0n | 1n | 2n = 0n,
+): Promise<void> {
+  console.log(`\n── cleanupGame (callerPlayerId=${callerPlayerId}) ──`);
+  await callDelegated(
+    session.walletProvider,
+    `cleanupGame:${callerPlayerId}`,
+    () => session.contract.callTx.cleanupGame(gameId, callerPlayerId),
+  );
+  // No direct ledger flag to poll — confirm via doesGameExist flipping false.
+  await waitFor(
+    "doesGameExist → false",
+    MIDNIGHT_WAIT_MS,
+    () => session.read<boolean>("doesGameExist", gameId),
+    v => v === false || isMissing(v),
+  );
+  console.log("  ✓ cleanupGame settled; game state removed from ledger");
+}
+
+// ---------------------------------------------------------------------------
 // Full per-game setup: applyMask×2 → dealCards×2, ending at TurnStart
 // ---------------------------------------------------------------------------
 
@@ -740,6 +861,11 @@ export async function runFullSetup(
   // Deploy-time one-shot: initialize the static deck if it hasn't been
   // done yet. Needed for applyMask's internal assert to pass.
   await ensureStaticDeckInitialized(session);
+
+  // V4 deploy-time one-shot: establish owner hash so owner-scoped
+  // circuits (cleanupGame with callerPlayerId=0) work later. Fine to
+  // call after static-deck init since the two don't interact.
+  await ensureOwnerInitialized(session);
 
   const { contract, walletProvider, read } = session;
 
@@ -799,10 +925,10 @@ export async function runFullSetup(
     v => !isMissing(v) && Number(v) === PHASE.TurnStart,
   );
 
-  // Contract V3: both players must submit their post-deal initial-book
-  // scan before any askForCard will be accepted. Fold it into setup so
-  // existing callers (one-turn, game-round, future smokes) need no changes.
-  await runInitialBookScoring(session, gameId);
+  // Contract V3.3: `scoreInitialBooks` is optional and no longer gates
+  // `askForCard`. Setup returns at TurnStart and the turn loop proceeds
+  // directly. Callers that want to claim an opening book can invoke
+  // `runInitialBookScoring(session, gameId)` explicitly after setup.
 
   return { gameId, gameIdHex, p1Secret, p2Secret, p1Seed, p2Seed };
 }
@@ -884,42 +1010,52 @@ export function computeInitialBookIndices(
 }
 
 /**
- * Submit one player's `scoreInitialBooks` tx and wait until the contract's
- * `hasInitialBooksScored(playerId)` flag flips to true. Called once per
- * player after dealing; required before any `askForCard`.
+ * If the player's initial hand contains a book (3 of a rank), submit
+ * `scoreInitialBooks` to claim it. Otherwise skip — Contract V3.3 makes
+ * this circuit optional, and the sentinel path exists only for cases
+ * where a frontend wants to set the `initialBooksScoredP<id>` flag
+ * without claiming anything (no longer useful in V3.3 since the flag
+ * doesn't gate `askForCard`).
  *
  * Reference behavior the frontend ports from:
  *   1. Read the post-deal hand (here via `readHand`; frontend uses the
  *      cheaper `discoverHand` batch circuit).
  *   2. Compute `bookIndices` off-chain — three card indices if 3 of the 4
- *      cards share a rank, else `[255, 255, 255]`.
- *   3. Submit `scoreInitialBooks(gameId, playerId, bookIndices, now)`.
- *   4. Poll `hasInitialBooksScored` for settle.
+ *      cards share a rank, else `NO_INITIAL_BOOK`.
+ *   3. If a book exists: submit `scoreInitialBooks(gameId, playerId, bookIndices, now)`
+ *      and poll `hasInitialBooksScored` / `getBookedRanks` until settled.
+ *   4. Otherwise: do nothing.
  *
- * Parallel-safe across players (the contract's per-player ledger slots
- * don't conflict), but we run sequentially for reproducible logs.
+ * Parallel-safe across players when both are submitting (per-player
+ * ledger slots don't conflict), but we run sequentially for reproducible
+ * logs.
  */
 export async function scoreInitialBooksForPlayer(
   session: SmokeSession,
   gameId: Uint8Array,
   playerId: 1 | 2,
-): Promise<{ playerId: 1 | 2; bookIndices: [bigint, bigint, bigint]; bookedRank: number | null }> {
+): Promise<{
+  playerId: 1 | 2;
+  bookIndices: [bigint, bigint, bigint];
+  bookedRank: number | null;
+  submitted: boolean;
+}> {
   const { contract, walletProvider, read } = session;
 
   const hand = await readHand(session, gameId, playerId);
   const bookIndices = computeInitialBookIndices(hand);
-  const bookedRank =
-    bookIndices === NO_INITIAL_BOOK ? null : Number(bookIndices[0]) % 7;
 
-  if (bookedRank === null) {
+  if (bookIndices === NO_INITIAL_BOOK) {
     console.log(
-      `  P${playerId} initial hand [${hand.map(cardName).join(" ")}] — no book, submitting sentinel`,
+      `  P${playerId} initial hand [${hand.map(cardName).join(" ")}] — no book, skipping scoreInitialBooks`,
     );
-  } else {
-    console.log(
-      `  P${playerId} initial hand [${hand.map(cardName).join(" ")}] — book of ${RANKS[bookedRank]} at [${bookIndices.map(String).join(",")}]`,
-    );
+    return { playerId, bookIndices, bookedRank: null, submitted: false };
   }
+
+  const bookedRank = Number(bookIndices[0]) % 7;
+  console.log(
+    `  P${playerId} initial hand [${hand.map(cardName).join(" ")}] — book of ${RANKS[bookedRank]} at [${bookIndices.map(String).join(",")}], submitting`,
+  );
 
   await callDelegated(
     walletProvider,
@@ -940,16 +1076,21 @@ export async function scoreInitialBooksForPlayer(
     v => v === true,
   );
 
-  return { playerId, bookIndices, bookedRank };
+  return { playerId, bookIndices, bookedRank, submitted: true };
 }
 
 /**
- * Run the mandatory post-deal initial-book scan for both players.
+ * Optionally claim opening books for both players.
  *
- * In Contract V3, `askForCard` asserts both players have called
- * `scoreInitialBooks`. This helper completes that gate. Called from
- * `runFullSetup` so any downstream test (one-turn, full game, etc.)
- * picks it up automatically.
+ * Contract V3.3 does NOT require `scoreInitialBooks` — `askForCard` no
+ * longer asserts `initialBooksScoredP1/P2`. This helper is now a
+ * best-effort convenience: each player submits only if their initial
+ * hand has 3-of-a-rank. Sentinel cases are skipped to avoid a ~2-min
+ * no-op tx in the common case (~97% of random 4-card deals).
+ *
+ * Call this from a test explicitly when you want to exercise the
+ * opening-book scoring path; `runFullSetup` no longer invokes it
+ * automatically.
  */
 export async function runInitialBookScoring(
   session: SmokeSession,
@@ -996,8 +1137,20 @@ export function formatBookedRanks(vec: boolean[]): string {
 // Turn loop primitives — playOneTurn, runFullGame
 // ---------------------------------------------------------------------------
 
+/**
+ * `action` distinguishes which V3.3 flow a turn took:
+ *   - "ask":          normal askForCard → respondToAsk → optional
+ *                      afterGoFish / checkAndScoreBook
+ *   - "drawFromDeck": caller's hand was empty and deck had cards —
+ *                      requestToDrawCard + opponent's drawCard
+ *   - "skipTurn":     caller's hand AND deck both empty — bare switch-turn
+ *   - "noop":         turn didn't execute (e.g. phase already GameOver)
+ */
+export type TurnAction = "ask" | "drawFromDeck" | "skipTurn" | "noop";
+
 export interface TurnResult {
   turn: number;
+  action: TurnAction;
   playerId: 1 | 2;
   opponent: 1 | 2;
   askRank: number | null;
@@ -1007,22 +1160,38 @@ export interface TurnResult {
   oppHandAfter: number[];
   gotCards: boolean;
   wentFishing: boolean;
+  /** For "ask" with transfer: whether the follow-up checkAndScoreBook reported a book. */
+  bookScored: boolean;
   ended: boolean;
   endReason?: string;
 }
 
 /**
- * Drive one full turn: read state → ask → respond → (afterGoFish if Go Fish).
+ * Drive one full turn. Contract V3.3 has three distinct per-turn flows:
  *
- * Returns a TurnResult describing what happened. When `ended === true`, the
- * caller should stop the loop. Reasons include: phase already GameOver,
- * empty hand, unexpected phase transition, or askForCard rejected by the
- * contract (BACKEND_ISSUES #1: divergence between local hand read and the
- * contract's internal rank check).
+ *   1. "ask" — hand is non-empty. Normal askForCard → respondToAsk. On
+ *      a successful transfer (phase → TurnStart) the client then calls
+ *      `checkAndScoreBook(gameId, asker, askedRank)` to score any book
+ *      the transferred card completed (V3.1 bug fix: respondToAsk no
+ *      longer inlines the asker-side book scoring because the opponent's
+ *      secret isn't real in the responder's circuit context). On a
+ *      go-fish transition (phase → WaitForDrawCheck), `afterGoFish` is
+ *      called and auto-books any rank the drawn card completes.
  *
- * Book scoring is handled inside the contract: `respondToAsk` auto-scores
- * at the asked rank on a successful transfer, and `afterGoFish` auto-scores
- * at the drawn card's rank. The client no longer drives per-rank book txs.
+ *   2. "drawFromDeck" — hand is empty but the deck still has cards.
+ *      `askForCard` strictly rejects empty-hand calls in V3.3, so the
+ *      caller uses `requestToDrawCard` (phase → WaitForDraw), and the
+ *      opponent finishes with `drawCard` (strips their mask from the
+ *      top deck card and inserts it into the asker's hand). No book
+ *      check needed — a single new card in a previously empty hand
+ *      can't complete a book. Turn switches internally.
+ *
+ *   3. "skipTurn" — hand AND deck are both empty. `skipTurn` bare
+ *      switches the turn; no card movement.
+ *
+ * Returns a `TurnResult` describing what happened. When `ended === true`
+ * the caller should break the loop (phase already GameOver, unexpected
+ * state, etc.).
  */
 export async function playOneTurn(
   session: SmokeSession,
@@ -1031,8 +1200,9 @@ export async function playOneTurn(
 ): Promise<TurnResult> {
   const { contract, walletProvider, read } = session;
 
-  const empty: TurnResult = {
+  const baseEmpty: TurnResult = {
     turn: turnNumber,
+    action: "noop",
     playerId: 1,
     opponent: 2,
     askRank: null,
@@ -1042,20 +1212,21 @@ export async function playOneTurn(
     oppHandAfter: [],
     gotCards: false,
     wentFishing: false,
+    bookScored: false,
     ended: true,
   };
 
   // Phase check
   const phaseRaw = await read<number | bigint>("getGamePhase", gameId);
   if (isMissing(phaseRaw)) {
-    return { ...empty, endReason: "getGamePhase missing" };
+    return { ...baseEmpty, endReason: "getGamePhase missing" };
   }
   const phase = Number(phaseRaw);
   if (phase === PHASE.GameOver) {
-    return { ...empty, endReason: "phase == GameOver" };
+    return { ...baseEmpty, endReason: "phase == GameOver" };
   }
   if (phase !== PHASE.TurnStart) {
-    return { ...empty, endReason: `unexpected phase ${phase} at turn start` };
+    return { ...baseEmpty, endReason: `unexpected phase ${phase} at turn start` };
   }
 
   // Whose turn?
@@ -1070,18 +1241,37 @@ export async function playOneTurn(
   console.log(`  P${playerId} hand: ${handBefore.map(cardName).join(" ") || "(empty)"} [${handBefore.length}]`);
   console.log(`  P${opponent} hand: ${oppHandBefore.map(cardName).join(" ") || "(empty)"} [${oppHandBefore.length}]`);
 
-  // Empty hand is legal after the rule-5 relaxation — the contract routes
-  // an empty-hand ask through respondToAsk's go-fish branch, giving the
-  // player a card from the deck. Pick rank 0 when we have nothing to ask
-  // about (the contract no longer requires the asker to hold the rank).
-  const askRank = handBefore.length === 0 ? 0 : handRanks(handBefore)[0]!;
+  // ─── Branch 2 + 3: empty hand → drawFromDeck or skipTurn ─────────────
   if (handBefore.length === 0) {
-    console.log(`  → P${playerId} is empty, asking for ${RANKS[askRank]} to trigger go-fish draw`);
-  } else {
-    console.log(`  → P${playerId} asks P${opponent} for ${RANKS[askRank]}`);
+    const deckEmptyRaw = await read<boolean>("isDeckEmpty", gameId);
+    const deckEmpty = !isMissing(deckEmptyRaw) && deckEmptyRaw === true;
+
+    if (deckEmpty) {
+      return runSkipTurn({
+        session,
+        gameId,
+        turnNumber,
+        playerId,
+        opponent,
+        handBefore,
+        oppHandBefore,
+      });
+    }
+    return runDrawFromDeck({
+      session,
+      gameId,
+      turnNumber,
+      playerId,
+      opponent,
+      handBefore,
+      oppHandBefore,
+    });
   }
 
-  // Ask
+  // ─── Branch 1: non-empty hand → normal ask flow ──────────────────────
+  const askRank = handRanks(handBefore)[0]!;
+  console.log(`  → P${playerId} asks P${opponent} for ${RANKS[askRank]}`);
+
   await callDelegated(
     walletProvider,
     `askForCard:t${turnNumber}`,
@@ -1112,10 +1302,11 @@ export async function playOneTurn(
 
   let gotCards = false;
   let wentFishing = false;
+  let bookScored = false;
 
   if (postRespond === PHASE.WaitForDrawCheck) {
     // Go Fish: respondToAsk auto-drew a card from the deck for the asker.
-    // afterGoFish decrypts it and decides whether to switchTurn.
+    // afterGoFish decrypts it + auto-books at the drawn rank if completed.
     wentFishing = true;
     console.log(`  → Go Fish (P${playerId} drew from deck)`);
     await callDelegated(
@@ -1133,9 +1324,41 @@ export async function playOneTurn(
   } else if (postRespond === PHASE.TurnStart) {
     gotCards = true;
     console.log(`  → P${opponent} had cards, transferred`);
+
+    // V3.1 asker-side book follow-up: re-read the asker's hand and check
+    // if the transfer completed a book at askRank. If so, submit
+    // checkAndScoreBook (the responder couldn't inline it because their
+    // circuit context sees a dummy asker-secret).
+    const handPostTransfer = await readHand(session, gameId, playerId);
+    const countAtAsked = handPostTransfer.filter(c => c % 7 === askRank).length;
+    if (countAtAsked >= 3) {
+      console.log(
+        `  ★ P${playerId} now has ${countAtAsked}× ${RANKS[askRank]} — calling checkAndScoreBook`,
+      );
+      await callDelegated(
+        walletProvider,
+        `checkAndScoreBook:t${turnNumber}:r${askRank}`,
+        () =>
+          contract.callTx.checkAndScoreBook(
+            gameId,
+            BigInt(playerId),
+            BigInt(askRank),
+          ),
+        { playerId },
+      );
+      await waitFor(
+        `booksP${playerId}[${RANKS[askRank]}] == true`,
+        MIDNIGHT_WAIT_MS,
+        () => read<boolean[]>("getBookedRanks", gameId, BigInt(playerId)),
+        v => !isMissing(v) && v[askRank] === true,
+      );
+      bookScored = true;
+    }
   } else if (postRespond === PHASE.GameOver) {
     return {
-      ...empty,
+      ...baseEmpty,
+      action: "ask",
+      ended: true,
       playerId,
       opponent,
       askRank,
@@ -1153,6 +1376,7 @@ export async function playOneTurn(
 
   return {
     turn: turnNumber,
+    action: "ask",
     playerId,
     opponent,
     askRank,
@@ -1162,6 +1386,134 @@ export async function playOneTurn(
     oppHandAfter,
     gotCards,
     wentFishing,
+    bookScored,
+    ended: false,
+  };
+}
+
+/**
+ * V3.3 empty-hand / non-empty-deck flow.
+ *
+ * Sequence:
+ *   1. Asker calls `requestToDrawCard(gameId, askerId, now)` —
+ *      phase transitions to `WaitForDraw`.
+ *   2. Opponent calls `drawCard(gameId, opponentId, now)` — strips
+ *      their mask from the top deck card, inserts it into the asker's
+ *      hand, advances the deck, switches turn. No `afterGoFish` needed;
+ *      a 0→1 card hand cannot form a book.
+ */
+async function runDrawFromDeck(args: {
+  session: SmokeSession;
+  gameId: Uint8Array;
+  turnNumber: number;
+  playerId: 1 | 2;
+  opponent: 1 | 2;
+  handBefore: number[];
+  oppHandBefore: number[];
+}): Promise<TurnResult> {
+  const { session, gameId, turnNumber, playerId, opponent, handBefore, oppHandBefore } = args;
+  const { contract, walletProvider, read } = session;
+
+  console.log(`  → P${playerId} hand is empty (deck has cards) → requestToDrawCard`);
+
+  await callDelegated(
+    walletProvider,
+    `requestToDrawCard:t${turnNumber}`,
+    () => contract.callTx.requestToDrawCard(gameId, BigInt(playerId), nowSeconds()),
+    { playerId },
+  );
+  await waitFor(
+    "phase == WaitForDraw",
+    MIDNIGHT_WAIT_MS,
+    () => read<number | bigint>("getGamePhase", gameId),
+    v => !isMissing(v) && Number(v) === PHASE.WaitForDraw,
+  );
+
+  console.log(`  → P${opponent} calls drawCard (strips mask, inserts into P${playerId}'s hand)`);
+  await callDelegated(
+    walletProvider,
+    `drawCard:t${turnNumber}`,
+    // opponentPlayerId per game.compact is the CALLER's own id (the non-asker).
+    () => contract.callTx.drawCard(gameId, BigInt(opponent), nowSeconds()),
+    { playerId: opponent },
+  );
+  // drawCard internally switches turn and returns to TurnStart.
+  await waitFor(
+    "phase back to TurnStart after drawCard",
+    MIDNIGHT_WAIT_MS,
+    () => read<number | bigint>("getGamePhase", gameId),
+    v => !isMissing(v) && Number(v) === PHASE.TurnStart,
+  );
+
+  const handAfter = await readHand(session, gameId, playerId);
+  const oppHandAfter = await readHand(session, gameId, opponent);
+
+  return {
+    turn: turnNumber,
+    action: "drawFromDeck",
+    playerId,
+    opponent,
+    askRank: null,
+    handBefore,
+    oppHandBefore,
+    handAfter,
+    oppHandAfter,
+    gotCards: handAfter.length > handBefore.length,
+    wentFishing: false,
+    bookScored: false,
+    ended: false,
+  };
+}
+
+/**
+ * V3.3 empty-hand / empty-deck flow — just switch the turn.
+ * `checkAndEndGame` is NOT called inside skipTurn; the outer runFullGame
+ * loop invokes it separately when appropriate to detect draw / end.
+ */
+async function runSkipTurn(args: {
+  session: SmokeSession;
+  gameId: Uint8Array;
+  turnNumber: number;
+  playerId: 1 | 2;
+  opponent: 1 | 2;
+  handBefore: number[];
+  oppHandBefore: number[];
+}): Promise<TurnResult> {
+  const { session, gameId, turnNumber, playerId, opponent, handBefore, oppHandBefore } = args;
+  const { contract, walletProvider, read } = session;
+
+  console.log(`  → P${playerId} hand empty + deck empty → skipTurn`);
+
+  await callDelegated(
+    walletProvider,
+    `skipTurn:t${turnNumber}`,
+    () => contract.callTx.skipTurn(gameId, BigInt(playerId), nowSeconds()),
+    { playerId },
+  );
+  // Caller's turn just flipped to the opponent; phase stays at TurnStart.
+  await waitFor(
+    `currentTurn flipped to P${opponent}`,
+    MIDNIGHT_WAIT_MS,
+    () => read<number | bigint>("getCurrentTurn", gameId),
+    v => !isMissing(v) && Number(v) === opponent,
+  );
+
+  const handAfter = await readHand(session, gameId, playerId);
+  const oppHandAfter = await readHand(session, gameId, opponent);
+
+  return {
+    turn: turnNumber,
+    action: "skipTurn",
+    playerId,
+    opponent,
+    askRank: null,
+    handBefore,
+    oppHandBefore,
+    handAfter,
+    oppHandAfter,
+    gotCards: false,
+    wentFishing: false,
+    bookScored: false,
     ended: false,
   };
 }
@@ -1186,12 +1538,28 @@ export interface GameResult {
 }
 
 /**
- * Run the full game loop until the game ends or we hit MAX_TURNS. In
- * Contract V3 book scoring is contract-internal, so the loop is simply:
- * playOneTurn → check scores / phase. Exit reasons:
- *   - phase == GameOver (contract ends the game at score ≥ 4 / 7 books total)
- *   - sum of scores == 7 (defensive — same condition)
- *   - playOneTurn returned `ended: true` (empty hand, unexpected phase, etc.)
+ * Run the full game loop until the game ends or we hit MAX_TURNS.
+ *
+ * V4.2: The client is responsible for calling `checkAndEndGame` after
+ * each turn — the contract's inline scoring paths (respondToAsk,
+ * afterGoFish, checkAndScoreBook) no longer guarantee phase=GameOver
+ * even when the 7th book lands. This loop handles that in two places:
+ *
+ *   1. Per-turn: after a `skipTurn` (V3.3 empty-hand / empty-deck branch),
+ *      call checkAndEndGame to detect stalemate. We don't call it after
+ *      normal ask-flow turns to avoid ~2-min no-op txs; instead the loop
+ *      exits early on `sum >= 7` and the final reconcile (below) flips
+ *      phase.
+ *   2. End-of-loop reconcile: after the loop exits for any reason except
+ *      GameOver, submit one more checkAndEndGame to ensure the final
+ *      snapshot has the correct phase. Essential because a natural
+ *      7-book finish leaves phase=TurnStart until explicitly checked.
+ *
+ * Exit reasons:
+ *   - phase == GameOver (auto on a skipTurn-then-stalemate, or via final
+ *     reconcile when scores sum 7)
+ *   - sum of scores == 7 (internal break; final reconcile flips phase)
+ *   - playOneTurn returned `ended: true`
  *   - turn >= maxTurns (safety cap)
  */
 export async function runFullGame(
@@ -1199,7 +1567,7 @@ export async function runFullGame(
   gameId: Uint8Array,
   maxTurns: number = 20,
 ): Promise<GameResult> {
-  const { read } = session;
+  const { contract, walletProvider, read } = session;
   let turn = 0;
   let exitReason = `MAX_TURNS (${maxTurns}) reached`;
 
@@ -1213,8 +1581,6 @@ export async function runFullGame(
     }
 
     // End-of-turn telemetry: scores + booked-rank vectors per player.
-    // Contract now books inline inside respondToAsk/afterGoFish, so this
-    // reflects any book just scored by either of those circuits.
     const [s1, s2] = (await read<[any, any]>("getScores", gameId)) as [any, any];
     const sum = Number(s1) + Number(s2);
     const books1 = await readBookedRanks(session, gameId, 1);
@@ -1232,6 +1598,63 @@ export async function runFullGame(
     if (!isMissing(phaseRaw) && Number(phaseRaw) === PHASE.GameOver) {
       exitReason = "phase → GameOver";
       break;
+    }
+
+    // After a skipTurn (V3.3 empty-hand/empty-deck branch), the contract
+    // doesn't auto-end — call checkAndEndGame to detect a stalemate and
+    // flip phase to GameOver if the deck is exhausted and at least one
+    // hand is empty. Skipping this after non-skipTurn actions avoids a
+    // costly no-op tx per turn on the normal path.
+    if (result.action === "skipTurn") {
+      const [h1, h2] = (await read<[any, any]>("getHandSizes", gameId)) as [any, any];
+      console.log(
+        `  → skipTurn just ran, calling checkAndEndGame (hands=${Number(h1)}/${Number(h2)})`,
+      );
+      await callDelegated(
+        walletProvider,
+        `checkAndEndGame:t${turn}`,
+        () => contract.callTx.checkAndEndGame(gameId),
+      );
+      const postPhase = await read<number | bigint>("getGamePhase", gameId);
+      if (!isMissing(postPhase) && Number(postPhase) === PHASE.GameOver) {
+        exitReason = "checkAndEndGame → GameOver (stalemate)";
+        break;
+      }
+    }
+  }
+
+  // V4.2 caveat: "the frontend still has to call [checkAndEndGame] after
+  // each turn." The contract's inline scoring paths do NOT reliably set
+  // phase=GameOver when the 7th book is scored — the loop above breaks on
+  // `sum >= 7`, but finalPhase could still be TurnStart at this point.
+  // Submit one authoritative checkAndEndGame so the final phase snapshot
+  // below is correct. Safe to call unconditionally: idempotent, no-op if
+  // already GameOver, flips phase if conditions are met.
+  const phaseBeforeFinalize = await read<number | bigint>("getGamePhase", gameId);
+  if (!isMissing(phaseBeforeFinalize) && Number(phaseBeforeFinalize) !== PHASE.GameOver) {
+    console.log(
+      `\n── final checkAndEndGame (phase=${Number(phaseBeforeFinalize)}, reconciling to GameOver if applicable) ──`,
+    );
+    try {
+      await callDelegated(
+        walletProvider,
+        "checkAndEndGame:final",
+        () => contract.callTx.checkAndEndGame(gameId),
+      );
+      await waitFor(
+        "phase → GameOver (final reconcile)",
+        MIDNIGHT_WAIT_MS,
+        () => read<number | bigint>("getGamePhase", gameId),
+        v => !isMissing(v) && Number(v) === PHASE.GameOver,
+        2000,
+      ).catch(() => {
+        // Didn't flip — game conditions weren't actually end-state (e.g.
+        // MAX_TURNS exit with play still ongoing). That's fine; the final
+        // snapshot below captures whatever phase is current.
+        console.log("  (phase didn't flip — game wasn't actually in an end state)");
+      });
+    } catch (err) {
+      console.log(`  [warn] final checkAndEndGame threw: ${(err as Error).message}`);
     }
   }
 

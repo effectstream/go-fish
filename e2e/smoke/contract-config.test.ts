@@ -31,14 +31,15 @@ const ZK_CONFIG_PATH = resolve(
 );
 
 // Known circuits the full test exercises. If these don't load, nothing will.
-// Note: no separate `goFish` circuit exists — respondToAsk handles the draw
-// automatically and transitions phase to WaitForDrawCheck, which afterGoFish
-// then resolves. afterGoFish(gameId, playerId, now) — contract v3 signature.
 //
-// Contract V3: `checkAndScoreBook` was removed — book scoring happens inline
-// inside respondToAsk / afterGoFish, plus the one-shot post-deal scan via
-// `scoreInitialBooks`. Book state is read via `getBookedRanks` /
-// `hasInitialBooksScored`.
+// Contract V3.3 flow summary:
+//   - Normal ask: askForCard → respondToAsk → { afterGoFish | checkAndScoreBook }
+//     (respondToAsk no longer inlines asker-side book scoring — V3.1 fix.
+//      afterGoFish still auto-books the drawn rank; checkAndScoreBook is
+//      the asker's follow-up after a successful transfer.)
+//   - Empty-hand + deck has cards: requestToDrawCard → drawCard (no afterGoFish)
+//   - Empty-hand + empty deck:     skipTurn, then checkAndEndGame to detect stalemate
+//   - `scoreInitialBooks` is OPTIONAL — no longer gates the first askForCard.
 const CIRCUITS = [
   "init_deck",
   "applyMask",
@@ -46,11 +47,23 @@ const CIRCUITS = [
   "askForCard",
   "respondToAsk",
   "afterGoFish",
-  "scoreInitialBooks",
+  "checkAndScoreBook",       // V3.1 restored — asker's post-transfer follow-up
+  "scoreInitialBooks",       // V3 added, V3.3 optional
+  "requestToDrawCard",       // V3.3 new — empty-hand, deck has cards
+  "drawCard",                // V3.3 new — opponent of requestToDrawCard caller
+  "skipTurn",                // V3.3 new — empty-hand, deck empty
+  "checkAndEndGame",         // V3.3 client-invoked after skipTurn to detect stalemate
+  "isDeckEmpty",             // V3.3 client-side branch condition for empty hand
   "getBookedRanks",
   "hasInitialBooksScored",
   "discoverHand",
   "doesPlayerHaveSpecificCard",  // used for local hand reads via provableCircuits
+  // V4 admin / cleanup
+  "initialize",              // V4 new — one-shot owner bootstrap
+  "getOwner",                // V4 new — read owner hash (for admin UI gating)
+  "isOwner",                 // V4 new — witness-based owner check (safe pre-init, returns false)
+  "cleanupGame",             // V4 new — drops per-game ledger state (owner or participant@GameOver)
+  "concede",                 // V4 re-exported — graceful game ending
 ] as const;
 
 function loadContractAddress(): string {

@@ -5,18 +5,41 @@
  * through the SAME pipeline the frontend will use once `preferBatchedMode`
  * flips in `frontend/src/effectstreamBridge.ts`.
  *
- * Pipeline:
+ * Pipeline (Contract V4.2):
  *   1. Lobby (EVM via batcher /send-input → effectstreaml2 target):
  *        createdLobby → joinedLobby (auto-starts the game)
- *   2. Midnight setup (batcher /send-input → midnight_balancing target):
- *        applyMask ×2 → dealCards ×2  (init_deck only on first deploy)
- *        → scoreInitialBooks ×2  (Contract V3 post-deal scan, mandatory
- *                                 gate before the first askForCard)
- *   3. Turn loop until phase == GameOver, scores sum == 7, or MAX_TURNS:
- *        askForCard → respondToAsk → (afterGoFish if Go Fish)
- *      Book scoring is handled inside the contract — `respondToAsk`
- *      auto-scores on a successful transfer and `afterGoFish` auto-scores
- *      on the drawn card's rank. No more client-driven `checkAndScoreBook`.
+ *   2. Midnight deploy-time one-shots (via `runFullSetup`):
+ *        - init_deck (idempotent, only submits if not already set)
+ *        - initialize (V4 owner bootstrap — captures h_hashField(TEST_ADMIN_SECRET)
+ *          into the contract `owner` ledger; safe to skip if already init'd
+ *          with the same secret)
+ *   3. Per-game setup: applyMask ×2 → dealCards ×2 → phase=TurnStart.
+ *      V4.2 relaxed the dealCards P1-first constraint; we still submit in
+ *      order for reproducibility. `scoreInitialBooks` is NOT mandatory
+ *      (V3.3) — `askForCard` no longer gates on it. Callers that want to
+ *      claim an opening book invoke `runInitialBookScoring(...)` explicitly;
+ *      this test skips it.
+ *   4. Turn loop — three-way branch per turn, depending on hand/deck state:
+ *        - Hand non-empty:
+ *            askForCard → respondToAsk
+ *            ├─ phase=WaitForDrawCheck: afterGoFish  (auto-books drawn rank)
+ *            └─ phase=TurnStart:        checkAndScoreBook if triple formed
+ *              (V3.1: asker-side book scoring can't be inlined in respondToAsk
+ *              because the responder's circuit context has a dummy asker-secret.
+ *              V4.2 FIX: respondToAsk's unmasked-transfer branch now actually
+ *              moves unmasked cards — prior bug left complete books stuck
+ *              un-scored in the asker's hand.)
+ *        - Hand empty + deck has cards:
+ *            requestToDrawCard → drawCard (no afterGoFish; 0→1 hand can't book)
+ *        - Hand empty + deck empty:
+ *            skipTurn → checkAndEndGame (stalemate detection)
+ *      Exit on GameOver / scores==7 / MAX_TURNS.
+ *   5. Final reconcile: `runFullGame` calls one last `checkAndEndGame` before
+ *      reading the final phase snapshot. V4.2 caveat: the contract's inline
+ *      scoring paths do not reliably flip phase=GameOver on the 7th book,
+ *      so the client must do it.
+ *   6. Optional (V4): set RUN_CLEANUP=1 to call cleanupGame(owner) at the
+ *      end, verifying the per-game ledger entries are purged.
  *
  * All the mechanics live in `smoke/_helpers.ts`, which doubles as the
  * reference module the frontend will port from. This file is just the
@@ -39,6 +62,7 @@ import {
   HARDHAT_KEYS,
   lobbyIdToGameId,
   PHASE,
+  runCleanupGame,
   runFullGame,
   runFullSetup,
   runLobbyFlow,
@@ -58,10 +82,10 @@ Deno.test({
     const lobbyId = await runLobbyFlow(p1Wallet, p2Wallet, `E2E-${Date.now()}`);
     const gameId = lobbyIdToGameId(lobbyId);
 
-    // 2. Midnight session + per-game setup (applyMask ×2, dealCards ×2,
-    //    scoreInitialBooks ×2). `runFullSetup` runs the V3 post-deal scan
-    //    at the end; the first `askForCard` inside `runFullGame` would
-    //    otherwise revert ("Player N must score initial books first").
+    // 2. Midnight session + per-game setup.
+    //    V4: runFullSetup also calls initialize() as a one-shot owner
+    //    bootstrap (using TEST_ADMIN_SECRET). V3.3: scoreInitialBooks is
+    //    optional and skipped here; askForCard no longer gates on it.
     const session = await createSmokeSession(`e2e-${lobbyId}`);
     const setup = await runFullSetup(session, { gameId });
 
@@ -97,6 +121,15 @@ Deno.test({
         throw new Error(
           `expected winner in {1, 2}, got ${result.winner ?? "null"}. scores: ${result.finalScores[0]}-${result.finalScores[1]}`,
         );
+      }
+
+      // V4 optional: clean up per-game ledger entries. Gated by env flag
+      // to keep the default run cheap (~2-min additional tx). Uses the
+      // owner path (callerPlayerId=0n), which requires the session's
+      // TEST_ADMIN_SECRET to match the stored contract owner — set
+      // automatically by runFullSetup's ensureOwnerInitialized step.
+      if (Deno.env.get("RUN_CLEANUP") === "1") {
+        await runCleanupGame(session, gameId, 0n);
       }
     } finally {
       clearAllSecrets(session, setup.gameIdHex);

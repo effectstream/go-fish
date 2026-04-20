@@ -48,10 +48,26 @@ export interface SecretEntry {
 export class WitnessState {
   private map = new Map<string, SecretEntry>();
   private lastShuffleSeed: Uint8Array | null = null;
+  /** Contract-V4 admin witness scalar; consumed by `admin_secret_key`. */
+  private adminSecret: bigint | null = null;
 
   /** Set both secret and shuffle seed for one player in one game. */
   set(gameIdHex: string, playerId: 1 | 2, secret: bigint, seed: Uint8Array): void {
     this.map.set(`${gameIdHex}-${playerId}`, { secret, seed });
+  }
+
+  /** Set / clear the contract-wide admin secret (V4 `admin_secret_key` witness). */
+  setAdminSecret(secret: bigint): void {
+    this.adminSecret = secret;
+  }
+  clearAdminSecret(): void {
+    this.adminSecret = null;
+  }
+  getAdminSecret(): bigint {
+    if (this.adminSecret === null) {
+      throw new Error("testWitness: admin_secret_key called without an admin secret set");
+    }
+    return this.adminSecret;
   }
 
   /** Drop one player's entry. */
@@ -69,6 +85,7 @@ export class WitnessState {
   reset(): void {
     this.map.clear();
     this.lastShuffleSeed = null;
+    this.adminSecret = null;
   }
 
   getSecret(gameIdHex: string, playerId: number): bigint {
@@ -265,6 +282,23 @@ export function makeTestWitnesses(state: WitnessState) {
       const indexed = input.map((p, i) => ({ x: p.x, y: p.y, w: weights[i]! }));
       indexed.sort((a, b) => a.w - b.w);
       return [ctx.privateState, indexed.map(p => ({ x: p.x, y: p.y }))];
+    },
+
+    // Contract V4: admin identity witness. The contract stores only
+    // `h_hashField(admin_secret_key())` and re-hashes on every owner-only
+    // call. Our test owns both initialize() (first call wins) and the
+    // admin-scoped `cleanupGame(callerPlayerId=0)`, so we return a fixed
+    // scalar from WitnessState. Value must be in [1, JUBJUB_R) like any
+    // other scalar.
+    admin_secret_key: (
+      ctx: WitnessContext<any, any>,
+    ): [any, bigint] => {
+      const secret = state.getAdminSecret();
+      if (secret === 0n) throw new Error("testWitness: zero admin secret");
+      if (secret >= JUBJUB_R) {
+        throw new Error(`testWitness: admin secret exceeds Jubjub r`);
+      }
+      return [ctx.privateState, secret];
     },
 
     // Contract V3: split a card index (0..20) into [suit, rank] with
