@@ -139,9 +139,25 @@ export circuit applyMask(gameId: Bytes<32>, playerId: Uint<64>): [] {
 // Deal 4 cards to opponent - called by each player
 // RULE: Must be in Setup phase
 // RULE: Both players must have applied their masks first
-// RULE: First caller becomes player1, second caller becomes player2
-// RULE: Each player deals cards to their opponent
-// RULE: Game starts after player2 calls dealCards
+// RULE: Each player deals cards to their opponent from fixed, disjoint indices
+// RULE: Phase transition Setup → TurnStart happens in the separate `startGame`
+//       circuit once both players have dealt (see V4.3 note below).
+//
+// V4.3: PARALLEL-SAFE DEALING
+// Both players can submit dealCards simultaneously without ledger-state read
+// conflicts. The previous design had three sources of conflict:
+//   1. `deck_getTopCard` read+incremented `gameTopCardIndex` (shared counter).
+//   2. `getPlayersDealtCount` read BOTH hasDealtP1 and hasDealtP2 (opponent's
+//      flag was stale when both proofs were built against the same pre-state).
+//   3. The inline `startGame` call wrote to `phase`, and the leading
+//      `assert(phase == Setup)` baked in a pre-state read that another
+//      dealer's proof could invalidate.
+// Fixes:
+//   1. `gameTopCardIndex` is pre-seeded to 8 in `init_deck`. Dealing consumes
+//      indices 0..7 directly without reading or writing the counter.
+//   2. Only this player's own `hasDealt` flag is read+written.
+//   3. Phase transition moved to the new `startGame(gameId, playerId)`
+//      export, called once after both hasDealt flags are on-chain.
 export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
@@ -152,70 +168,105 @@ export circuit dealCards(gameId: Bytes<32>, playerId: Uint<64>): [] {
     // AUTH: Verify caller is the registered player
     verifyCallerIsPlayer(gid,playerId);
 
-    // RULE 1: Must be in Setup phase
+    // RULE 1: Must be in Setup phase. Pure read — both parallel dealers can
+    // commit to phase=Setup without conflict so long as neither writes phase
+    // inside this circuit (the `startGame` write lives in its own circuit).
     const currentPhase = go_fish_getPhase(gid);
     assert(currentPhase == go_fish_GamePhase.Setup, "Can only deal cards during setup");
 
-    // RULE 2: Both players must have applied their masks
+    // RULE 2: Both players must have applied their masks. Pure reads, shared
+    // across parallel dealers — no write → no conflict.
     assert(go_fish_hasMaskApplied(gid, 1 as Uint<64>), "Player 1 must apply mask before dealing");
     assert(go_fish_hasMaskApplied(gid, 2 as Uint<64>), "Player 2 must apply mask before dealing");
 
     // RULE 3: Valid player ID
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
 
-    // RULE 4: This player hasn't already dealt
+    // RULE 4: This player hasn't already dealt. Only touches THIS player's flag
+    // — the opponent's hasDealt is never read in this circuit, so parallel
+    // dealers don't stale-read each other's state.
     assert(!go_fish_hasDealt(gid, playerId), "Player has already dealt cards");
 
-    // Determine how many players have dealt so far. V4.2: ordering is no longer
-    // enforced (was a gratuitous latency tax — if P2 was faster they had to wait
-    // for P1). RULE 4's hasDealt check already enforces each player deals at
-    // most once, and the deck top index is a shared counter so the two calls
-    // serialize naturally at the ledger level.
-    const playersDealt = go_fish_getPlayersDealtCount(gid);
-    assert(playersDealt < 2 as Uint<8>, "Both players have already dealt");
-
-    // Compute opponentId unconditionally (simple cond_select in ZKIR, no ec_mul).
-    // Each player deals cards to their opponent.
+    // Compute opponent + base deck-index unconditionally (simple cond_select in
+    // ZKIR, no ec_mul): P1 (dealer=1) takes indices 0..3 for P2; P2 (dealer=2)
+    // takes indices 4..7 for P1. Disjoint ranges on gameDeck — no index
+    // collision between the two dealers.
     const opponentId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+    const baseIndex: Uint<32>  = (disclosed_playerId == 1 as Uint<64>) ? 0 as Uint<32> : 4 as Uint<32>;
 
-    // Deal 4 cards UNCONDITIONALLY (outside the ordering if-else above).
-    // This ensures that dealCard → getTopCardForOpponent → deck_getTopCard → partial_decryption
-    // → ec_mul are all unconditional in the compiled ZKIR. Without this, the Compact compiler
-    // emits guarded public_input ops whose zero values (for inactive branches) feed directly
-    // into ec_mul, causing the proof server to panic with "Point should be part of the subgroup".
+    // Deal 4 cards UNCONDITIONALLY (outside any if/else). This ensures
+    // dealCard → deck_partial_decryption → ec_mul are all unconditional in the
+    // compiled ZKIR — without this, the compiler emits guarded public_input ops
+    // whose zero values (on inactive branches) feed directly into ec_mul,
+    // causing the proof server to panic with "Point should be part of the
+    // subgroup". (See ZKIR-EC-MUL-GUARD-BUG.md.)
     for (const i of 0..4) {
-        dealCard(gid, opponentId);
+        const idx: Uint<32> = (baseIndex + ((i) as Uint<32>)) as Uint<32>;
+        dealCard(gid, opponentId, idx);
     }
 
-    // Mark this player as having dealt
+    // Mark this player as having dealt. Only touches THIS player's flag.
     go_fish_markHasDealt(gid, playerId);
 
-    // Start the game once both players have dealt
-    if (playersDealt + 1 as Uint<8> == 2 as Uint<8>) {
-        startGame(gid);
-    }
+    // Phase transition to TurnStart happens in a separate `startGame` circuit
+    // (exported below) after BOTH hasDealt flags are visible on-chain. Doing
+    // it here would require reading the opponent's flag → parallel-unsafe.
 
     return [];
 }
 
-// Deal a single card to a player during setup
-circuit dealCard(gameId: Bytes<32>, _toPlayerId: Uint<64>): JubjubPoint {
+// Deal a single card from a FIXED deck index to a recipient during setup.
+// V4.3: takes cardIndex as a parameter (no gameTopCardIndex lookup/increment),
+// and inlines the decrypt+store pipeline that used to live in
+// getTopCardForOpponent — this drops one redundant gameDeck read AND removes
+// the counter mutation so two dealers can run in parallel without stale reads.
+circuit dealCard(gameId: Bytes<32>, _toPlayerId: Uint<64>, _cardIndex: Uint<32>): JubjubPoint {
     const toPlayerId = disclose(_toPlayerId);
     const gid = disclose(gameId);
-    const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase == go_fish_GamePhase.Setup, "Not in setup phase");
-    
+    const cardIndex = disclose(_cardIndex);
+
     const disclosed_playerId = disclose(toPlayerId);
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-    
-    const card = getTopCardForOpponent(gid, toPlayerId);
+
+    // Read the fully-masked card at the fixed index (both masks still applied).
+    const fullyMaskedPoint = deck_getDeckCard(gid, cardIndex as Field);
+
+    // Strip the OPPOSITE player's mask — the recipient keeps their own mask so
+    // only they can fully decrypt later. Computed unconditionally via
+    // cond_select, keeping ec_mul (inside partial_decryption) guard-safe.
+    //   toPlayerId=1 → maskerPlayerId=2 (strip P2's mask)
+    //   toPlayerId=2 → maskerPlayerId=1 (strip P1's mask)
+    const maskerPlayerId: Uint<64> = (toPlayerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+    const semi_encrypted_point = deck_partial_decryption(gid, fullyMaskedPoint, maskerPlayerId);
+
+    deck_storeSemiMaskedMapping(gid, disclose(semi_encrypted_point), disclose(fullyMaskedPoint));
+    hand_insertCardIntoHand(gid, toPlayerId, disclose(semi_encrypted_point));
     go_fish_markCardDealt(gid, toPlayerId);
-    return card;
+    return semi_encrypted_point;
 }
 
-// Start the game after dealing is complete
-circuit startGame(gameId: Bytes<32>): [] {
-    return go_fish_startGame(disclose(gameId));
+// V4.3: Transition Setup → TurnStart after both players have dealt. Separated
+// from dealCards so the two dealer calls can run in parallel (neither needs to
+// read the opponent's hasDealt flag). Either player may call this — the
+// `phase == Setup` assert makes it self-deduplicating: whichever tx lands
+// first transitions the phase; the other is rejected cleanly as "already
+// started", which the frontend treats as success.
+export circuit startGame(gameId: Bytes<32>, playerId: Uint<64>): [] {
+    const gid = disclose(gameId);
+    const disclosed_playerId = disclose(playerId);
+
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    verifyCallerIsPlayer(gid, playerId);
+    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
+
+    const currentPhase = go_fish_getPhase(gid);
+    assert(currentPhase == go_fish_GamePhase.Setup, "Game already started");
+
+    assert(go_fish_hasDealt(gid, 1 as Uint<64>), "Player 1 has not dealt");
+    assert(go_fish_hasDealt(gid, 2 as Uint<64>), "Player 2 has not dealt");
+
+    go_fish_startGame(gid);
+    return [];
 }
 
 export circuit get_top_card_index(gameId: Bytes<32>): Uint<32> {
@@ -456,35 +507,11 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
 // ============================================
 // DRAWING CARDS
 // ============================================
-
-// Internal only — used by dealCard during setup. No longer exported.
-circuit getTopCardForOpponent(gameId: Bytes<32>, _toPlayerId: Uint<64>): JubjubPoint {
-    const gid = disclose(gameId);
-    const toPlayerId = disclose(_toPlayerId);
-    const disclosed_playerId = disclose(toPlayerId);
-    assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
-
-    // Get the fully encrypted card BEFORE decrementing the index
-    const topIndex = deck_getTopCardIndex(gid);
-    const fullyMaskedPoint = deck_getDeckCard(gid, topIndex as Field);
-
-    // Compute which player's mask to remove unconditionally (simple cond_select in ZKIR,
-    // no ec_mul involved). The player receiving the card (toPlayerId) keeps their mask;
-    // the OTHER player's mask is removed so the recipient can decrypt with their own key.
-    // toPlayerId=1 → remove P2's mask (maskerPlayerId=2)
-    // toPlayerId=2 → remove P1's mask (maskerPlayerId=1)
-    const maskerPlayerId: Uint<64> = (toPlayerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
-
-    // Call deck_getTopCard unconditionally with the pre-computed maskerPlayerId.
-    // deck_getTopCard now has no internal if-else (both branches were identical), so the
-    // ec_mul inside partial_decryption is also unconditional — preventing ZKIR preprocess
-    // from receiving (0, 0) as ec_mul base point inputs when a branch is inactive.
-    const semi_encrypted_point = deck_getTopCard(gid, maskerPlayerId);
-
-    deck_storeSemiMaskedMapping(gid, disclose(semi_encrypted_point), disclose(fullyMaskedPoint));
-    hand_insertCardIntoHand(gid, toPlayerId, disclose(semi_encrypted_point));
-    return semi_encrypted_point;
-}
+//
+// V4.3: getTopCardForOpponent was removed. Its logic (read deck card + strip
+// opposite mask + store semi-masked mapping + insert into hand) is now inlined
+// into `dealCard` above, which takes an explicit cardIndex instead of reading
+// gameTopCardIndex. This lets both players call dealCards in parallel.
 
 // V3: afterGoFish no longer takes drewRequestedCard as parameter.
 // Instead, it decrypts the stored drawn card point and verifies the rank programmatically.

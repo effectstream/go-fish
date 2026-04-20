@@ -66,7 +66,11 @@ export circuit init_deck(gameId: Bytes<32>): [] {
     gamePlayersKeysHashes.insert(gid, default<Map<Bytes<32>, Uint<64>>>);
     gamePlayersKeysInverses.insert(gid, default<Map<Bytes<32>, Bytes<32>>>);
 
-    gameTopCardIndex.insert(gid, 0 as Uint<32>);
+    // V4.3: pre-seed past the 8 cards that dealing will consume at fixed indices
+    // (P1 deals to P2 from 0..3; P2 deals to P1 from 4..7). `dealCards` no longer
+    // reads or writes this counter, so pre-seeding to 8 lets subsequent draws
+    // (goFish / drawCard / requestToDrawCard) start at the first undealt index.
+    gameTopCardIndex.insert(gid, 8 as Uint<32>);
     gameDeckSize.insert(gid, 21 as Uint<64>);
 
     // Copy base deck to game deck (unshuffled initially)
