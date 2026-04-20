@@ -101,6 +101,15 @@ function ensureStyles(): void {
       white-space: nowrap;
       letter-spacing: 0.2px;
     }
+    #${ROOT_ID} .gl-countdown {
+      margin-left: 6px;
+      color: #aab4c4;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+    }
+    #${ROOT_ID} .gl-countdown.gl-countdown-over {
+      color: #f2b56b;
+    }
     @keyframes gl-dance {
       0%   { transform: rotate(0deg)   scale(1.0); opacity: 0.55; }
       20%  { transform: rotate(-18deg) scale(1.25); opacity: 1.0; }
@@ -120,9 +129,28 @@ function ensureRoot(): HTMLDivElement {
   el.innerHTML = `
     <div class="gl-symbols"></div>
     <div class="gl-message"></div>
+    <div class="gl-countdown" hidden></div>
   `;
   document.body.appendChild(el);
   return el;
+}
+
+function formatCountdown(remainingMs: number): string {
+  // Under 10s show one decimal ("4.2s"); above that round to whole seconds
+  // so the number doesn't jitter distractingly at long durations.
+  const abs = Math.abs(remainingMs);
+  const secs = abs / 1000;
+  if (secs < 10) return `${secs.toFixed(1)}s`;
+  return `${Math.round(secs)}s`;
+}
+
+interface Intent {
+  state: LoaderState;
+  message: string;
+  /** If set, render a live countdown starting at this many ms. */
+  countdownMs?: number;
+  /** performance.now() when this intent was shown — anchors the countdown. */
+  startedAt?: number;
 }
 
 class GlobalLoaderImpl {
@@ -131,13 +159,28 @@ class GlobalLoaderImpl {
   private visible = false;
 
   /** Foreground intent — proving/sending (high priority, short-lived). */
-  private foreground: { state: LoaderState; message: string } | null = null;
+  private foreground: Intent | null = null;
   /** Background intent — waiting for opponent (low priority, long-lived). */
-  private background: { state: LoaderState; message: string } | null = null;
+  private background: Intent | null = null;
 
-  /** Show a high-priority state. Masks any background waiting state. */
-  show(state: LoaderState, message: string): void {
-    this.foreground = { state, message };
+  /** Intent whose countdown is currently being ticked by the timer. */
+  private countdownOwner: Intent | null = null;
+  private countdownTimer: number | null = null;
+
+  /**
+   * Show a high-priority state. Masks any background waiting state.
+   *
+   * @param countdownMs  If provided, shows a live "Ns" countdown next to
+   *                     the message, ticking down from this value. Goes
+   *                     into overtime (styled differently) once elapsed.
+   */
+  show(state: LoaderState, message: string, countdownMs?: number): void {
+    this.foreground = {
+      state,
+      message,
+      countdownMs,
+      startedAt: countdownMs !== undefined ? performance.now() : undefined,
+    };
     this.render();
   }
 
@@ -159,10 +202,12 @@ class GlobalLoaderImpl {
   private render(): void {
     const intent = this.foreground ?? this.background;
     if (!intent) {
+      this.stopCountdown();
       this.applyHidden();
       return;
     }
     this.applyVisible(intent.state, intent.message);
+    this.syncCountdown(intent);
   }
 
   private applyVisible(state: LoaderState, message: string): void {
@@ -213,6 +258,55 @@ class GlobalLoaderImpl {
     root.classList.remove('visible');
     this.visible = false;
     // Keep DOM around for the next show() — cheap and avoids re-flashing styles
+  }
+
+  private syncCountdown(intent: Intent): void {
+    if (intent.countdownMs === undefined || intent.startedAt === undefined) {
+      this.stopCountdown();
+      this.hideCountdownEl();
+      return;
+    }
+    if (this.countdownOwner !== intent) {
+      this.countdownOwner = intent;
+      if (this.countdownTimer === null) {
+        this.countdownTimer = window.setInterval(() => this.tickCountdown(), 100);
+      }
+    }
+    this.tickCountdown();
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    this.countdownOwner = null;
+  }
+
+  private tickCountdown(): void {
+    const intent = this.countdownOwner;
+    if (!intent || intent.countdownMs === undefined || intent.startedAt === undefined) {
+      this.stopCountdown();
+      this.hideCountdownEl();
+      return;
+    }
+    const root = document.getElementById(ROOT_ID);
+    if (!root) return;
+    const el = root.querySelector('.gl-countdown') as HTMLDivElement | null;
+    if (!el) return;
+    const elapsed = performance.now() - intent.startedAt;
+    const remaining = intent.countdownMs - elapsed;
+    const over = remaining < 0;
+    el.textContent = over ? `+${formatCountdown(-remaining)}` : formatCountdown(remaining);
+    el.classList.toggle('gl-countdown-over', over);
+    el.hidden = false;
+  }
+
+  private hideCountdownEl(): void {
+    const root = document.getElementById(ROOT_ID);
+    if (!root) return;
+    const el = root.querySelector('.gl-countdown') as HTMLDivElement | null;
+    if (el) el.hidden = true;
   }
 }
 

@@ -20,7 +20,16 @@ import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-p
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { toHex, CompactTypeBoolean, CompactTypeBytes, CompactTypeUnsignedInteger, CostModel, QueryContext, sampleContractAddress, createConstructorContext } from "@midnight-ntwrk/compact-runtime";
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
-import { getBrowserProofProvider } from "./midnightBrowserProofProvider";
+import {
+  getBrowserProofProvider,
+  getLastProveDurationMs,
+  resetLastProveDurationMs,
+} from "./midnightBrowserProofProvider";
+import {
+  CIRCUIT_K,
+  calibrateFromProof,
+  expectedProof,
+} from "../zk-time-estimator";
 import { createInMemoryPrivateStateProvider } from "./midnightInMemoryPrivateStateProvider";
 import {
   witnesses,
@@ -262,6 +271,13 @@ const CIRCUIT_LABELS: Record<string, string> = {
   init_deck: 'initializing deck',
 };
 
+/**
+ * Fixed countdown for the "awaiting confirmation" stage — the on-chain
+ * submission path is dominated by indexer polling, not compute, so a flat
+ * estimate reads better than anything derived.
+ */
+const AWAITING_CONFIRMATION_COUNTDOWN_MS = 20_000;
+
 async function callDelegated(
   provider: any,
   circuitId: string,
@@ -270,6 +286,11 @@ async function callDelegated(
 ): Promise<void> {
   let delegated = false;
   const label = CIRCUIT_LABELS[circuitId] ?? circuitId;
+
+  // Only circuits in CIRCUIT_K go through the WASM prover; ledger-read
+  // circuits don't, and calibrating on their duration would be misleading.
+  const shouldCalibrate = circuitId in CIRCUIT_K;
+  const provingCountdownMs = shouldCalibrate ? expectedProof(circuitId) : undefined;
 
   provider.__delegatedBalanceHook = async (tx: any) => {
     // Proof is already generated at this point (balanceTx fires after
@@ -280,7 +301,8 @@ async function callDelegated(
     delegated = true;  // posted successfully — any subsequent SDK throw is safe to suppress
   };
 
-  globalLoader.show('proving', `Proving ${label}…`);
+  resetLastProveDurationMs();
+  globalLoader.show('proving', `Proving ${label}…`, provingCountdownMs);
   try {
     await callFn();
     // Delegated flow: on success we've already shown "sending". Leave the
@@ -290,20 +312,38 @@ async function callDelegated(
     if (!delegated) {
       globalLoader.hide();
     } else {
-      globalLoader.show('sending', `Awaiting confirmation: ${label}…`);
+      globalLoader.show(
+        'sending',
+        `Awaiting confirmation: ${label}…`,
+        AWAITING_CONFIRMATION_COUNTDOWN_MS,
+      );
     }
   } catch (error) {
     // Suppress if: (a) the sentinel propagated through the SDK, or (b) we already
     // posted to the batcher and the SDK threw after balanceTx returned (e.g.,
     // EffectStream validation error, submitTx unreachable, etc.)
     if (isDelegationError(error) || delegated) {
-      globalLoader.show('sending', `Awaiting confirmation: ${label}…`);
+      globalLoader.show(
+        'sending',
+        `Awaiting confirmation: ${label}…`,
+        AWAITING_CONFIRMATION_COUNTDOWN_MS,
+      );
       return;
     }
     globalLoader.hide();
     throw error;
   } finally {
     delete provider.__delegatedBalanceHook;
+    if (shouldCalibrate) {
+      const d = getLastProveDurationMs();
+      if (d !== null && d > 0) {
+        try {
+          calibrateFromProof(circuitId, d);
+        } catch (err) {
+          console.warn(`[GoFishContractService] calibration failed for ${circuitId}:`, err);
+        }
+      }
+    }
   }
 }
 

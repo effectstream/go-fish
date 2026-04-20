@@ -18,6 +18,8 @@ class MidnightBrowserProverClient {
   private readyResolved = false;
   private nextRequestId = 1;
   private readonly pending = new Map<number, PendingRequest>();
+  /** Wall-clock duration (ms) of the most recently completed prove() call. */
+  lastProveDurationMs: number | null = null;
 
   constructor(baseUrl: string) {
     this.worker = new Worker(
@@ -88,17 +90,25 @@ class MidnightBrowserProverClient {
         : new Uint8Array(serializedTx);
     const txCopy = view.slice();
 
-    return new Promise<Uint8Array>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-      this.postMessage(
-        {
-          type: "prove",
-          requestId,
-          serializedTx: txCopy.buffer,
-        },
-        [txCopy.buffer],
-      );
-    });
+    const start = performance.now();
+    try {
+      const result = await new Promise<Uint8Array>((resolve, reject) => {
+        this.pending.set(requestId, { resolve, reject });
+        this.postMessage(
+          {
+            type: "prove",
+            requestId,
+            serializedTx: txCopy.buffer,
+          },
+          [txCopy.buffer],
+        );
+      });
+      this.lastProveDurationMs = performance.now() - start;
+      return result;
+    } catch (err) {
+      this.lastProveDurationMs = null;
+      throw err;
+    }
   }
 
   private postMessage(
@@ -141,4 +151,18 @@ export function getBrowserProofProvider(): ProofProvider {
   }
 
   return browserProofProvider!;
+}
+
+/**
+ * Wall-clock duration (ms) of the most recently completed prove(). Returns
+ * null if no prove has completed yet, or if the most recent one threw.
+ * Consumed by zk-time-estimator.calibrateFromProof().
+ */
+export function getLastProveDurationMs(): number | null {
+  return browserProverClient?.lastProveDurationMs ?? null;
+}
+
+/** Clear the last prove duration — call before a new prove to avoid stale reads. */
+export function resetLastProveDurationMs(): void {
+  if (browserProverClient) browserProverClient.lastProveDurationMs = null;
 }
