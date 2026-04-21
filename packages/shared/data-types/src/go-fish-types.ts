@@ -129,6 +129,9 @@ export interface Lobby {
   status: 'waiting' | 'in_progress' | 'finished';
   createdAt: number;
   isPlayerInLobby?: boolean; // True if current user is already in this lobby
+  // Host's Midnight applyMask has landed on-chain. Lobbies where this is
+  // false are "Preparing" — visible in the list but not joinable.
+  hostMaskApplied?: boolean;
 }
 
 export interface ChatMessage {

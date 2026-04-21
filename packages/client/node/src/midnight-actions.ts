@@ -781,7 +781,11 @@ export async function ensureGameReplayedIfNeeded(
     } else {
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: phase=${currentPhase}, skipping applyMask replay`);
     }
-    // dealCards P1 before P2 (canonical order)
+    // dealCards P1 before P2 — V4.3: dealing uses fixed disjoint deck
+    // indices (P1→0..3, P2→4..7), and dealCards no longer transitions phase
+    // or touches gameTopCardIndex. Canonical replay order is still P1→P2
+    // because the deck's shuffle/mask replay relied on the same ordering
+    // for keying gamePlayersKeysHashes; we keep it to avoid churn elsewhere.
     try {
       const r3 = actionContract.provableCircuits.dealCards(actionContext, gameId, BigInt(canonicalP1));
       actionContext = r3.context;
@@ -795,6 +799,18 @@ export async function ensureGameReplayedIfNeeded(
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} replayed`);
     } catch (e: unknown) {
       console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // V4.3: startGame is now a separate circuit that flips phase Setup→TurnStart.
+    // Replay it here (using canonicalP1) so the local sim matches the on-chain
+    // state observed after both players' dealCards have landed. If it fails
+    // because both players haven't dealt, or the phase is already advanced, swallow.
+    try {
+      const r5 = actionContract.provableCircuits.startGame(actionContext, gameId, BigInt(canonicalP1));
+      actionContext = r5.context;
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: startGame replayed`);
+    } catch (e: unknown) {
+      console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: startGame failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Mark this game as correctly replayed if we had real seeds

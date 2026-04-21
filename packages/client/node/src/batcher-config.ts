@@ -1,9 +1,3 @@
-/**
- * Batcher mode configuration — single source of truth.
- * Both midnight-query.ts and midnight-actions.ts import from here
- * instead of each re-implementing the same env-var + config-file logic.
- */
-
 function detectBatcherMode(): boolean {
   const envValue = Deno.env.get("USE_BATCHER_MODE");
   if (envValue === "true") {

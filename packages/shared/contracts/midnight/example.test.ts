@@ -578,6 +578,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	
 	// ============================================
 	// TEST 11: dealCards (deals 4 cards to each player)
+	// V4.3: dealCards uses fixed disjoint indices (P1→0..3, P2→4..7); phase
+	// transition now happens in a separate `startGame` circuit, so TEST 13
+	// exercises that explicitly instead of expecting dealCards to flip phase.
 	// ============================================
 	logSection('TEST 11: dealCards');
 	try {
@@ -585,15 +588,15 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		sim.circuitContext = r1.context;
 		const r2 = provableCircuits.dealCards(sim.circuitContext, gameId, BigInt(2));
 		sim.circuitContext = r2.context;
-		
+
 		// Get hand sizes to verify
 		const handR = circuits.getHandSizes(sim.circuitContext, gameId);
 		sim.circuitContext = handR.context;
 		const p1Size = Number(handR.result[0]);
 		const p2Size = Number(handR.result[1]);
-		
+
 		logInfo(`After dealCards: P1=${p1Size} cards, P2=${p2Size} cards`);
-		
+
 		if (p1Size === 4 && p2Size === 4) {
 			recordTest('dealCards', true, null, '4 cards dealt to each player');
 		} else {
@@ -602,7 +605,19 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	} catch (e) {
 		recordTest('dealCards', false, e);
 	}
-	
+
+	// ============================================
+	// TEST 11b: startGame (V4.3 — transitions Setup → TurnStart after dealing)
+	// ============================================
+	logSection('TEST 11b: startGame');
+	try {
+		const r = provableCircuits.startGame(sim.circuitContext, gameId, BigInt(1));
+		sim.circuitContext = r.context;
+		recordTest('startGame', true, null, 'phase transitioned via startGame');
+	} catch (e) {
+		recordTest('startGame', false, e);
+	}
+
 	// ============================================
 	// TEST 12: get_top_card_index (after dealing)
 	// ============================================
@@ -611,7 +626,10 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		const r = circuits.get_top_card_index(sim.circuitContext, gameId);
 		sim.circuitContext = r.context;
 		const topIndex = Number(r.result);
-		// After dealing 8 cards (4 each), top index should be 8
+		// V4.3: `gameTopCardIndex` is pre-seeded to 8 in init_deck. dealCards
+		// consumes fixed indices 0..7 without mutating the counter, so the
+		// first undealt draw index is still 8 — same observable as before,
+		// different mechanism.
 		if (topIndex === 8) {
 			recordTest('get_top_card_index (after deal)', true, null, `top card index = ${topIndex}`);
 		} else {
@@ -620,9 +638,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	} catch (e) {
 		recordTest('get_top_card_index (after deal)', false, e);
 	}
-	
+
 	// ============================================
-	// TEST 13: getGamePhase (should be TurnStart after dealing)
+	// TEST 13: getGamePhase (should be TurnStart after startGame)
 	// ============================================
 	logSection('TEST 13: getGamePhase (after dealing)');
 	try {
@@ -1133,7 +1151,8 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 	}
 	
 	// ============================================
-	// TEST 33: dealCards (uses internal getTopCardForOpponent)
+	// TEST 33: dealCards (V4.3: fixed-index disjoint dealing; phase transition
+	// moved to the separate startGame circuit exercised below)
 	// ============================================
 	logSection('TEST 33: dealCards (Setup phase)');
 	try {
@@ -1141,7 +1160,12 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		sim.circuitContext = r1.context;
 		const r2 = provableCircuits.dealCards(sim.circuitContext, gameId2, BigInt(2));
 		sim.circuitContext = r2.context;
-		
+
+		// V4.3: transition Setup → TurnStart. Either player may call; both
+		// calls are safe (second gets "Game already started" and is rejected).
+		const rs = provableCircuits.startGame(sim.circuitContext, gameId2, BigInt(1));
+		sim.circuitContext = rs.context;
+
 		// Discover hands using doesPlayerHaveSpecificCard
 		for (let cardIdx = 0; cardIdx < 21; cardIdx++) {
 			const r1 = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId2, BigInt(1), BigInt(cardIdx));
@@ -1149,17 +1173,17 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			if (r1.result === true) {
 				sim.player1Hand.push(BigInt(cardIdx));
 			}
-			
+
 			const r2 = circuits.doesPlayerHaveSpecificCard(sim.circuitContext, gameId2, BigInt(2), BigInt(cardIdx));
 			sim.circuitContext = r2.context;
 			if (r2.result === true) {
 				sim.player2Hand.push(BigInt(cardIdx));
 			}
 		}
-		
+
 		logInfo(`P1 hand (${sim.player1Hand.length}): ${formatHand(sim.player1Hand)}`);
 		logInfo(`P2 hand (${sim.player2Hand.length}): ${formatHand(sim.player2Hand)}`);
-		
+
 		if (sim.player1Hand.length === 4 && sim.player2Hand.length === 4) {
 			recordTest('dealCards', true, null, 'dealt 4 cards to each player');
 		} else {
@@ -1538,17 +1562,23 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		const rB2 = provableCircuits.applyMask(sim.circuitContext, gameB, BigInt(2));
 		sim.circuitContext = rB2.context;
 		
-		// Deal cards in both games
+		// Deal cards in both games (V4.3: disjoint fixed indices per dealer)
 		const dealA1 = provableCircuits.dealCards(sim.circuitContext, gameA, BigInt(1));
 		sim.circuitContext = dealA1.context;
 		const dealA2 = provableCircuits.dealCards(sim.circuitContext, gameA, BigInt(2));
 		sim.circuitContext = dealA2.context;
-		
+
 		const dealB1 = provableCircuits.dealCards(sim.circuitContext, gameB, BigInt(1));
 		sim.circuitContext = dealB1.context;
 		const dealB2 = provableCircuits.dealCards(sim.circuitContext, gameB, BigInt(2));
 		sim.circuitContext = dealB2.context;
-		
+
+		// V4.3: transition both games out of Setup via startGame.
+		const startA = provableCircuits.startGame(sim.circuitContext, gameA, BigInt(1));
+		sim.circuitContext = startA.context;
+		const startB = provableCircuits.startGame(sim.circuitContext, gameB, BigInt(1));
+		sim.circuitContext = startB.context;
+
 		recordTest('Complete both game setups', true, null, 'both games set up successfully');
 	} catch (e) {
 		recordTest('Complete both game setups', false, e);
@@ -1987,6 +2017,9 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		sim.circuitContext = r.context;
 		r = provableCircuits.dealCards(sim.circuitContext, gid, 2n);
 		sim.circuitContext = r.context;
+		// V4.3: dealCards no longer flips phase — startGame does it.
+		r = provableCircuits.startGame(sim.circuitContext, gid, 1n);
+		sim.circuitContext = r.context;
 	}
 
 	function discoverHands(gid: Uint8Array): [bigint[], bigint[]] {
@@ -2062,6 +2095,10 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			sim.circuitContext = r.context;
 			r = provableCircuits.dealCards(sim.circuitContext, gid, 2n);
 			sim.circuitContext = r.context;
+			// V4.3: startGame transitions Setup → TurnStart; without it the
+			// applyMask assertion below would see phase=Setup and pass.
+			r = provableCircuits.startGame(sim.circuitContext, gid, 1n);
+			sim.circuitContext = r.context;
 		}
 		expectAssert('A5 applyMask after setup', 'Can only apply mask during setup', () => {
 			const r = provableCircuits.applyMask(sim.circuitContext, gid, 1n);
@@ -2094,15 +2131,22 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			});
 		}
 
-		logSection('B3: P2 deals first');
+		logSection('B3: P2 deals first (V4.3: allowed — no ordering constraint)');
 		sim.reset();
 		{
 			const gid = freshGame();
 			setupMasks(gid);
-			expectAssert('B3 P2 deals first', 'First player to deal must use player ID 1', () => {
-				const r = provableCircuits.dealCards(sim.circuitContext, gid, 2n);
-				sim.circuitContext = r.context;
-			});
+			// V4.3: dealCards no longer enforces P1-first. Both players use
+			// fixed, disjoint deck-index ranges so either ordering is safe.
+			try {
+				const r1 = provableCircuits.dealCards(sim.circuitContext, gid, 2n);
+				sim.circuitContext = r1.context;
+				const r2 = provableCircuits.dealCards(sim.circuitContext, gid, 1n);
+				sim.circuitContext = r2.context;
+				recordTest('B3 P2 deals first (allowed)', true, null, 'P2→P1 ordering succeeded');
+			} catch (e) {
+				recordTest('B3 P2 deals first (allowed)', false, e);
+			}
 		}
 
 		logSection('B4: P1 deals twice');
@@ -3501,6 +3545,17 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			recordTest('P2 dealCards isolated', false, e);
 		}
 
+		// V4.3: startGame is a separate circuit now — needed to flip phase.
+		logSection('P1: startGame (phase transition)');
+		setCallerPlayer(1);
+		try {
+			const r = provableCircuits.startGame(sim.circuitContext, gid, 1n);
+			sim.circuitContext = r.context;
+			recordTest('P1 startGame isolated', true, null, 'Setup → TurnStart');
+		} catch (e: any) {
+			recordTest('P1 startGame isolated', false, e);
+		}
+
 		// Verify game started
 		setCallerPlayer(null);
 		const phaseR = circuits.getGamePhase(sim.circuitContext, gid);
@@ -3722,6 +3777,17 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 			recordTest('Q6 P2 deals with own identity', true, null, 'P2 dealt successfully');
 		} catch (e: any) {
 			recordTest('Q6 P2 deals with own identity', false, e);
+		}
+
+		// V4.3: transition Setup → TurnStart via the dedicated startGame circuit.
+		// Without this, Q7's askForCard would fail the phase check before the
+		// identity check runs, and the test would validate the wrong error.
+		setCallerIdentity(pk1);
+		try {
+			const r = provableCircuits.startGame(sim.circuitContext, gid, 1n);
+			sim.circuitContext = r.context;
+		} catch (e: any) {
+			recordTest('Q6b startGame', false, e);
 		}
 
 		// Q7: P2 tries to askForCard as P1 (should fail — wrong identity)
@@ -4283,6 +4349,9 @@ async function main() {
 		r = provableCircuits.dealCards(sim.circuitContext, gameId, 1n);
 		sim.circuitContext = r.context;
 		r = provableCircuits.dealCards(sim.circuitContext, gameId, 2n);
+		sim.circuitContext = r.context;
+		// V4.3: separate startGame circuit now owns the Setup → TurnStart transition.
+		r = provableCircuits.startGame(sim.circuitContext, gameId, 1n);
 		sim.circuitContext = r.context;
 
 		// Discover hands
