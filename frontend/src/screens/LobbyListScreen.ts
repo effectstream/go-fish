@@ -10,6 +10,7 @@ import type { GameSession } from '../game/GameSession';
 import type { InFlightState } from '../game/types';
 import { getCachedGame, listCachedGames, clearCachedGame } from '../services/HandCache';
 import { soundManager } from '../three/SoundManager';
+import { ensureNotBusy } from '../utils/txGuard';
 
 export class LobbyListScreen {
   private container: HTMLElement;
@@ -273,7 +274,7 @@ export class LobbyListScreen {
         </div>
 
         <footer class="side-footer">
-          <button id="create-lobby-btn" class="btn btn-primary">Create New Lobby</button>
+          <button id="create-lobby-btn" class="btn btn-primary tx-guarded">Create New Lobby</button>
         </footer>
 
         <!-- Create Lobby Modal (with overlay) -->
@@ -291,7 +292,7 @@ export class LobbyListScreen {
               <span class="form-hint">Go Fish is a 2-player game. Your game will start automatically when someone joins.</span>
             </div>
             <div class="modal-actions">
-              <button id="confirm-create-btn" class="btn btn-primary">Create</button>
+              <button id="confirm-create-btn" class="btn btn-primary tx-guarded">Create</button>
               <button id="cancel-create-btn" class="btn btn-secondary" data-sfx="modalClose">Cancel</button>
             </div>
           </div>
@@ -351,7 +352,7 @@ export class LobbyListScreen {
 
     return `
       <div class="lobby-card resume-card" data-lobby-id="${game.lobbyId}">
-        <button class="resume-dismiss-btn" data-lobby-id="${game.lobbyId}" title="Remove from Active Games" aria-label="Dismiss">&times;</button>
+        <button class="resume-dismiss-btn tx-guarded" data-lobby-id="${game.lobbyId}" title="Remove from Active Games" aria-label="Dismiss">&times;</button>
         <div class="lobby-header">
           <h3>${game.lobbyName}</h3>
           ${inFlightPill ?? (showStatusPill ? `<span class="lobby-status ${statusClass}">${statusText}</span>` : '')}
@@ -379,7 +380,7 @@ export class LobbyListScreen {
           </div>
         </div>
         ${isForeground ? '' : `
-          <button class="btn btn-primary resume-btn" data-lobby-id="${game.lobbyId}">
+          <button class="btn btn-primary resume-btn tx-guarded" data-lobby-id="${game.lobbyId}">
             ${meActive ? 'Play Turn' : 'Resume'}
           </button>
         `}
@@ -582,7 +583,7 @@ export class LobbyListScreen {
           </div>
         </div>
         <button
-          class="btn btn-primary join-btn"
+          class="btn btn-primary join-btn tx-guarded"
           data-lobby-id="${lobby.id}"
           data-is-rejoin="${lobby.isPlayerInLobby ? 'true' : 'false'}"
           ${buttonDisabled ? 'disabled' : ''}
@@ -625,6 +626,10 @@ export class LobbyListScreen {
     // Resume buttons — jump straight into the game screen
     document.querySelectorAll('.resume-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
+        // Tx-in-flight guard: swapping games while a proof is running for
+        // the current session leaves the proof orphaned and the loader
+        // state pointing at a game the user is no longer viewing.
+        if (!ensureNotBusy()) return;
         const target = e.target as HTMLElement;
         const lobbyId = target.dataset.lobbyId;
         if (lobbyId) {
@@ -644,6 +649,9 @@ export class LobbyListScreen {
     // via Available Lobbies or by rejoining if it re-opens.
     document.querySelectorAll('.resume-dismiss-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
+        // Tx-in-flight guard: dismissing mid-tx force-destroys the session,
+        // which would orphan the in-flight proof/send.
+        if (!ensureNotBusy()) return;
         // Don't let the click bubble up to the card itself (prevents
         // accidental Resume navigation).
         e.stopPropagation();
@@ -660,6 +668,9 @@ export class LobbyListScreen {
     // Join buttons
     document.querySelectorAll('.join-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
+        // Tx-in-flight guard covers BOTH the join-tx path and the rejoin
+        // foreground-swap path for the same reason as .resume-btn above.
+        if (!ensureNotBusy()) return;
         const target = e.target as HTMLElement;
         const lobbyId = target.dataset.lobbyId;
         const isRejoin = target.dataset.isRejoin === 'true';
@@ -705,6 +716,10 @@ export class LobbyListScreen {
 
     // Confirm button
     document.getElementById('confirm-create-btn')?.addEventListener('click', async () => {
+      // Tx-in-flight guard: block creating a second game while a proof or
+      // tx for an existing game is still running. Surfaces a toast.
+      if (!ensureNotBusy()) return;
+
       const nameInput = document.getElementById('lobby-name') as HTMLInputElement;
       const confirmBtn = document.getElementById('confirm-create-btn') as HTMLButtonElement;
 
@@ -756,6 +771,9 @@ export class LobbyListScreen {
   }
 
   private async joinLobby(lobbyId: string) {
+    // Tx-in-flight guard: joining a second lobby mid-proof races the first.
+    if (!ensureNotBusy()) return;
+
     if (!this.gameService.getPlayerName()) {
       soundManager.playError();
       alert('Please enter your name first!');

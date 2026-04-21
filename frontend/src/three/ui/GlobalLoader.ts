@@ -199,6 +199,11 @@ class GlobalLoaderImpl {
   private countdownOwner: Intent | null = null;
   private countdownTimer: number | null = null;
 
+  /** Subscribers for tx-in-flight transitions. See {@link onTxInFlightChange}. */
+  private txSubs: Array<(busy: boolean) => void> = [];
+  /** Last emitted value so we only notify on actual transitions. */
+  private lastTxInFlight = false;
+
   /**
    * When true, the loader suppresses all rendering even if foreground /
    * background intents are set. SceneManager toggles this based on whether
@@ -242,6 +247,41 @@ class GlobalLoaderImpl {
     this.render();
   }
 
+  /**
+   * True when a tx is actively in flight — foreground intent is 'proving'
+   * or 'sending'. 'waiting' is passive (waiting for the opponent) and does
+   * NOT count as busy: the user is free to navigate / create a new game.
+   * Mute state does not affect this flag — a background session proving
+   * still counts as "tx in flight" for the purpose of blocking new actions.
+   */
+  isTxInFlight(): boolean {
+    const s = this.foreground?.state;
+    return s === 'proving' || s === 'sending';
+  }
+
+  /**
+   * Subscribe to tx-in-flight transitions. The callback fires immediately
+   * with the current value and then on every transition. Returns an
+   * unsubscribe fn — call it to stop receiving updates.
+   */
+  onTxInFlightChange(cb: (busy: boolean) => void): () => void {
+    this.txSubs.push(cb);
+    try { cb(this.isTxInFlight()); } catch { /* subscriber threw — ignore */ }
+    return () => {
+      const idx = this.txSubs.indexOf(cb);
+      if (idx >= 0) this.txSubs.splice(idx, 1);
+    };
+  }
+
+  private notifyTxInFlightChange(): void {
+    const current = this.isTxInFlight();
+    if (current === this.lastTxInFlight) return;
+    this.lastTxInFlight = current;
+    for (const cb of this.txSubs) {
+      try { cb(current); } catch { /* subscriber threw — ignore */ }
+    }
+  }
+
   /** Toggle muted state. When muted, render() always hides regardless of
    *  foreground/background intents. Called by SceneManager when the user
    *  enters/leaves the game screen. */
@@ -252,19 +292,26 @@ class GlobalLoaderImpl {
   }
 
   private render(): void {
-    if (this.muted) {
-      this.stopCountdown();
-      this.applyHidden();
-      return;
+    try {
+      if (this.muted) {
+        this.stopCountdown();
+        this.applyHidden();
+        return;
+      }
+      const intent = this.foreground ?? this.background;
+      if (!intent) {
+        this.stopCountdown();
+        this.applyHidden();
+        return;
+      }
+      this.applyVisible(intent.state, intent.message);
+      this.syncCountdown(intent);
+    } finally {
+      // isTxInFlight tracks `foreground` only (not mute / background), so
+      // notify regardless of what path render() took. Subscribers want to
+      // know about every transition including those hidden by mute.
+      this.notifyTxInFlightChange();
     }
-    const intent = this.foreground ?? this.background;
-    if (!intent) {
-      this.stopCountdown();
-      this.applyHidden();
-      return;
-    }
-    this.applyVisible(intent.state, intent.message);
-    this.syncCountdown(intent);
   }
 
   private applyVisible(state: LoaderState, message: string): void {

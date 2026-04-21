@@ -5,6 +5,7 @@ import { ThreeApp } from './three/ThreeApp';
 import { SceneManager } from './three/SceneManager';
 import { backgroundNotifier } from './game/BackgroundNotifier';
 import { GameSessionManager } from './game/GameSessionManager';
+import { globalLoader } from './three/ui/GlobalLoader';
 
 // IMPORTANT: Set Midnight network ID at top level before any other SDK imports
 // This must happen before any Midnight SDK modules are used
@@ -36,6 +37,13 @@ class App {
     // the user isn't currently watching on the 3D canvas. Must come
     // after the DOM is ready but before any game session is created.
     backgroundNotifier.start();
+
+    // Toggle body.tx-in-flight so `.tx-guarded` controls visibly dim while
+    // a proof is running or a tx is posting. Subscription lives for the
+    // app's lifetime (no teardown needed at page-close time).
+    globalLoader.onTxInFlightChange((busy) => {
+      document.body.classList.toggle('tx-in-flight', busy);
+    });
 
     // Dev inspector — `window.__sessions()` in the console dumps a table
     // of all live sessions with their inFlight state. Non-production

@@ -677,6 +677,16 @@ button {
   animation: loading-shimmer 1.4s ease-in-out infinite;
 }
 
+/* Tx-in-flight lock: elements marked .tx-guarded dim + lose the pointer
+   cursor while a proof / tx is running so the disabled state is visible.
+   The handler itself still fires (via guardedClick) so a user click can
+   surface the explanatory toast. */
+body.tx-in-flight .tx-guarded {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: saturate(0.7);
+}
+
 .info-text {
   font-size: 0.9rem;
   opacity: 0.8;
