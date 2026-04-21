@@ -611,6 +611,11 @@ export class GameScene {
       isMyTurn,
       playerName: state.playerName,
       opponentName: state.opponentName,
+      // Resolved lobby name (e.g. "Alice's Lobby") — rendered in the turn
+      // bar's left slot so users with multiple active games can tell at a
+      // glance which game is on screen. Falls back to undefined while the
+      // session's displayName is still resolving.
+      lobbyName: this.session?.name,
       myScore: state.scores[state.playerId - 1],
       opponentScore: state.scores[state.playerId === 1 ? 1 : 0],
       myHandSize: state.handSizes[state.playerId - 1],

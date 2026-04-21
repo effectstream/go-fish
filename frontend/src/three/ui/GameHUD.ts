@@ -6,6 +6,9 @@ export interface HUDState {
   isMyTurn: boolean;
   playerName: string;
   opponentName: string;
+  /** Human-readable lobby name resolved from /lobby_state. Rendered in the
+   *  top-left slot of the turn bar. Undefined while still resolving. */
+  lobbyName?: string;
   myScore: number;
   opponentScore: number;
   myHandSize: number;
@@ -91,11 +94,15 @@ export class GameHUD {
       color: #e0e0e0;
     `;
 
-    // Turn indicator bar (top)
+    // Turn indicator bar (top) — 3-slot grid: [player name] [turn status] [phase]
     this.turnBar = document.createElement('div');
     this.turnBar.style.cssText = `
       position: absolute; top: 0; left: 0; width: 100%;
-      padding: 10px 20px; text-align: center;
+      padding: 10px 20px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 12px;
       background: rgba(0, 0, 0, 0.6);
       backdrop-filter: blur(4px);
       font-size: 18px; font-weight: bold;
@@ -241,7 +248,11 @@ export class GameHUD {
    * game-state poll settles), which reads as a broken render.
    */
   private renderInitialPlaceholders(): void {
-    this.turnBar.innerHTML = `<span class="loading-placeholder">Loading…</span>`;
+    this.turnBar.innerHTML = `
+      <span class="hud-name-slot loading-placeholder">Loading…</span>
+      <span class="hud-turn-slot loading-placeholder">Loading…</span>
+      <span class="hud-phase-slot"></span>
+    `;
     this.scorePanel.innerHTML = `
       <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Score</div>
       <div>Player: <span class="loading-placeholder">Loading…</span></div>
@@ -268,40 +279,62 @@ export class GameHUD {
   }
 
   private updateTurnBar(state: HUDState): void {
+    // Left slot: the lobby name — visible at all times so users managing
+    // multiple games can tell at a glance which game they're looking at.
+    const nameSlot = state.lobbyName
+      ? `<span class="hud-name-slot" style="
+           justify-self: start;
+           color: #e0e0e0;
+           font-size: 14px;
+           font-weight: 600;
+           opacity: 0.85;
+           max-width: 260px;
+           overflow: hidden;
+           text-overflow: ellipsis;
+           white-space: nowrap;
+         ">${escapeHtml(state.lobbyName)}</span>`
+      : `<span class="hud-name-slot loading-placeholder" style="justify-self: start; font-size: 14px;">Loading…</span>`;
+
+    // Choose the centre turn-status content + right-slot phase text.
+    let turnHtml: string;
+    let phaseHtml: string = '';
+
     if (state.isGameOver) {
-      this.turnBar.innerHTML = '<span style="color: #ffaa00;">Game Over!</span>';
-      return;
+      turnHtml = '<span style="color: #ffaa00;">Game Over!</span>';
+    } else if (state.phase === 'dealing' || (state.phase === 'turn_start' && state.myHandSize === 0)) {
+      // Indexer lag: phase may flip to turn_start before cards arrive in the
+      // player's hand. Keep showing "Setting Up" until the local hand is
+      // non-empty so the player doesn't see "Click a card to ask" with zero
+      // cards visible.
+      turnHtml = '<span style="color: #88ccff;">Setting Up Game...</span>';
+    } else if (state.askInProgress && state.isMyTurn) {
+      // While our ask is in flight (batcher queued, waiting for on-chain
+      // confirmation), keep showing "Waiting for response" even if the chain
+      // state still reports turn_start. This prevents the brief flicker back
+      // to "Click a card to ask" between submission and the phase advancing
+      // to wait_response on-chain.
+      turnHtml = '<span style="color: #ffaa00;">Your Turn</span>';
+      phaseHtml = 'Waiting for opponent\'s response...';
+    } else {
+      const turnColor = state.isMyTurn ? '#ffaa00' : '#88ccff';
+      const turnText = state.isMyTurn ? 'Your Turn' : `${state.opponentName}'s Turn`;
+      turnHtml = `<span style="color: ${turnColor};">${turnText}</span>`;
+      phaseHtml = this.getPhaseDescription(state.phase, state.isMyTurn, state.deckCount);
     }
-
-    if (state.phase === 'dealing') {
-      this.turnBar.innerHTML = '<span style="color: #88ccff;">Setting Up Game...</span>';
-      return;
-    }
-
-    // Indexer lag: phase may flip to turn_start before cards arrive in the player's hand.
-    // Keep showing "Setting Up" until the local hand is non-empty so the player doesn't
-    // see "Click a card to ask" with zero cards visible.
-    if (state.phase === 'turn_start' && state.myHandSize === 0) {
-      this.turnBar.innerHTML = '<span style="color: #88ccff;">Setting Up Game...</span>';
-      return;
-    }
-
-    // While our ask is in flight (batcher queued, waiting for on-chain confirmation),
-    // keep showing "Waiting for response" even if the chain state still reports turn_start.
-    // This prevents the brief flicker back to "Click a card to ask" between submission
-    // and the phase advancing to wait_response on-chain.
-    if (state.askInProgress && state.isMyTurn) {
-      this.turnBar.innerHTML = '<span style="color: #ffaa00;">Your Turn</span><span style="opacity: 0.6; margin-left: 12px;">Waiting for opponent\'s response...</span>';
-      return;
-    }
-
-    const turnColor = state.isMyTurn ? '#ffaa00' : '#88ccff';
-    const turnText = state.isMyTurn ? 'Your Turn' : `${state.opponentName}'s Turn`;
-    const phaseText = this.getPhaseDescription(state.phase, state.isMyTurn, state.deckCount);
 
     this.turnBar.innerHTML = `
-      <span style="color: ${turnColor};">${turnText}</span>
-      <span style="opacity: 0.6; margin-left: 12px;">${phaseText}</span>
+      ${nameSlot}
+      <span class="hud-turn-slot">${turnHtml}</span>
+      <span class="hud-phase-slot" style="
+        justify-self: end;
+        opacity: 0.6;
+        font-size: 14px;
+        font-weight: normal;
+        max-width: 320px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      ">${phaseHtml}</span>
     `;
   }
 

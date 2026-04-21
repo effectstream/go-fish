@@ -59,13 +59,20 @@ export class LobbyListScreen {
   }
 
   /** Hide/show each `.resume-btn` based on whether its lobby is the current
-   *  foreground. Uses `display: none` so layout collapses cleanly. */
+   *  foreground. Uses `display: none` so layout collapses cleanly. Also
+   *  toggles `.active` on the parent `.resume-card` so the golden border
+   *  highlight tracks the foreground session without a full re-render. */
   private applyForegroundToResumeButtons(): void {
     const fg = GameSessionManager.instance.foregroundLobbyId;
     const buttons = document.querySelectorAll<HTMLElement>('.resume-btn');
     buttons.forEach(btn => {
       const lobbyId = btn.dataset.lobbyId;
       btn.style.display = lobbyId && lobbyId === fg ? 'none' : '';
+    });
+    const cards = document.querySelectorAll<HTMLElement>('.resume-card');
+    cards.forEach(card => {
+      const lobbyId = card.dataset.lobbyId;
+      card.classList.toggle('active', !!lobbyId && lobbyId === fg);
     });
   }
 
@@ -351,7 +358,7 @@ export class LobbyListScreen {
     const hasMiniHand = visibleCards.length > 0 || hiddenCount > 0;
 
     return `
-      <div class="lobby-card resume-card" data-lobby-id="${game.lobbyId}">
+      <div class="lobby-card resume-card ${isForeground ? 'active' : ''}" data-lobby-id="${game.lobbyId}">
         <button class="resume-dismiss-btn tx-guarded" data-lobby-id="${game.lobbyId}" title="Remove from Active Games" aria-label="Dismiss">&times;</button>
         <div class="lobby-header">
           <h3>${game.lobbyName}</h3>

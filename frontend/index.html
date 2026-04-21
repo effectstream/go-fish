@@ -595,10 +595,13 @@
         border-radius: 6px;
         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(245, 200, 66, 0.05);
         overflow: hidden;
-        transition: border-color 0.18s ease, transform 0.18s ease;
+        transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
       }
       .lobby-card:hover {
-        border-color: var(--gold);
+        /* Reserve border-color: var(--gold) for .active — hover uses a
+           subtle background lift instead so the two states don't read the
+           same. */
+        background: linear-gradient(180deg, rgba(110, 22, 40, 0.48) 0%, rgba(40, 8, 16, 0.55) 100%);
         transform: translateY(-1px);
       }
       /* Giant suit watermark in corner */
@@ -613,6 +616,19 @@
         line-height: 1;
       }
       .lobby-card.resume-card::after { content: '♥'; color: rgba(194, 64, 64, 0.07); }
+
+      /* Active/foreground game — thicker gold border + outer glow so the
+         user can tell at a glance which card corresponds to whatever is
+         currently on the 3D canvas. Only one .lobby-card.active exists at
+         any moment (tied to GameSessionManager.foregroundLobbyId). */
+      .lobby-card.active {
+        border-color: var(--gold);
+        border-width: 2px;
+        box-shadow:
+          0 0 0 3px rgba(212, 175, 55, 0.22),
+          0 2px 14px rgba(0, 0, 0, 0.45),
+          inset 0 1px 0 rgba(245, 200, 66, 0.12);
+      }
 
       /* Card title uses the entire row; status badge drops below it.
          Overrides game-styles.css which gives .lobby-header a white bg. */
