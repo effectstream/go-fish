@@ -409,6 +409,47 @@ export async function claimTimeoutWin(
 }
 
 /**
+ * Voluntarily end the game. Contract-side winner resolution:
+ *   - Setup phase    → winner = 0 (draw). Neither player gains books.
+ *   - Active phase   → winner = opponent (caller forfeits the game).
+ *   - GameOver       → reverts "Game is already over".
+ *
+ * The UI distinguishes "Concede" (active) from "Close Game" (Setup) copy but
+ * both invocations hit the same circuit.
+ */
+export async function concede(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log("[MidnightService] concede via on-chain");
+    return MidnightOnChainService.concede(lobbyId, playerId);
+  }
+
+  console.log("[MidnightService] concede via backend");
+  return callBackendAction("concede", { lobby_id: lobbyId, player_id: playerId });
+}
+
+/**
+ * Pure read — returns the game's resolved winner (0 = none/draw, 1 = P1,
+ * 2 = P2). Read directly from the contract; 0 is returned both for
+ * unfinished games and for legitimate draws (e.g., Setup-concede).
+ * Callers distinguish by phase: `winner === 0 && phase === GameOver` ⇒ draw.
+ */
+export async function getWinner(lobbyId: string): Promise<0 | 1 | 2> {
+  return MidnightOnChainService.getWinner(lobbyId);
+}
+
+/**
+ * Pure read — returns `lastMoveAt` (unix seconds). Used by the UI countdown
+ * to compute "N seconds until opponent times out" relative to the 600s
+ * TURN_TIMEOUT constant. Read directly from the contract; no backend hop.
+ */
+export async function getLastMoveAt(lobbyId: string): Promise<number> {
+  return MidnightOnChainService.getLastMoveAt(lobbyId);
+}
+
+/**
  * Skip draw when deck is empty
  */
 export async function skipDrawDeckEmpty(
@@ -788,6 +829,7 @@ export const MidnightService = {
   afterGoFish,
   skipDrawDeckEmpty,
   claimTimeoutWin,
+  concede,
   // V3.1 / V3.3 / V4.2 additions
   checkAndScoreBook,
   requestToDrawCard,
@@ -799,6 +841,8 @@ export const MidnightService = {
   getPlayerHandWithSecret,
   getSetupStatus,
   getGameState,
+  getWinner,
+  getLastMoveAt,
 };
 
 export default MidnightService;

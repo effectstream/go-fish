@@ -2641,11 +2641,104 @@ async function runTestSuite(sim: GoFishSimulator): Promise<boolean> {
 		{
 			const gid = freshGame();
 			setupFull(gid);
-			// P2 tries to claim timeout right after setup — 300s hasn't passed
+			// P2 tries to claim timeout right after setup — 600s hasn't passed
 			expectAssert('J6 timeout not elapsed', 'Timeout period has not elapsed', () => {
 				const r = provableCircuits.claimTimeoutWin(sim.circuitContext, gid, 2n);
 				sim.circuitContext = r.context;
 			});
+		}
+	}
+
+	// ============================================
+	// J'. Concede — positive + negative tests
+	// ============================================
+	logHeader("J'. CONCEDE TESTS");
+
+	{
+		logSection("J'1: concede non-existent game");
+		sim.reset();
+		expectAssert("J'1 concede non-existent game", 'Game does not exist', () => {
+			const r = provableCircuits.concede(sim.circuitContext, generateGameId(), 1n, now());
+			sim.circuitContext = r.context;
+		});
+
+		logSection("J'2: concede invalid playerId");
+		sim.reset();
+		{
+			const gid = freshGame();
+			setupFull(gid);
+			expectAssert("J'2 concede invalid playerId=3", 'Invalid player index', () => {
+				const r = provableCircuits.concede(sim.circuitContext, gid, 3n, now());
+				sim.circuitContext = r.context;
+			});
+		}
+
+		logSection("J'3: concede after GameOver");
+		sim.reset();
+		{
+			const gid = freshGame();
+			setupFull(gid);
+			// End the game once via concede, then try again — should revert.
+			let r = provableCircuits.concede(sim.circuitContext, gid, 1n, now());
+			sim.circuitContext = r.context;
+			expectAssert("J'3 concede after GameOver", 'Game is already over', () => {
+				const rr = provableCircuits.concede(sim.circuitContext, gid, 2n, now());
+				sim.circuitContext = rr.context;
+			});
+		}
+
+		logSection("J'4: active-game concede → opponent wins");
+		sim.reset();
+		{
+			const gid = freshGame();
+			setupFull(gid);
+			try {
+				const r = provableCircuits.concede(sim.circuitContext, gid, 1n, now());
+				sim.circuitContext = r.context;
+				const phaseResult = provableCircuits.getGamePhase(sim.circuitContext, gid);
+				sim.circuitContext = phaseResult.context;
+				const winnerResult = provableCircuits.getWinner(sim.circuitContext, gid);
+				sim.circuitContext = winnerResult.context;
+				const phase = Number(phaseResult.result);
+				const winner = Number(winnerResult.result);
+				const PHASE_GAMEOVER = 6;
+				if (phase === PHASE_GAMEOVER && winner === 2) {
+					recordTest("J'4 active concede → opponent wins", true, null,
+						`phase=GameOver, winner=2`);
+				} else {
+					recordTest("J'4 active concede → opponent wins", false,
+						`expected phase=GameOver winner=2, got phase=${phase} winner=${winner}`);
+				}
+			} catch (e) {
+				recordTest("J'4 active concede → opponent wins", false, e);
+			}
+		}
+
+		logSection("J'5: Setup concede → draw (winner=0)");
+		sim.reset();
+		{
+			const gid = freshGame();
+			setupMasks(gid); // Masks applied but NOT dealt yet → still in Setup
+			try {
+				const r = provableCircuits.concede(sim.circuitContext, gid, 1n, now());
+				sim.circuitContext = r.context;
+				const phaseResult = provableCircuits.getGamePhase(sim.circuitContext, gid);
+				sim.circuitContext = phaseResult.context;
+				const winnerResult = provableCircuits.getWinner(sim.circuitContext, gid);
+				sim.circuitContext = winnerResult.context;
+				const phase = Number(phaseResult.result);
+				const winner = Number(winnerResult.result);
+				const PHASE_GAMEOVER = 6;
+				if (phase === PHASE_GAMEOVER && winner === 0) {
+					recordTest("J'5 Setup concede → draw", true, null,
+						`phase=GameOver, winner=0 (draw)`);
+				} else {
+					recordTest("J'5 Setup concede → draw", false,
+						`expected phase=GameOver winner=0, got phase=${phase} winner=${winner}`);
+				}
+			} catch (e) {
+				recordTest("J'5 Setup concede → draw", false, e);
+			}
 		}
 	}
 

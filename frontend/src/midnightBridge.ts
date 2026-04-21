@@ -630,6 +630,42 @@ export async function skipTurn(
 }
 
 /**
+ * Voluntarily end the game — the caller concedes. Winner resolution:
+ *   - `phase == Setup`  → winner = 0 (draw; neither player gains books)
+ *   - `phase ∈ {TurnStart, WaitFor*}` → winner = opponent
+ *   - `phase == GameOver` → reverts "Game is already over"
+ * `now` is bound by the contract's `assertNowWithinWindow` helper:
+ *   `blockTime - 240s ≤ now ≤ blockTime + 120s`.
+ */
+export async function concede(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const nowSecs = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.concede(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      nowSecs,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] concede failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
  * V4.2: detect and finalize exhaustion game-over. Returns the contract's
  * boolean verdict ("did this call end the game?"). Caller is any player
  * (no playerId argument on the circuit — just gameId).

@@ -34,6 +34,7 @@ export const CIRCUIT_K: Readonly<Record<string, number>> = Object.freeze({
   checkAndEndGame: 10,
   checkAndScoreBook: 15,
   claimTimeoutWin: 10,
+  concede: 10,
   dealCards: 15,
   discoverHand: 16,
   doesGameExist: 9,

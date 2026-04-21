@@ -1323,6 +1323,57 @@ export async function onChainClaimTimeoutWin(
 }
 
 /**
+ * Voluntarily end the game on the caller's behalf.
+ *
+ * Winner resolution lives in the contract:
+ *   - phase == Setup     → winner = 0 (draw)
+ *   - phase active       → winner = opponent
+ *   - phase == GameOver  → reverts
+ *
+ * Uses the same two-path shape as other txs: batcher mode (WASM prove +
+ * GoFishContractService.callConcede) vs. direct on-chain callTx.
+ */
+export async function onChainConcede(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using GoFishContractService for concede (WASM proving)...");
+    try {
+      await GoFishContractService.callConcede(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, errorMessage: err?.message || String(err) };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    const nowSecs = BigInt(Math.floor(Date.now() / 1000));
+    await callTx.concede(gameId, BigInt(playerId), nowSecs);
+    return { success: true };
+  } catch (error) {
+    console.error("[MidnightOnChain] concede failed:", error);
+    return { success: false, errorMessage: String(error) };
+  }
+}
+
+/** Resolve the game's winner directly from the contract (0 = none/draw). */
+export async function onChainGetWinner(lobbyId: string): Promise<0 | 1 | 2> {
+  return GoFishContractService.queryWinner(lobbyId);
+}
+
+/** Resolve `lastMoveAt` (unix seconds) directly from the contract. */
+export async function onChainGetLastMoveAt(lobbyId: string): Promise<number> {
+  return GoFishContractService.queryLastMoveAt(lobbyId);
+}
+
+/**
  * Get contract address (raw 32-byte version)
  */
 export function getContractAddress(): string | null {
@@ -1366,12 +1417,16 @@ export const MidnightOnChainService = {
   afterGoFish: onChainAfterGoFish,
   skipDrawDeckEmpty: onChainSkipDrawDeckEmpty,
   claimTimeoutWin: onChainClaimTimeoutWin,
+  concede: onChainConcede,
   // V3.1 / V3.3 / V4.2 additions
   checkAndScoreBook: onChainCheckAndScoreBook,
   requestToDrawCard: onChainRequestToDrawCard,
   drawCard: onChainDrawCard,
   skipTurn: onChainSkipTurn,
   checkAndEndGame: onChainCheckAndEndGame,
+  // Reads (Part A)
+  getWinner: onChainGetWinner,
+  getLastMoveAt: onChainGetLastMoveAt,
 };
 
 export default MidnightOnChainService;

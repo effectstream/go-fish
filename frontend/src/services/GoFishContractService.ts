@@ -269,6 +269,7 @@ const CIRCUIT_LABELS: Record<string, string> = {
   checkAndEndGame: 'checking end game',
   switchTurn: 'switching turn',
   claimTimeoutWin: 'claiming timeout win',
+  concede: 'conceding game',
   init_deck: 'initializing deck',
 };
 
@@ -1200,4 +1201,50 @@ export async function callClaimTimeoutWin(lobbyId: string, playerId: 1 | 2): Pro
   await callDelegated(provider, "claimTimeoutWin", () =>
     contract.callTx.claimTimeoutWin(gameId, BigInt(playerId))
   );
+}
+
+/**
+ * Voluntarily end the game via {@link concede}. Contract winner rules:
+ *   - Setup → winner = 0 (draw)
+ *   - Active → winner = opponent
+ *   - GameOver → reverts
+ * `now` is `Math.floor(Date.now() / 1000)` — contract enforces
+ * `blockTime - 240s ≤ now ≤ blockTime + 120s` via assertNowWithinWindow.
+ */
+export async function callConcede(lobbyId: string, playerId: 1 | 2): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+  const gameId = lobbyIdToGameId(lobbyId);
+  const nowSecs = BigInt(Math.floor(Date.now() / 1000));
+
+  await callDelegated(provider, "concede", () =>
+    contract.callTx.concede(gameId, BigInt(playerId), nowSecs),
+    { lobbyId, playerId },
+  );
+}
+
+/**
+ * Read the game's resolved winner (0 = none/draw, 1 = P1, 2 = P2) directly
+ * from the contract. Pure ledger read — no proof, no tx. Returns 0 when the
+ * game hasn't ended yet (the contract's `getWinner` returns 0 if no `winner`
+ * row exists for the game).
+ */
+export async function queryWinner(lobbyId: string): Promise<0 | 1 | 2> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const raw = await queryCircuit<bigint | number>("getWinner", gameId);
+  const n = typeof raw === "bigint" ? Number(raw) : (raw ?? 0);
+  if (n === 1 || n === 2) return n;
+  return 0;
+}
+
+/**
+ * Read `lastMoveAt` (unix seconds — when the most recent game-progressing
+ * move landed on-chain). Pure ledger read. Used by the UI countdown to
+ * compute "N seconds until opponent times out".
+ */
+export async function queryLastMoveAt(lobbyId: string): Promise<number> {
+  const gameId = lobbyIdToGameId(lobbyId);
+  const raw = await queryCircuit<bigint | number>("getLastMoveAt", gameId);
+  if (typeof raw === "bigint") return Number(raw);
+  return raw ?? 0;
 }
