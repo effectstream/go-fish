@@ -664,6 +664,19 @@ button {
   }
 }
 
+@keyframes loading-shimmer {
+  0%   { opacity: 0.4; }
+  50%  { opacity: 0.9; }
+  100% { opacity: 0.4; }
+}
+
+.loading-placeholder {
+  display: inline-block;
+  color: #aaa;
+  font-style: italic;
+  animation: loading-shimmer 1.4s ease-in-out infinite;
+}
+
 .info-text {
   font-size: 0.9rem;
   opacity: 0.8;

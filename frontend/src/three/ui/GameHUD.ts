@@ -231,6 +231,29 @@ export class GameHUD {
 
   show(): void {
     document.body.appendChild(this.container);
+    this.renderInitialPlaceholders();
+  }
+
+  /**
+   * Paint title + "Loading…" placeholders in the turn bar, score panel, and
+   * log panel the moment the HUD mounts. Without this, the backing boxes sit
+   * empty until the first `update()` call (which only fires after the first
+   * game-state poll settles), which reads as a broken render.
+   */
+  private renderInitialPlaceholders(): void {
+    this.turnBar.innerHTML = `<span class="loading-placeholder">Loading…</span>`;
+    this.scorePanel.innerHTML = `
+      <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Score</div>
+      <div>Player: <span class="loading-placeholder">Loading…</span></div>
+      <div style="margin-top: 6px;">Opponent: <span class="loading-placeholder">Loading…</span></div>
+      <div style="margin-top: 8px; opacity: 0.6; font-size: 12px;">
+        <span class="loading-placeholder">Loading…</span>
+      </div>
+    `;
+    this.logPanel.innerHTML = `
+      <div style="font-weight: bold; color: #ffaa00; margin-bottom: 8px;">Game Log</div>
+      <div class="loading-placeholder">Loading…</div>
+    `;
   }
 
   hide(): void {
