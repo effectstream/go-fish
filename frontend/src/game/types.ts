@@ -13,14 +13,16 @@ export type InFlightState = null | 'proving' | 'sending' | 'waiting';
 /**
  * Explicit state machine for the setup phase.
  *
+ * Mask application happens on the LobbyScreen (see SetupFlow.applyMyMask).
+ * By the time a GameSession starts its setup, both players have confirmed
+ * their masks on-chain, so only dealing + initial-book scoring remain.
+ *
  * Transitions:
- *   idle → applying_mask → waiting_for_opponent → dealing → syncing → done
+ *   idle → dealing → syncing → done
  *   Any state → failed (on error, triggering a retry)
  */
 export type SetupPhase =
   | 'idle'
-  | 'applying_mask'
-  | 'waiting_for_opponent'
   | 'dealing'
   | 'syncing'
   | 'done'
@@ -40,7 +42,6 @@ export interface SessionSnapshot {
   askInProgress: boolean;
   respondInProgress: boolean;
   drawInProgress: boolean;
-  initialBooksInProgress: boolean;
   /** Minimum expected hand size after an ask — used by the view to gate
    *  card interactivity until the batcher indexer catches up. */
   expectedMinHandSize: number;
@@ -84,7 +85,21 @@ export interface EndedDetail {
 
 /** Payload for `sound` — named effect triggered by session-side action. */
 export interface SoundDetail {
-  name: 'goFish' | 'cardDeal' | 'cardFlip' | 'bookComplete' | 'cardsGained' | 'cardsTaken' | 'notification';
+  name:
+    | 'goFish'
+    | 'cardDeal'
+    | 'cardFlip'
+    | 'bookComplete'
+    | 'cardsGained'
+    | 'cardsTaken'
+    | 'notification'
+    | 'yourTurn'
+    | 'success'
+    | 'error'
+    | 'playerJoined'
+    | 'gameStart'
+    | 'win'
+    | 'lose';
 }
 
 /** Payload for `drewCard` — emitted when an afterGoFish resolves and the

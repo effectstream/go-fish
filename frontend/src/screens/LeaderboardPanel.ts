@@ -7,6 +7,7 @@
  */
 
 import { API_BASE_URL } from '../apiConfig';
+import { soundManager } from '../three/SoundManager';
 
 interface LeaderboardEntry {
   midnight_address: string;
@@ -90,6 +91,7 @@ export class LeaderboardPanel {
     if (this.visible) return;
     this.visible = true;
     this.overlay.style.display = 'flex';
+    soundManager.playModalOpen();
     this.fetchAndRender();
     this.refreshInterval = window.setInterval(() => this.fetchAndRender(), 10_000);
   }
@@ -98,6 +100,7 @@ export class LeaderboardPanel {
     if (!this.visible) return;
     this.visible = false;
     this.overlay.style.display = 'none';
+    soundManager.playModalClose();
     if (this.refreshInterval !== null) {
       clearInterval(this.refreshInterval);
       this.refreshInterval = null;

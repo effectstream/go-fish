@@ -11,6 +11,7 @@ import { GameScreen } from './screens/GameScreen';
 import { ResultsScreen } from './screens/ResultsScreen';
 import { LeaderboardPanel } from './screens/LeaderboardPanel';
 import { GoFishGameService } from './services/GoFishGameService';
+import { soundManager } from './three/SoundManager';
 
 /** When true, the old DOM GameScreen is used instead of the Three.js scene. */
 const USE_LEGACY_GAME_UI = import.meta.env.VITE_USE_LEGACY_GAME_UI === 'true';
@@ -66,7 +67,35 @@ export class UIManager {
     this.setupEventListeners();
     this.setupLeaderboardButton();
     this.setupSideToggle();
+    this.setupGlobalClickSounds();
     this.showScreen('wallet');
+  }
+
+  /** Capture-phase global listener: every <button> click maps to a UI sound
+   *  based on its CSS class or an explicit `data-sfx="<name>"` override.
+   *  `data-sfx="none"` opts out entirely. Disabled buttons get a thunk. */
+  private setupGlobalClickSounds(): void {
+    document.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const btn = target.closest('button') as HTMLButtonElement | null;
+      if (!btn) return;
+      if (btn.disabled) {
+        soundManager.playUiDisabled();
+        return;
+      }
+      const override = btn.dataset.sfx;
+      if (override === 'none') return;
+      if (override) {
+        soundManager.play(override as Parameters<typeof soundManager.play>[0]);
+        return;
+      }
+      if (btn.classList.contains('btn-primary')) soundManager.playUiClick();
+      else if (btn.classList.contains('btn-secondary')) soundManager.playUiClickSecondary();
+      else if (btn.classList.contains('icon-btn')) soundManager.playUiClickSecondary();
+      else if (btn.classList.contains('btn')) soundManager.playUiClick();
+      else soundManager.playUiClickSecondary();
+    }, true);
   }
 
   /** Inject a layer of slowly drifting suit glyphs behind the sidebar content.
@@ -196,16 +225,31 @@ export class UIManager {
       return;
     }
 
+    // Soft whoosh on every navigation except the first (no prior screen, and
+    // the AudioContext can't resume before a user gesture anyway).
+    if (this.currentScreen && this.currentScreen !== screenId) {
+      soundManager.playScreenTransition();
+    }
+
     // Hide current screen
     this.hideCurrentScreen();
 
     // Show new screen
     this.currentScreen = screenId;
 
-    // Blur the 3D canvas (and run its idle-demo animation) whenever we're
-    // NOT inside a live game — so the random table activity reads as
-    // ambient background, not gameplay the player should react to.
-    document.body.classList.toggle('canvas-idle', screenId !== 'game');
+    // The 3D canvas is NEVER modified by screen navigation. Its contents
+    // only change when the user explicitly enters a game via 'game' or
+    // 'lobby' screen navigation (handled by SceneManager). Every other
+    // screen leaves the canvas alone — no blur, no demo fallback, no
+    // intro overlay. Whatever game scene was mounted stays mounted.
+
+    // #app-container is the full-viewport DOM surface used by the wallet
+    // screen. Hide it for every other screen so the canvas (and the
+    // side-panel screens that render into #side-panel) are visible.
+    const appContainer = document.getElementById('app-container');
+    if (appContainer) {
+      appContainer.style.display = screenId === 'wallet' ? '' : 'none';
+    }
 
     switch (screenId) {
       case 'wallet':

@@ -5,6 +5,13 @@ import { PlayerKeyManager } from '../../services/PlayerKeyManager';
 import { getLaceAddress } from '../../laceWalletBridge';
 import type { Card } from '../../../../packages/shared/data-types/src/go-fish-types';
 import { INDEX_TO_RANK, INDEX_TO_SUIT } from '../../../../packages/shared/data-types/src/go-fish-types';
+import {
+  appendEntry as appendLogEntry,
+  loadEntries as loadLogEntries,
+  replaceLastIfSource as replaceLastLogEntryIfSource,
+  type GameLogEntry,
+  type GameLogSource,
+} from '../../services/GameLogStore';
 
 export interface GameSceneState {
   phase: string;
@@ -16,9 +23,10 @@ export interface GameSceneState {
   isGameOver: boolean;
   myHand: Card[];
   myBooks: string[];
+  opponentBooks: string[];
   opponentName: string;
   playerName: string;
-  gameLog: string[];
+  gameLog: GameLogEntry[];
   /** Last rank asked on-chain (numeric index 0–6). null when no ask in progress. */
   lastAskedRank: number | null;
 }
@@ -56,28 +64,37 @@ export class GameStateAdapter {
   private polling = false;
   private midnightAddressRegistered = false;
 
-  /** Frontend-driven action log — entries added by GameScene action handlers. */
-  private localGameLog: string[] = [];
-  /** Max entries retained in localGameLog. Background sessions can run for
-   *  hours; uncapped the log would balloon memory. The HUD only shows the
-   *  last 20 entries anyway, so trimming past 200 is invisible. */
+  /** Frontend-driven action log — persisted per lobby in localStorage so a
+   *  fresh tab on the same lobby restores the existing history. Trimmed to
+   *  the last {@link GAME_LOG_CAP} entries to keep storage bounded; the HUD
+   *  only shows the last 20 anyway. */
   private static readonly GAME_LOG_CAP = 200;
 
-  /** Push a timestamped entry to the game log. The next state emission
-   *  includes it so the HUD renders it immediately. Trims the oldest
-   *  entries once the log exceeds {@link GAME_LOG_CAP}. */
-  addLog(msg: string): void {
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    this.localGameLog.push(`[${time}] ${msg}`);
-    const cap = GameStateAdapter.GAME_LOG_CAP;
-    if (this.localGameLog.length > cap) {
-      this.localGameLog.splice(0, this.localGameLog.length - cap);
-    }
+  /** Push a structured entry to the persistent log. The next state emission
+   *  includes it so the HUD renders it immediately. */
+  addLog(message: string, source: GameLogSource = 'action'): void {
+    appendLogEntry(
+      this.lobbyId,
+      { time: Date.now(), message, source },
+      GameStateAdapter.GAME_LOG_CAP,
+    );
   }
 
-  /** Get the current local log (used when building state). */
-  get gameLog(): string[] {
-    return this.localGameLog;
+  /** Append, or — if the previous entry shares `source` — overwrite it.
+   *  Used by the "⏳ Waiting for…" status line so phase polls don't spam
+   *  duplicate rows. */
+  setLog(message: string, source: GameLogSource): void {
+    replaceLastLogEntryIfSource(
+      this.lobbyId,
+      source,
+      { time: Date.now(), message, source },
+      GameStateAdapter.GAME_LOG_CAP,
+    );
+  }
+
+  /** Read the persisted log for this lobby. */
+  get gameLog(): GameLogEntry[] {
+    return loadLogEntries(this.lobbyId);
   }
 
   constructor(
@@ -184,6 +201,36 @@ export class GameStateAdapter {
     return this.previousState;
   }
 
+  /**
+   * Poll until EITHER player's score diverges from the snapshot observed at
+   * entry. Used after a book-scoring tx: the Midnight batcher can take up
+   * to ~30s to land the tx, and we want to drive the cache/menu refresh as
+   * soon as the contract confirms — not wait for the next 30s safety poll.
+   *
+   * Returns the post-change state (null on timeout).
+   */
+  async pollUntilScoreChanged(
+    timeoutMs = 30_000,
+    intervalMs = 2_000,
+  ): Promise<GameSceneState | null> {
+    const baseline = this.previousState;
+    if (!baseline) return null;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await this.forcePoll();
+      const state = this.previousState;
+      if (state && (
+        state.scores[0] !== baseline.scores[0] ||
+        state.scores[1] !== baseline.scores[1]
+      )) {
+        return state;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
+    }
+    console.warn('[GameStateAdapter] pollUntilScoreChanged: timed out');
+    return null;
+  }
+
   private async poll(): Promise<void> {
     if (this.polling) {
       // A poll is already in progress. If this was WS-triggered, schedule
@@ -198,6 +245,16 @@ export class GameStateAdapter {
     try {
       const rawState = await MidnightService.getGameState(this.lobbyId, this.walletAddress);
       if (!rawState) return;
+
+      // When the wallet isn't in the players list yet, MidnightService
+      // returns playerId=0 — typically a 1–5s indexer lag after a fresh
+      // joinedLobby tx. The 30s safety poll is way too slow here, and WS
+      // doesn't fire for this transition (the Midnight contract state
+      // hasn't changed; only the EVM lobby_players row was inserted).
+      // Schedule a fast re-poll until the wallet shows up.
+      if (rawState.playerId === 0) {
+        setTimeout(() => this.poll(), 2000);
+      }
 
       // Decrypt player hand using the real player secret stored in PlayerKeyManager.
       // Only query once cards have been dealt — during setup/dealing phase the ledger
@@ -262,9 +319,10 @@ export class GameStateAdapter {
         isGameOver: rawState.isGameOver,
         myHand,
         myBooks: rawState.myBooks ?? [],
+        opponentBooks: rawState.opponentBooks ?? [],
         playerName: myPlayer?.name ?? `Player ${rawState.playerId}`,
         opponentName: opponentPlayer?.name ?? 'Opponent',
-        gameLog: this.localGameLog,
+        gameLog: this.gameLog,
         lastAskedRank: (rawState.lastAskedRank as number | null | undefined) ?? null,
       };
 
@@ -327,7 +385,11 @@ export class GameStateAdapter {
         current.handSizes[0] !== previous.handSizes[0] ||
         current.handSizes[1] !== previous.handSizes[1],
       deckCountChanged: current.deckCount !== previous.deckCount,
-      gameLogChanged: current.gameLog.length !== previous.gameLog.length,
+      gameLogChanged:
+        current.gameLog.length !== previous.gameLog.length ||
+        (current.gameLog.length > 0 &&
+          current.gameLog[current.gameLog.length - 1].time !==
+            previous.gameLog[previous.gameLog.length - 1]?.time),
       gameOver: current.isGameOver && !previous.isGameOver,
     };
   }

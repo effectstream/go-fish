@@ -10,6 +10,12 @@ import { getWalletAddress } from '../effectstreamBridge';
 import { MidnightService } from '../services/MidnightService';
 import * as GoFishContractService from '../services/GoFishContractService';
 import { PlayerKeyManager } from '../services/PlayerKeyManager';
+import { soundManager } from '../three/SoundManager';
+
+function errAlert(message: string): void {
+  soundManager.playError();
+  alert(message);
+}
 
 // Type for API game state response
 interface GameStateResponse {
@@ -888,6 +894,42 @@ export class GameScreen {
         console.log('[GameScreen] Cards already dealt, skipping');
       }
 
+      // V4.3: dealCards no longer flips the phase — we now fire a separate
+      // startGame tx once both players' hasDealt flags are visible on-chain.
+      // Attempt it here; the contract dedups via `assert(phase == Setup)`, so
+      // either player's call is safe and failures from "Game already started"
+      // are mapped to success by MidnightOnChainService.startGame.
+      try {
+        const statusAfterDeal = await MidnightService.getSetupStatus(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2,
+        );
+        if (!statusAfterDeal.opponentHasDealt) {
+          console.log('[GameScreen] Waiting for opponent to deal before startGame... retrying in 3s');
+          setTimeout(() => {
+            this.setupAttempted = false;
+            this.render();
+          }, 3000);
+          return;
+        }
+        console.log('[GameScreen] Submitting startGame to transition phase...');
+        const startRes = await MidnightService.startGame(
+          this.lobbyId,
+          this.gameState.playerId as 1 | 2,
+        );
+        if (!startRes.success) {
+          console.log(`[GameScreen] startGame failed: ${startRes.errorMessage}, retrying in 5s`);
+          setTimeout(() => {
+            this.setupAttempted = false;
+            this.render();
+          }, 5000);
+          return;
+        }
+        console.log('[GameScreen] startGame confirmed — phase transitioning to TurnStart');
+      } catch (err) {
+        console.warn('[GameScreen] startGame probe failed:', err);
+      }
+
       console.log('[GameScreen] Automatic setup complete!');
       this.setupCompleted = true;
     } catch (error: any) {
@@ -1616,11 +1658,11 @@ export class GameScreen {
               await this.autoScoreBooks();
             } else {
               console.error('[GameScreen] afterGoFish failed:', result.errorMessage);
-              alert(`Failed to complete turn: ${result.errorMessage}`);
+              errAlert(`Failed to complete turn: ${result.errorMessage}`);
             }
           } catch (error) {
             console.error('[GameScreen] afterGoFish failed:', error);
-            alert('Failed to resolve draw. Please try again.');
+            errAlert(`Failed to resolve draw. Please try again.`);
           } finally {
             btn.disabled = false;
             btn.textContent = '🎣 Resolve Draw';
@@ -1647,11 +1689,11 @@ export class GameScreen {
             if (result.success) {
               this.log('🃏 Ask submitted — waiting for opponent to respond');
             } else {
-              alert(`Ask failed: ${result.errorMessage}`);
+              errAlert(`Ask failed: ${result.errorMessage}`);
             }
           } catch (error) {
             console.error('[GameScreen] Empty-hand ask failed:', error);
-            alert('Failed to ask. Please try again.');
+            errAlert(`Failed to ask. Please try again.`);
           } finally {
             emptyHandAskBtn.disabled = false;
             emptyHandAskBtn.textContent = 'Ask for a card';
@@ -1735,13 +1777,13 @@ export class GameScreen {
               await this.autoScoreBooks();
               // State will update on next poll
             } else {
-              alert(`Failed to respond: ${result.errorMessage}`);
+              errAlert(`Failed to respond: ${result.errorMessage}`);
               btn.disabled = false;
               btn.textContent = 'Check My Hand & Respond';
             }
           } catch (error) {
             console.error('[GameScreen] Respond to ask failed:', error);
-            alert('Failed to respond. Please try again.');
+            errAlert(`Failed to respond. Please try again.`);
             btn.disabled = false;
             btn.textContent = 'Check My Hand & Respond';
           }
@@ -1779,13 +1821,13 @@ export class GameScreen {
               // State will update on next poll
             } else {
               console.error('[GameScreen] Skip draw failed:', skipDrawResult.errorMessage);
-              alert(`Failed to end turn: ${skipDrawResult.errorMessage}`);
+              errAlert(`Failed to end turn: ${skipDrawResult.errorMessage}`);
               btn.disabled = false;
               btn.textContent = 'End Turn';
             }
           } catch (error) {
             console.error('[GameScreen] Skip draw failed:', error);
-            alert('Failed to end turn. Please try again.');
+            errAlert(`Failed to end turn. Please try again.`);
             btn.disabled = false;
             btn.textContent = 'End Turn';
           }
@@ -1872,14 +1914,14 @@ export class GameScreen {
               this.closeActionModal(); // Close modal and reset selections
               // State will update on next poll
             } else {
-              alert(`Failed to ask for card: ${result.errorMessage}`);
+              errAlert(`Failed to ask for card: ${result.errorMessage}`);
               // Re-enable button on error
               askBtn.disabled = false;
               askBtn.textContent = `Ask for ${this.selectedRank}s`;
             }
           } catch (error) {
             console.error('[GameScreen] Ask for card failed:', error);
-            alert('Failed to ask for card. Please try again.');
+            errAlert(`Failed to ask for card. Please try again.`);
             // Re-enable button on error
             askBtn.disabled = false;
             askBtn.textContent = `Ask for ${this.selectedRank}s`;

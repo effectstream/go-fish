@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Go Fish Game - Paima Engine</title>
+    <title>ZK Go-Fish</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="manifest" href="/site.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -36,22 +41,22 @@
       #three-canvas-container canvas {
         display: block;
       }
-      /* Idle mode: blur + dim the canvas so the random demo table is clearly
-         "background ambience" and not confused for a live game. Toggled by
-         UIManager via body.canvas-idle. */
-      body.canvas-idle #three-canvas-container {
-        filter: blur(5px) saturate(85%) brightness(0.7);
+      /* When no game is selected as foreground, blur + dim the demo
+         canvas and drop a vignette over it so the "Go Fish" intro text
+         is readable. Tied to the same `body.has-foreground-game` flag
+         the idle overlay uses, so the three effects appear/disappear
+         together. */
+      body:not(.has-foreground-game) #three-canvas-container {
+        filter: blur(5px) saturate(90%) brightness(0.88);
       }
-      /* A soft gold vignette on top of the blurred canvas, to sell the
-         "casino lounge" ambience while idle. */
-      body.canvas-idle #three-canvas-container::after {
+      body:not(.has-foreground-game) #three-canvas-container::after {
         content: '';
         position: absolute;
         inset: 0;
         background: radial-gradient(ellipse at 50% 45%,
-          transparent 0%,
-          rgba(12, 6, 10, 0.25) 50%,
-          rgba(5, 2, 5, 0.7) 100%);
+          rgba(0, 0, 0, 0.1) 0%,
+          rgba(0, 0, 0, 0.22) 50%,
+          rgba(0, 0, 0, 0.4) 100%);
         pointer-events: none;
       }
 
@@ -69,7 +74,13 @@
         pointer-events: none;
         transition: right 0.25s ease;
       }
-      body.canvas-idle #idle-overlay { display: flex; }
+      /* Idle overlay: visible whenever no game is selected as foreground.
+         SceneManager adds `body.has-foreground-game` on enterGame() and
+         removes it on leaveGame(). Screen navigation does NOT affect this
+         — only actual game selection. So the "Go Fish" intro card shows
+         on app launch (no game yet) and reappears after dismissing the
+         last active game, but is gone as soon as you're watching a game. */
+      body:not(.has-foreground-game) #idle-overlay { display: flex; }
 
       #idle-overlay .idle-card {
         display: flex;

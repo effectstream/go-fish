@@ -334,18 +334,24 @@ export class GameScene {
     }
 
     const isMyTurn = state.currentTurn === state.playerId;
-    const localActionRunning =
-      snapshot.askInProgress ||
-      snapshot.respondInProgress ||
-      snapshot.drawInProgress ||
-      snapshot.initialBooksInProgress;
+    // `inFlight !== null` covers every in-flight flag (ask/respond/draw/
+    // requestDraw/opponentDraw/skipTurn/scoringBook). Use the computed
+    // summary rather than listing flags individually so new flags added
+    // later stay in sync with the UI gate.
+    const localActionRunning = snapshot.inFlight !== null;
+    // Setup (dealing + initial book sweep) must be complete before we
+    // unlock any card-selection UI — the new auto-book path runs AFTER
+    // setupPhase flips to 'done', and the user should only see "Select a
+    // Card" once that sweep settles.
+    const setupComplete = snapshot.setupPhase === 'done';
     const inOpponentSelect = this.app.inputManager.opponentSelectMode;
 
     // "Your turn" indicator — bottom-center golden ♣. Only when it's my turn
-    // in turn_start and I don't have a local action running. While the user
-    // is mid-selection (opponentSelectMode), handleCardClick owns the message,
-    // so we don't overwrite it here.
-    if (state.phase === 'turn_start' && isMyTurn && !localActionRunning && !state.isGameOver) {
+    // in turn_start, setup is complete, and no local action is in flight.
+    // While the user is mid-selection (opponentSelectMode), handleCardClick
+    // owns the message, so we don't overwrite it here.
+    if (setupComplete && state.phase === 'turn_start' && isMyTurn
+        && !localActionRunning && !state.isGameOver) {
       if (!inOpponentSelect) turnIndicator.show('Select a Card');
     } else {
       turnIndicator.hide();
@@ -365,9 +371,11 @@ export class GameScene {
       // End screen takes over — no loader or prompt.
       globalLoader.hide();
       globalLoader.setBackground(null);
-    } else if (state.phase === 'turn_start' && isMyTurn && !localActionRunning && !inOpponentSelect) {
+    } else if (setupComplete && state.phase === 'turn_start' && isMyTurn && !localActionRunning && !inOpponentSelect) {
       // This is the ONE state where we don't want the loader — the turn
       // indicator is active and the player should focus on it.
+      // Requires setup to be fully done; otherwise the setup-phase waiting
+      // message below should stay visible.
       // hide() clears any stale FOREGROUND state left over from the setup
       // phase's callDelegated 'sending' message (which callDelegated itself
       // never clears — the caller is expected to hide it once the tx
@@ -431,7 +439,12 @@ export class GameScene {
     // synced cards to this player yet (dealing phase lag). Don't let the player interact
     // before their cards appear.
     const canSelectCard =
-      state.phase === 'turn_start' && isMyTurn && handIsReady && state.myHand.length > 0;
+      setupComplete
+      && !localActionRunning
+      && state.phase === 'turn_start'
+      && isMyTurn
+      && handIsReady
+      && state.myHand.length > 0;
     this.app.setCardsInteractive(canSelectCard);
 
     // Pulse the deck glow during draw phase when it's our turn and deck has cards
@@ -491,6 +504,7 @@ export class GameScene {
       opponentHandSize: state.handSizes[state.playerId === 1 ? 1 : 0],
       deckCount: state.deckCount,
       myBooks: state.myBooks,
+      opponentBooks: state.opponentBooks,
       gameLog: state.gameLog,
       isGameOver: state.isGameOver,
       respondInProgress: snapshot.respondInProgress,
@@ -508,15 +522,7 @@ export class GameScene {
   }
 
   private onSound(d: SoundDetail): void {
-    switch (d.name) {
-      case 'goFish': soundManager.playGoFish(); break;
-      case 'cardDeal': soundManager.playCardDeal(); break;
-      case 'cardFlip': soundManager.playCardFlip(); break;
-      case 'bookComplete': soundManager.playBookComplete(); break;
-      case 'cardsGained': soundManager.playCardsGained(); break;
-      case 'cardsTaken': soundManager.playCardsTaken(); break;
-      case 'notification': soundManager.playNotification(); break;
-    }
+    soundManager.play(d.name);
   }
 
   private onDrewCard(d: DrewCardDetail): void {
@@ -557,7 +563,7 @@ export class GameScene {
 
   private showOpponentAskNotification(state: GameSceneState): void {
     // Parse the latest game log entry to find what rank was asked for
-    const latestLog = state.gameLog.length > 0 ? state.gameLog[state.gameLog.length - 1] : '';
+    const latestLog = state.gameLog.length > 0 ? state.gameLog[state.gameLog.length - 1].message : '';
     // Log entries typically look like: "Player1 asked Player2 for 3s"
     const askMatch = latestLog.match(/asked.*for\s+(\w+)s?/i);
     const rankAsked = askMatch ? askMatch[1] : 'a card';

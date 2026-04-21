@@ -894,6 +894,65 @@ export async function onChainDealCards(
 }
 
 /**
+ * V4.3: Start game (Setup → TurnStart transition).
+ *
+ * Called by the frontend once BOTH players have submitted dealCards and the
+ * hasDealt flags are visible on-chain. Either player may trigger it — the
+ * contract's `assert(phase == Setup)` makes it self-deduplicating, so a
+ * second caller's tx is rejected with "Game already started", which we treat
+ * as success (the phase transition has already happened).
+ */
+export async function onChainStartGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  // Errors that mean the phase has already transitioned — harmless from the
+  // caller's perspective (another player/tx already did the work).
+  const isAlreadyStarted = (msg: string) =>
+    msg.includes("Game already started") ||
+    msg.includes("already started") ||
+    msg.includes("Game not in setup phase");
+
+  if (batcherModeActive) {
+    console.log("[MidnightOnChain] Using GoFishContractService for startGame (WASM proving)...");
+    GoFishContractService.evictContractCache(lobbyId, playerId);
+    try {
+      await GoFishContractService.callStartGame(lobbyId, playerId);
+      return { success: true };
+    } catch (err: any) {
+      const msg: string = err?.message || String(err);
+      console.warn(`[MidnightOnChain] startGame error for lobby=${lobbyId} player=${playerId}: ${msg}`);
+      const isDelegated = msg.includes("GoFish: delegated") ||
+        msg.includes("EffectStream") || msg.includes("Timeout") ||
+        msg.includes("timed out") || msg.includes("NetworkError");
+      if (isDelegated || isAlreadyStarted(msg)) {
+        console.log("[MidnightOnChain] startGame threw after delegation or already-started — treating as success");
+        return { success: true };
+      }
+      return { success: false, errorMessage: msg };
+    }
+  }
+
+  if (!isOnChainReady()) {
+    return { success: false, errorMessage: "On-chain mode not active - use backend API" };
+  }
+
+  try {
+    const callTx = getCallTx();
+    const gameId = lobbyIdToGameId(lobbyId);
+    await callTx.startGame(gameId, BigInt(playerId));
+    return { success: true };
+  } catch (error) {
+    const msg = String(error);
+    if (isAlreadyStarted(msg)) {
+      return { success: true };
+    }
+    console.error("[MidnightOnChain] startGame failed:", error);
+    return { success: false, errorMessage: msg };
+  }
+}
+
+/**
  * Ask for card action
  */
 export async function onChainAskForCard(
@@ -1301,6 +1360,7 @@ export const MidnightOnChainService = {
   // Actions
   applyMask: onChainApplyMask,
   dealCards: onChainDealCards,
+  startGame: onChainStartGame,
   askForCard: onChainAskForCard,
   respondToAsk: onChainRespondToAsk,
   afterGoFish: onChainAfterGoFish,

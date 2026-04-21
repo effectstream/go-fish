@@ -86,7 +86,7 @@ class BackgroundNotifierImpl {
       `Your turn — ${lobbyLabel}`,
       `Tap to switch games`,
     );
-    soundManager.playNotification();
+    soundManager.playYourTurn();
   }
 
   /** Compose a short label for the toast — prefer the opponent name if

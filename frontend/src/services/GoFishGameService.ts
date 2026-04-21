@@ -23,6 +23,7 @@ import * as EffectstreamBridge from '../effectstreamBridge';
 import { getWalletAddress } from '../effectstreamBridge';
 import * as GoFishContractService from './GoFishContractService';
 import * as PlayerKeyManager from './PlayerKeyManager';
+import { setCachedGame, getCachedGame } from './HandCache';
 
 export class GoFishGameService {
   private static instance: GoFishGameService;
@@ -150,6 +151,7 @@ export class GoFishGameService {
         status: apiLobby.status === 'open' ? 'waiting' as const : 'in_progress' as const,
         createdAt: new Date(apiLobby.created_at).getTime(),
         isPlayerInLobby: apiLobby.is_player_in_lobby === true,
+        hostMaskApplied: apiLobby.host_mask_applied === true,
       }));
 
       // Update local cache (always update to get latest player counts)
@@ -265,6 +267,38 @@ export class GoFishGameService {
     }
 
     return resumable;
+  }
+
+  /**
+   * Call findResumableGames and write each result into HandCache. Existing
+   * entries are merged — fields present in the cache (e.g., live `cards`,
+   * `inFlight`) are preserved, while the chain-authoritative fields
+   * (scores, phase, turn) are refreshed.
+   *
+   * Used by LobbyListScreen as a background backfill: runs once on first
+   * show and on manual refresh, not on every render. Games with a live
+   * GameSession already get their cache updated continuously by the
+   * session's adapter, so this primarily fills in games played on another
+   * device or tab whose session isn't alive here.
+   */
+  async refreshResumableCache(): Promise<void> {
+    const games = await this.findResumableGames();
+    for (const g of games) {
+      const existing = getCachedGame(g.lobbyId);
+      setCachedGame({
+        lobbyId: g.lobbyId,
+        playerId: g.playerId,
+        lobbyName: g.lobbyName,
+        opponentName: g.opponentName,
+        cards: existing?.cards ?? [],
+        myScore: g.myScore,
+        opponentScore: g.opponentScore,
+        isMyTurn: g.isMyTurn,
+        phase: g.phase,
+        inFlight: existing?.inFlight ?? null,
+        updatedAt: Date.now(),
+      });
+    }
   }
 
   async joinLobby(lobbyId: string): Promise<boolean> {

@@ -168,6 +168,17 @@ class GlobalLoaderImpl {
   private countdownTimer: number | null = null;
 
   /**
+   * When true, the loader suppresses all rendering even if foreground /
+   * background intents are set. SceneManager toggles this based on whether
+   * the user is actively watching a game (foreground session set) or on
+   * the menu. Background GameSessions keep firing proving/sending intents
+   * for their setup txs, but the user shouldn't see those as full-screen
+   * loaders when they're on the menu — the Active Games card badge is the
+   * right UI for that.
+   */
+  private muted = false;
+
+  /**
    * Show a high-priority state. Masks any background waiting state.
    *
    * @param countdownMs  If provided, shows a live "Ns" countdown next to
@@ -199,7 +210,21 @@ class GlobalLoaderImpl {
     this.render();
   }
 
+  /** Toggle muted state. When muted, render() always hides regardless of
+   *  foreground/background intents. Called by SceneManager when the user
+   *  enters/leaves the game screen. */
+  setMuted(muted: boolean): void {
+    if (this.muted === muted) return;
+    this.muted = muted;
+    this.render();
+  }
+
   private render(): void {
+    if (this.muted) {
+      this.stopCountdown();
+      this.applyHidden();
+      return;
+    }
     const intent = this.foreground ?? this.background;
     if (!intent) {
       this.stopCountdown();

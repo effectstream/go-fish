@@ -7,41 +7,96 @@ import type { Lobby } from '../../../packages/shared/data-types/src/go-fish-type
 import { getWalletAddress, switchAccount, getLobbyState } from '../effectstreamBridge';
 import { GameSessionManager } from '../game/GameSessionManager';
 import type { GameSession } from '../game/GameSession';
-import type { InFlightState, SessionSnapshot } from '../game/types';
-import { getCachedGame, listCachedGames, type CachedGame } from '../services/HandCache';
+import type { InFlightState } from '../game/types';
+import { getCachedGame, listCachedGames, clearCachedGame } from '../services/HandCache';
+import { soundManager } from '../three/SoundManager';
 
 export class LobbyListScreen {
   private container: HTMLElement;
   private gameService: GoFishGameService;
   private refreshInterval?: number;
   private pendingJoinLobbyId: string | null = null; // Track which lobby we're joining
-  /** Teardown for manager event listeners wired in show(). */
-  private managerUnsub: (() => void) | null = null;
   /** Debounce guard for re-renders driven by session events. */
   private renderScheduled = false;
+  /** Teardown for the always-on foreground subscription. Same pattern as
+   *  the session-manager subs: run in the constructor so updates delivered
+   *  while the user is on the game screen can still mutate the stale
+   *  sidebar DOM when the LobbyListScreen's HTML is still mounted. */
+  private foregroundUnsub: (() => void) | null = null;
+  /** Teardown for always-on session-manager subscriptions (anyChange,
+   *  sessionAdded, sessionRemoved). Lives for the lifetime of the instance
+   *  so score/turn updates propagate to the menu regardless of which
+   *  screen is currently active. Re-renders are gated by a DOM-ownership
+   *  check so we don't clobber a different screen's side-panel content. */
+  private managerUnsub: (() => void) | null = null;
+  /** Teardown for the window 'storage' event — triggers a re-render when
+   *  another tab writes to HandCache. */
+  private storageUnsub: (() => void) | null = null;
+  /** True after the first show() completes. Used to gate the background
+   *  backfill so it only runs once per tab session (plus on manual
+   *  refresh). */
+  private backfilled = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
     this.gameService = GoFishGameService.getInstance();
+    this.foregroundUnsub = this.subscribeToForegroundChanges();
+    this.managerUnsub = this.subscribeToSessionManager();
+    this.storageUnsub = this.subscribeToStorageEvents();
+  }
+
+  /** Listen for foreground session changes even when the screen is "hidden".
+   *  LobbyListScreen's DOM stays in the side panel while the user is on the
+   *  game screen, so a live DOM tweak (not a full re-render) is the safest
+   *  way to toggle the Resume button without clobbering whatever other
+   *  screen may currently own the side panel. */
+  private subscribeToForegroundChanges(): () => void {
+    const manager = GameSessionManager.instance;
+    const onForegroundChange = () => this.applyForegroundToResumeButtons();
+    manager.addEventListener('foregroundChanged', onForegroundChange);
+    return () => manager.removeEventListener('foregroundChanged', onForegroundChange);
+  }
+
+  /** Hide/show each `.resume-btn` based on whether its lobby is the current
+   *  foreground. Uses `display: none` so layout collapses cleanly. */
+  private applyForegroundToResumeButtons(): void {
+    const fg = GameSessionManager.instance.foregroundLobbyId;
+    const buttons = document.querySelectorAll<HTMLElement>('.resume-btn');
+    buttons.forEach(btn => {
+      const lobbyId = btn.dataset.lobbyId;
+      btn.style.display = lobbyId && lobbyId === fg ? 'none' : '';
+    });
   }
 
   async show() {
+    // Clear out whatever the previous screen rendered into the side panel
+    // so the first render's DOM-ownership guard lets us through. Without
+    // this, render() sees a non-empty container whose first child isn't
+    // `.lobby-list-screen` (it's whatever name-entry / lobby / results
+    // left behind) and skips, leaving the sidebar stuck on the previous
+    // screen's content.
+    this.container.innerHTML = '';
     await this.render();
-    // Refresh lobby list every 4 seconds to reduce database pressure
-    // The lobby list doesn't need to be super responsive
-    this.refreshInterval = window.setInterval(() => this.render(), 4000);
-    // Re-render whenever a live game session updates — keeps the Active
-    // Games badges (PROVING / SENDING / YOUR TURN) fresh without waiting
-    // for the 4-second interval.
-    this.managerUnsub = this.subscribeToSessionManager();
+    // 30s heartbeat — safety net in case an event is missed. The primary
+    // drivers are the constructor-scope subscriptions (manager events +
+    // storage). 4s polling used to paper over the old chain-query render;
+    // cache-primary reads make that pressure unnecessary.
+    this.refreshInterval = window.setInterval(() => this.render(), 30_000);
+    // Kick off a background backfill on first show: populates the cache
+    // from findResumableGames for games this device has no live session
+    // for (e.g., played on another tab/browser). Writes go through
+    // setCachedGame → storage event → next render picks them up.
+    if (!this.backfilled) {
+      this.backfilled = true;
+      void this.backfillInBackground();
+    }
   }
 
   hide() {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }
-    this.managerUnsub?.();
-    this.managerUnsub = null;
+    // Subscriptions stay live — see constructor comment.
   }
 
   /** Listen for session lifecycle + state changes; re-render (debounced) so
@@ -67,31 +122,80 @@ export class LobbyListScreen {
     };
   }
 
+  /** Listen for HandCache writes made by OTHER tabs. The 'storage' event
+   *  fires on every window except the one that wrote, so this is the
+   *  cheapest cross-tab propagation. */
+  private subscribeToStorageEvents(): () => void {
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || !e.key.startsWith('gofish_game_v2_')) return;
+      // Debounce via the same schedule() path as session events.
+      if (this.renderScheduled) return;
+      this.renderScheduled = true;
+      setTimeout(() => {
+        this.renderScheduled = false;
+        this.render();
+      }, 300);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }
+
+  /** Kick off findResumableGames and write its output into the cache.
+   *  Non-blocking — the initial render already painted whatever was in the
+   *  cache; when the backfill completes, the next render pass picks up the
+   *  refreshed data. */
+  private async backfillInBackground(): Promise<void> {
+    try {
+      await this.gameService.refreshResumableCache();
+      void this.render();
+    } catch (err) {
+      console.warn('[LobbyListScreen] backfill failed:', err);
+    }
+  }
+
   private async render() {
     // Don't re-render if we're in the middle of joining a lobby
     if (this.pendingJoinLobbyId) {
       return;
     }
 
-    // Fetch open lobbies and the player's resumable games in parallel
-    const [lobbies, resumableGames] = await Promise.all([
-      this.gameService.fetchOpenLobbies(),
-      this.gameService.findResumableGames().catch(err => {
-        console.warn('[LobbyListScreen] findResumableGames failed:', err);
-        return [] as Array<{ lobbyId: string; playerId: 1 | 2; lobbyName: string; opponentName: string }>;
-      }),
-    ]);
+    // Guard: if another screen now owns the side panel, skip. Subscriptions
+    // stay alive for the lifetime of this instance, so events could fire
+    // while a different screen is rendered. Without this check, a menu
+    // re-render triggered by a background session update would clobber the
+    // currently-visible screen (LobbyScreen, ResultsScreen, …).
+    const ownsPanel =
+      this.container.firstElementChild === null ||
+      this.container.querySelector('.lobby-list-screen') !== null;
+    if (!ownsPanel) return;
 
-    // Live sessions take precedence over the point-in-time resumable-games
-    // snapshot — scores, turn, phase, and inFlight state all come from the
-    // session when it exists so the sidebar reflects proofs / txs in real
-    // time. Sessions not yet in findResumableGames (just-created games)
-    // still show up via the sessions-only tail below.
+    // Open lobbies are always fetched live (cheap REST call, not a chain
+    // query). They drive the "Available Lobbies" section and the
+    // preparing-badge logic.
+    const lobbies = await this.gameService.fetchOpenLobbies();
+
+    // Lobbies still in 'open' status belong in "Available Lobbies" — NOT
+    // Active Games. Drop any stale HandCache entry for an open lobby so we
+    // don't double-render the row.
+    const openLobbyIds = new Set(lobbies.map(l => l.id));
+    for (const id of openLobbyIds) clearCachedGame(id);
+
+    // Active Games section is now cache-primary:
+    //   - HandCache provides the base snapshot (scores, phase, turn, hand,
+    //     inFlight, names).
+    //   - Live GameSessions overlay in-memory state on top (handles the
+    //     window between a state update landing and the cache being
+    //     written by the session's adapter).
+    // Chain queries (findResumableGames) run ONLY via backfillInBackground
+    // — not on the render path — so the sidebar renders instantly.
     const liveSessions = GameSessionManager.instance.list();
     const sessionsByLobby = new Map<string, GameSession>(
       liveSessions.map(s => [s.lobbyId, s]),
     );
-    const enrichedGames = this.mergeWithLiveSessions(resumableGames, sessionsByLobby);
+    const enrichedGames = this.buildActiveGamesFromCacheAndSessions(
+      sessionsByLobby,
+      openLobbyIds,
+    );
 
     // Check if modal is open - if so, don't re-render
     const existingModal = document.getElementById('create-lobby-modal') as HTMLElement;
@@ -112,8 +216,10 @@ export class LobbyListScreen {
             const isRejoin = target.dataset.isRejoin === 'true';
             if (lobbyId) {
               if (isRejoin) {
-                console.log('[LobbyListScreen] Rejoining lobby (already a member):', lobbyId);
-                this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+                console.log('[LobbyListScreen] Rejoining lobby (selecting on canvas):', lobbyId);
+                // Same as Resume: stay on the menu, swap the canvas.
+                this.dispatchEvent('navigate', { screen: 'lobby-list' });
+                this.dispatchEvent('select-game', { lobbyId });
               } else {
                 this.joinLobby(lobbyId);
               }
@@ -175,7 +281,7 @@ export class LobbyListScreen {
           <div class="create-lobby-modal">
             <div class="modal-header">
               <h2>Create New Lobby</h2>
-              <button class="modal-close-btn" id="modal-close-btn">&times;</button>
+              <button class="modal-close-btn" id="modal-close-btn" data-sfx="modalClose">&times;</button>
             </div>
             <div class="form-group">
               <label>Lobby Name:</label>
@@ -186,7 +292,7 @@ export class LobbyListScreen {
             </div>
             <div class="modal-actions">
               <button id="confirm-create-btn" class="btn btn-primary">Create</button>
-              <button id="cancel-create-btn" class="btn btn-secondary">Cancel</button>
+              <button id="cancel-create-btn" class="btn btn-secondary" data-sfx="modalClose">Cancel</button>
             </div>
           </div>
         </div>
@@ -197,6 +303,12 @@ export class LobbyListScreen {
   }
 
   private renderResumableGame(game: EnrichedResumable): string {
+    // Hide the Resume button when this game is already the foregrounded
+    // session on the 3D canvas — clicking Resume there would be a no-op
+    // (you're already "in" the game). The card itself still renders so the
+    // player can see live scores / turn / hand from the sidebar.
+    const isForeground =
+      GameSessionManager.instance.foregroundLobbyId === game.lobbyId;
     // Phase → user-facing status. 0=dealing, 1=turn_start, 2=wait_response,
     // 3=wait_transfer, 4=wait_draw, 5=wait_draw_check, 6=game_over
     const inSetup = game.phase === 0;
@@ -234,6 +346,7 @@ export class LobbyListScreen {
 
     return `
       <div class="lobby-card resume-card" data-lobby-id="${game.lobbyId}">
+        <button class="resume-dismiss-btn" data-lobby-id="${game.lobbyId}" title="Remove from Active Games" aria-label="Dismiss">&times;</button>
         <div class="lobby-header">
           <h3>${game.lobbyName}</h3>
           ${inFlightPill ?? (showStatusPill ? `<span class="lobby-status ${statusClass}">${statusText}</span>` : '')}
@@ -258,144 +371,82 @@ export class LobbyListScreen {
             <span class="books">${game.opponentScore}</span>
           </div>
         </div>
-        <button class="btn btn-primary resume-btn" data-lobby-id="${game.lobbyId}">
-          ${meActive ? 'Play Turn' : 'Resume'}
-        </button>
+        ${isForeground ? '' : `
+          <button class="btn btn-primary resume-btn" data-lobby-id="${game.lobbyId}">
+            ${meActive ? 'Play Turn' : 'Resume'}
+          </button>
+        `}
       </div>
     `;
   }
 
-  /** Overlay live session state (score, turn, phase, inFlight) onto the
-   *  chain-snapshot resumable-games list. Sessions not in the resumable
-   *  list (e.g., freshly created this tab) are appended as synthetic
-   *  entries so they still appear in the sidebar. */
-  private mergeWithLiveSessions(
-    resumableGames: Array<{
-      lobbyId: string;
-      playerId: 1 | 2;
-      lobbyName: string;
-      opponentName: string;
-      myScore: number;
-      opponentScore: number;
-      isMyTurn: boolean;
-      phase: number;
-    }>,
+  /**
+   * Build the Active Games list from HandCache + live sessions, with no
+   * chain queries on the render path. Live session state overlays the
+   * cached snapshot (the cache may lag the session by a poll cycle), and
+   * sessions whose state is still null are skipped — those are mid-mask
+   * prep and already rendered under "Available Lobbies".
+   */
+  private buildActiveGamesFromCacheAndSessions(
     sessions: Map<string, GameSession>,
+    openLobbyIds: Set<string>,
   ): EnrichedResumable[] {
-    const enriched: EnrichedResumable[] = resumableGames.map(g => {
-      const s = sessions.get(g.lobbyId);
-      if (s) return this.overlaySessionOntoGame(g, s);
-      // No live session — try the localStorage cache next. Written on every
-      // poll of any session, so even after the user navigates away and
-      // back (or reloads the tab) the sidebar can show accurate scores /
-      // inFlight without reaching the contract.
-      const cached = getCachedGame(g.lobbyId);
-      if (cached) return this.overlayCacheOntoGame(g, cached);
-      return { ...g, inFlight: null };
-    });
+    const out: EnrichedResumable[] = [];
+    const seen = new Set<string>();
 
-    // Sessions that aren't yet reflected in findResumableGames — keep them
-    // visible rather than making the user wait for the next chain fetch.
-    const seen = new Set(resumableGames.map(g => g.lobbyId));
-    for (const session of sessions.values()) {
-      if (seen.has(session.lobbyId)) continue;
-      const snap = session.getSnapshot();
-      const state = snap.state;
-      const synthetic: EnrichedResumable = {
-        lobbyId: session.lobbyId,
-        playerId: (snap.playerId || 1) as 1 | 2,
-        lobbyName: session.lobbyId.slice(0, 12),
-        opponentName: state?.opponentName ?? 'Opponent',
-        myScore: state ? state.scores[state.playerId - 1] : 0,
-        opponentScore: state ? state.scores[state.playerId === 1 ? 1 : 0] : 0,
-        isMyTurn: state ? state.currentTurn === state.playerId : false,
-        phase: PHASE_STRING_TO_NUMBER[state?.phase ?? 'dealing'] ?? 0,
-        inFlight: snap.inFlight,
-      };
-      enriched.push(synthetic);
-      seen.add(session.lobbyId);
-    }
+    // Union of all lobby ids we know about (cache + live sessions).
+    const ids = new Set<string>(listCachedGames().keys());
+    for (const id of sessions.keys()) ids.add(id);
 
-    // Cached games that are neither in findResumableGames nor in active
-    // sessions — typically happens on a fresh tab load before the chain
-    // fetch completes, or after a transient backend hiccup. Hydrate from
-    // cache so the sidebar doesn't briefly go empty.
-    for (const [lobbyId, cached] of listCachedGames()) {
+    for (const lobbyId of ids) {
+      if (openLobbyIds.has(lobbyId)) continue; // → rendered in "Available Lobbies"
       if (seen.has(lobbyId)) continue;
-      enriched.push({
-        lobbyId,
-        playerId: cached.playerId,
-        lobbyName: cached.lobbyName || lobbyId.slice(0, 12),
-        opponentName: cached.opponentName,
-        myScore: cached.myScore,
-        opponentScore: cached.opponentScore,
-        isMyTurn: cached.isMyTurn,
-        phase: cached.phase,
-        inFlight: cached.inFlight,
-      });
-    }
-    return enriched;
-  }
+      seen.add(lobbyId);
 
-  /** Overlay cached sidebar data on the chain-snapshot row. Preserves the
-   *  `lobbyName` from findResumableGames (which comes from the Paima lobby
-   *  table — more canonical than whatever the session may have stored).
-   *  Everything else comes from the cache. */
-  private overlayCacheOntoGame(
-    g: {
-      lobbyId: string;
-      playerId: 1 | 2;
-      lobbyName: string;
-      opponentName: string;
-      myScore: number;
-      opponentScore: number;
-      isMyTurn: boolean;
-      phase: number;
-    },
-    cached: CachedGame,
-  ): EnrichedResumable {
-    return {
-      ...g,
-      opponentName: cached.opponentName || g.opponentName,
-      myScore: cached.myScore,
-      opponentScore: cached.opponentScore,
-      isMyTurn: cached.isMyTurn,
-      phase: cached.phase,
-      inFlight: cached.inFlight,
-    };
-  }
+      const cached = getCachedGame(lobbyId);
+      const session = sessions.get(lobbyId);
+      const snap = session?.getSnapshot();
+      const state = snap?.state;
 
-  /** Compose one row from (chain snapshot, live session). Session fields
-   *  win where present — they reflect the latest poll + local inFlight. */
-  private overlaySessionOntoGame(
-    g: {
-      lobbyId: string;
-      playerId: 1 | 2;
-      lobbyName: string;
-      opponentName: string;
-      myScore: number;
-      opponentScore: number;
-      isMyTurn: boolean;
-      phase: number;
-    },
-    session: GameSession,
-  ): EnrichedResumable {
-    const snap: SessionSnapshot = session.getSnapshot();
-    const state = snap.state;
-    if (!state) {
-      return { ...g, inFlight: snap.inFlight };
+      // Session exists but state is still null (mid-mask prep). Hide
+      // until the adapter starts returning real state.
+      if (session && !state && !cached) continue;
+
+      // Prefer session state for "live" fields; fall back to cache.
+      if (state && snap) {
+        const myIdx = state.playerId - 1;
+        const oppIdx = state.playerId === 1 ? 1 : 0;
+        out.push({
+          lobbyId,
+          playerId: (snap.playerId || cached?.playerId || 1) as 1 | 2,
+          lobbyName: cached?.lobbyName || lobbyId.slice(0, 12),
+          opponentName: state.opponentName || cached?.opponentName || 'Opponent',
+          myScore: state.scores[myIdx],
+          opponentScore: state.scores[oppIdx],
+          isMyTurn: state.currentTurn === state.playerId,
+          phase: PHASE_STRING_TO_NUMBER[state.phase] ?? cached?.phase ?? 0,
+          inFlight: snap.inFlight,
+        });
+        continue;
+      }
+
+      // No session state — render from cache alone.
+      if (cached) {
+        out.push({
+          lobbyId,
+          playerId: cached.playerId,
+          lobbyName: cached.lobbyName || lobbyId.slice(0, 12),
+          opponentName: cached.opponentName,
+          myScore: cached.myScore,
+          opponentScore: cached.opponentScore,
+          isMyTurn: cached.isMyTurn,
+          phase: cached.phase,
+          inFlight: cached.inFlight,
+        });
+      }
     }
-    const myIdx = state.playerId - 1;
-    const oppIdx = state.playerId === 1 ? 1 : 0;
-    return {
-      ...g,
-      opponentName: state.opponentName || g.opponentName,
-      myScore: state.scores[myIdx],
-      opponentScore: state.scores[oppIdx],
-      isMyTurn: state.currentTurn === state.playerId,
-      phase: PHASE_STRING_TO_NUMBER[state.phase] ?? g.phase,
-      inFlight: snap.inFlight,
-    };
+
+    return out;
   }
 
   /** Render the live-status badge (PROVING / SENDING / WAITING) if the
@@ -486,11 +537,38 @@ export class LobbyListScreen {
 
   private renderLobby(lobby: Lobby): string {
     const isFull = lobby.playerCount >= 2;
+    // Preparing: host's applyMask hasn't landed yet. Show "Preparing…" to
+    // everyone — including anyone the backend thinks is "in the lobby" (the
+    // host themselves, or a wallet-collision peer in the dev environment).
+    // The host stays on the LobbyScreen during prep, so they don't rely on a
+    // Rejoin button here. Letting Rejoin leak through would give P2 (under
+    // wallet collision) a way to skip the preparing gate.
+    const isPreparing = lobby.hostMaskApplied === false;
+
+    const statusLabel = isPreparing ? 'preparing' : lobby.status;
+    const statusClass = isPreparing ? 'preparing' : lobby.status;
+
+    let buttonLabel: string;
+    let buttonDisabled: boolean;
+    if (isPreparing) {
+      buttonLabel = 'Preparing…';
+      buttonDisabled = true;
+    } else if (lobby.isPlayerInLobby) {
+      buttonLabel = 'Rejoin';
+      buttonDisabled = false;
+    } else if (isFull) {
+      buttonLabel = 'Full';
+      buttonDisabled = true;
+    } else {
+      buttonLabel = 'Join';
+      buttonDisabled = false;
+    }
+
     return `
       <div class="lobby-card" data-lobby-id="${lobby.id}">
         <div class="lobby-header">
           <h3>${lobby.name}</h3>
-          <span class="lobby-status ${lobby.status}">${lobby.status}</span>
+          <span class="lobby-status ${statusClass}">${statusLabel}</span>
         </div>
         <div class="lobby-info">
           <div class="info-item">
@@ -506,9 +584,10 @@ export class LobbyListScreen {
           class="btn btn-primary join-btn"
           data-lobby-id="${lobby.id}"
           data-is-rejoin="${lobby.isPlayerInLobby ? 'true' : 'false'}"
-          ${isFull && !lobby.isPlayerInLobby ? 'disabled' : ''}
+          ${buttonDisabled ? 'disabled' : ''}
+          ${isPreparing ? 'title="Host is still preparing their deck"' : ''}
         >
-          ${lobby.isPlayerInLobby ? 'Rejoin' : (isFull ? 'Full' : 'Join')}
+          ${buttonLabel}
         </button>
       </div>
     `;
@@ -548,9 +627,32 @@ export class LobbyListScreen {
         const target = e.target as HTMLElement;
         const lobbyId = target.dataset.lobbyId;
         if (lobbyId) {
-          console.log('[LobbyListScreen] Resuming game:', lobbyId);
-          this.dispatchEvent('navigate', { screen: 'game', lobbyId });
+          console.log('[LobbyListScreen] Resuming game (selecting on canvas):', lobbyId);
+          // Stay on the menu sidebar; just swap the canvas to this game.
+          // The user can still see Active Games / Available Lobbies while
+          // their picked game plays in the background of the canvas.
+          this.dispatchEvent('navigate', { screen: 'lobby-list' });
+          this.dispatchEvent('select-game', { lobbyId });
         }
+      });
+    });
+
+    // Dismiss buttons — remove the card from Active Games. Clears the
+    // HandCache entry and force-destroys the session (stops its polling).
+    // The game state on-chain is untouched; the user can still find it
+    // via Available Lobbies or by rejoining if it re-opens.
+    document.querySelectorAll('.resume-dismiss-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        // Don't let the click bubble up to the card itself (prevents
+        // accidental Resume navigation).
+        e.stopPropagation();
+        const target = e.currentTarget as HTMLElement;
+        const lobbyId = target.dataset.lobbyId;
+        if (!lobbyId) return;
+        console.log('[LobbyListScreen] Dismissing Active Games card:', lobbyId);
+        GameSessionManager.instance.forceDestroy(lobbyId);
+        clearCachedGame(lobbyId);
+        void this.render();
       });
     });
 
@@ -562,9 +664,11 @@ export class LobbyListScreen {
         const isRejoin = target.dataset.isRejoin === 'true';
         if (lobbyId) {
           if (isRejoin) {
-            // Already in the lobby — just navigate, don't send another join transaction
-            console.log('[LobbyListScreen] Rejoining lobby (already a member):', lobbyId);
-            this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+            // Already in the lobby — no join tx needed. Stay on the menu
+            // and just swap the canvas to this game (same UX as Resume).
+            console.log('[LobbyListScreen] Rejoining lobby (selecting on canvas):', lobbyId);
+            this.dispatchEvent('navigate', { screen: 'lobby-list' });
+            this.dispatchEvent('select-game', { lobbyId });
           } else {
             this.joinLobby(lobbyId);
           }
@@ -578,20 +682,22 @@ export class LobbyListScreen {
     if (!modal) return;
 
     modal.style.display = 'flex';
+    soundManager.playModalOpen();
 
-    // Close button (X)
+    // Close button (X) — sound is driven by the delegated handler via data-sfx.
     document.getElementById('modal-close-btn')?.addEventListener('click', () => {
       modal.style.display = 'none';
     });
 
-    // Close on overlay click
+    // Close on overlay click — not a button, so play the sound explicitly.
     modal.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).id === 'create-lobby-modal') {
         modal.style.display = 'none';
+        soundManager.playModalClose();
       }
     });
 
-    // Cancel button
+    // Cancel button — sound via data-sfx delegation.
     document.getElementById('cancel-create-btn')?.addEventListener('click', () => {
       modal.style.display = 'none';
     });
@@ -604,6 +710,7 @@ export class LobbyListScreen {
       const lobbyName = nameInput.value.trim() || `${this.gameService.getPlayerName()}'s Lobby`;
 
       if (!this.gameService.getPlayerName()) {
+        soundManager.playError();
         alert('Please enter your name first!');
         return;
       }
@@ -619,9 +726,12 @@ export class LobbyListScreen {
         const lobby = await this.gameService.createLobby(lobbyName);
 
         if (!lobby) {
+          soundManager.playError();
           alert('Failed to create lobby. Please try again.');
           return;
         }
+
+        soundManager.playSuccess();
 
         // Join the lobby
         this.gameService.joinLobby(lobby.id);
@@ -632,6 +742,7 @@ export class LobbyListScreen {
         this.dispatchEvent('navigate', { screen: 'lobby', lobbyId: lobby.id });
       } catch (error) {
         console.error('Error creating lobby:', error);
+        soundManager.playError();
         alert('Error creating lobby. Please check your wallet and try again.');
       } finally {
         // Re-enable button
@@ -645,6 +756,7 @@ export class LobbyListScreen {
 
   private async joinLobby(lobbyId: string) {
     if (!this.gameService.getPlayerName()) {
+      soundManager.playError();
       alert('Please enter your name first!');
       return;
     }
@@ -677,6 +789,7 @@ export class LobbyListScreen {
           console.warn('[LobbyListScreen] Wallet collision detected with lobby host, switching account...');
           const switched = await switchAccount(existingAddresses);
           if (!switched) {
+            soundManager.playError();
             alert('Could not find a unique wallet. Please try again.');
             if (joinBtn) { joinBtn.disabled = false; joinBtn.textContent = 'Join'; }
             this.pendingJoinLobbyId = null;
@@ -690,8 +803,31 @@ export class LobbyListScreen {
 
       const success = await this.gameService.joinLobby(lobbyId);
       if (success) {
-        this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+        soundManager.playSuccess();
+        // Eagerly create the GameSession for the joined lobby so its
+        // background setup (mask → deal → startGame) starts immediately.
+        // Without this, the session would only spin up when the user
+        // clicks the Active Games card, delaying all of dealing.
+        const wallet = getWalletAddress() || '';
+        if (wallet) {
+          try {
+            GameSessionManager.instance.getOrCreate(lobbyId, wallet);
+          } catch (err) {
+            console.warn('[LobbyListScreen] getOrCreate after join failed:', err);
+          }
+        }
+        // Stay on the lobby list. The guest's LobbyScreen used to be where
+        // applyMask(P2) ran — that now lives inside GameSession, so the
+        // screen has no job on the guest side. The Active Games card will
+        // show progress (Preparing → Dealing → Starting → Ready).
+        this.dispatchEvent('navigate', { screen: 'lobby-list' });
+        // Joining a game = selecting it. Swap the canvas to this lobby's
+        // game scene (and hide the "Go Fish" intro overlay) without
+        // changing the side-panel screen — the user stays on the menu but
+        // the canvas reflects their picked game.
+        this.dispatchEvent('select-game', { lobbyId });
       } else {
+        soundManager.playError();
         alert('Failed to join lobby. It may be full.');
         // Re-enable button on failure
         if (joinBtn) {
@@ -701,6 +837,7 @@ export class LobbyListScreen {
       }
     } catch (error) {
       console.error('Error joining lobby:', error);
+      soundManager.playError();
       alert('Error joining lobby. Please check your wallet and try again.');
       // Re-enable button on error
       if (joinBtn) {

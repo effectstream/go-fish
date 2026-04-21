@@ -1,4 +1,5 @@
 import { soundManager } from '../SoundManager';
+import type { GameLogEntry, GameLogSource } from '../../services/GameLogStore';
 
 export interface HUDState {
   phase: string;
@@ -11,10 +12,42 @@ export interface HUDState {
   opponentHandSize: number;
   deckCount: number;
   myBooks: string[];
-  gameLog: string[];
+  opponentBooks: string[];
+  gameLog: GameLogEntry[];
   isGameOver: boolean;
   respondInProgress?: boolean;
   askInProgress?: boolean;
+}
+
+const LOG_SOURCE_COLOR: Record<GameLogSource, string> = {
+  status: '#88ccff',
+  action: '#ffd88a',
+  response: '#b3e8a0',
+  system: '#ffaa00',
+};
+
+/**
+ * Render a list of booked card ranks as a possessive-plural phrase:
+ *   ['4']            → "4's"
+ *   ['4', 'A']       → "4's and A's"
+ *   ['4', 'A', '2']  → "4's, A's and 2's"
+ */
+function formatBookRanks(ranks: string[]): string {
+  const plurals = ranks.map(r => `${r}'s`);
+  if (plurals.length === 0) return '';
+  if (plurals.length === 1) return plurals[0];
+  if (plurals.length === 2) return `${plurals[0]} and ${plurals[1]}`;
+  const head = plurals.slice(0, -1).join(', ');
+  return `${head} and ${plurals[plurals.length - 1]}`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -31,6 +64,7 @@ export class GameHUD {
   private opponentSelectPanel: HTMLDivElement;
   private waitingBanner: HTMLDivElement;
   private muteBtn: HTMLButtonElement;
+  private volumeSlider: HTMLInputElement;
   private notificationTimeout: number | null = null;
 
   // Action callbacks
@@ -148,25 +182,51 @@ export class GameHUD {
     `;
     this.container.appendChild(this.notificationEl);
 
-    // Sound mute toggle (bottom-right)
-    this.muteBtn = document.createElement('button');
-    this.muteBtn.textContent = '🔊';
-    this.muteBtn.style.cssText = `
+    // Sound controls (bottom-right): mute toggle + volume slider.
+    const audioGroup = document.createElement('div');
+    audioGroup.style.cssText = `
       position: absolute; bottom: 20px; right: 20px;
-      width: 44px; height: 44px;
+      display: flex; align-items: center; gap: 10px;
       background: rgba(0, 0, 0, 0.5);
       border: 1px solid rgba(255, 170, 0, 0.3);
-      border-radius: 50%; font-size: 20px;
-      cursor: pointer; pointer-events: auto;
-      color: #e0e0e0;
-      transition: background 0.2s;
+      border-radius: 22px;
+      padding: 4px 12px 4px 4px;
+      pointer-events: auto;
+    `;
+
+    this.muteBtn = document.createElement('button');
+    this.muteBtn.textContent = soundManager.muted ? '🔇' : '🔊';
+    this.muteBtn.dataset.sfx = 'none'; // don't self-trigger a UI click sound
+    this.muteBtn.style.cssText = `
+      width: 36px; height: 36px;
+      background: transparent;
+      border: none;
+      border-radius: 50%; font-size: 18px;
+      cursor: pointer; color: #e0e0e0;
+      display: flex; align-items: center; justify-content: center;
     `;
     this.muteBtn.addEventListener('click', () => {
       const muted = !soundManager.muted;
       soundManager.setMuted(muted);
       this.muteBtn.textContent = muted ? '🔇' : '🔊';
     });
-    this.container.appendChild(this.muteBtn);
+    audioGroup.appendChild(this.muteBtn);
+
+    this.volumeSlider = document.createElement('input');
+    this.volumeSlider.type = 'range';
+    this.volumeSlider.min = '0';
+    this.volumeSlider.max = '1';
+    this.volumeSlider.step = '0.05';
+    this.volumeSlider.value = String(soundManager.volume);
+    this.volumeSlider.style.cssText = `
+      width: 80px; accent-color: #ffaa00; cursor: pointer;
+    `;
+    this.volumeSlider.addEventListener('input', () => {
+      soundManager.setVolume(parseFloat(this.volumeSlider.value));
+    });
+    audioGroup.appendChild(this.volumeSlider);
+
+    this.container.appendChild(audioGroup);
   }
 
   show(): void {
@@ -236,18 +296,22 @@ export class GameHUD {
   }
 
   private updateScorePanel(state: HUDState): void {
-    const booksHtml = state.myBooks.length > 0
-      ? `<div style="margin-top: 8px; font-size: 12px; opacity: 0.7;">Books: ${state.myBooks.join(', ')}</div>`
+    const myBooksLine = state.myBooks.length > 0
+      ? `<div style="margin-top: 2px; font-size: 12px; opacity: 0.75;">Books: ${formatBookRanks(state.myBooks)}</div>`
+      : '';
+    const oppBooksLine = state.opponentBooks.length > 0
+      ? `<div style="margin-top: 2px; font-size: 12px; opacity: 0.75;">Books: ${formatBookRanks(state.opponentBooks)}</div>`
       : '';
 
     this.scorePanel.innerHTML = `
       <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Score</div>
       <div>${state.playerName}: <strong>${state.myScore}</strong></div>
-      <div>${state.opponentName}: <strong>${state.opponentScore}</strong></div>
+      ${myBooksLine}
+      <div style="margin-top: 6px;">${state.opponentName}: <strong>${state.opponentScore}</strong></div>
+      ${oppBooksLine}
       <div style="margin-top: 8px; opacity: 0.6; font-size: 12px;">
         Deck: ${state.deckCount} | Your hand: ${state.myHandSize} | Their hand: ${state.opponentHandSize}
       </div>
-      ${booksHtml}
     `;
   }
 
@@ -317,9 +381,10 @@ export class GameHUD {
       ${logEntries.map((entry, reverseIdx) => {
         const entryNumber = totalEntries - reverseIdx;
         const isNewest = reverseIdx === 0;
+        const sourceColor = LOG_SOURCE_COLOR[entry.source] ?? '#ffaa00';
         return `<div style="opacity: ${isNewest ? '1' : '0.7'}; margin-bottom: 4px; display: flex; gap: 6px;">
           <span style="color: #ffaa00; font-weight: bold; min-width: 24px; text-align: right;">${entryNumber}.</span>
-          <span>${entry}</span>
+          <span style="color: ${sourceColor};">${escapeHtml(entry.message)}</span>
         </div>`;
       }).join('')}
     `;

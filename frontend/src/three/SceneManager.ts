@@ -2,6 +2,7 @@ import type { ThreeApp } from './ThreeApp';
 import { GameScene } from './scenes/GameScene';
 import { getWalletAddress } from '../effectstreamBridge';
 import { GameSessionManager } from '../game/GameSessionManager';
+import { globalLoader } from './ui/GlobalLoader';
 
 type ActiveScene = 'menu' | 'game';
 
@@ -32,20 +33,52 @@ export class SceneManager {
 
   attach(): void {
     document.body.addEventListener('navigate', this.onNavigate as EventListener, true);
+    // `select-game` is dispatched when the user takes an action that
+    // logically picks a game (Join, Rejoin, Create) without changing
+    // the visible screen. The canvas swaps to that game's scene without
+    // affecting which side-panel screen is showing.
+    document.body.addEventListener('select-game', this.onSelectGame as EventListener, true);
+    // If the foregrounded session gets force-destroyed (e.g. user clicks ×
+    // on the Active Games card for the game currently on the canvas),
+    // tear the scene down — otherwise we'd render stale state from a
+    // session that no longer polls.
+    GameSessionManager.instance.addEventListener('sessionRemoved', this.onSessionRemoved as EventListener);
   }
 
   detach(): void {
     document.body.removeEventListener('navigate', this.onNavigate as EventListener, true);
+    document.body.removeEventListener('select-game', this.onSelectGame as EventListener, true);
+    GameSessionManager.instance.removeEventListener('sessionRemoved', this.onSessionRemoved as EventListener);
     this.gameScene.stop();
   }
+
+  private onSelectGame = (event: CustomEvent): void => {
+    const { lobbyId } = event.detail || {};
+    if (lobbyId) this.enterGame(lobbyId);
+  };
+
+  private onSessionRemoved = (event: CustomEvent): void => {
+    const { lobbyId } = event.detail || {};
+    if (lobbyId && lobbyId === this.currentLobbyId) {
+      console.log(`[SceneManager] Foregrounded session ${lobbyId} was removed — leaving game scene`);
+      this.leaveGame();
+    }
+  };
 
   private onNavigate = (event: CustomEvent): void => {
     const { screen, lobbyId, gameId } = event.detail || {};
 
-    if (screen === 'game') {
+    // The canvas is only swapped by EXPLICIT game navigation:
+    //   - 'game'  → user clicked an Active Games card / Resume
+    //   - 'lobby' → user just created a lobby (host-only pre-EVM-fill)
+    //
+    // Every other navigation (main menu, wallet, name-entry, results…)
+    // leaves the canvas untouched. Bouncing to the menu after P2 joins
+    // no longer resets the canvas to demo — whatever game the user was
+    // working with stays visible in the background. Only changing to a
+    // DIFFERENT game (or explicitly dismissing) changes the canvas.
+    if (screen === 'game' || screen === 'lobby') {
       this.enterGame(lobbyId || gameId);
-    } else {
-      this.enterMenu();
     }
   };
 
@@ -64,13 +97,9 @@ export class SceneManager {
     this.activeScene = 'game';
     this.currentLobbyId = lobbyId;
 
-    // Hide DOM overlay so Three.js scene is fully visible and interactive
-    const appContainer = document.getElementById('app-container');
-    if (appContainer) {
-      appContainer.style.display = 'none';
-    }
-
-    // Enable pointer events on the Three.js canvas
+    // Enable pointer events on the Three.js canvas so cards/deck are
+    // clickable. `#app-container` visibility is owned by UIManager now —
+    // it toggles based on which screen is active (only wallet uses it).
     const canvasContainer = document.getElementById('three-canvas-container');
     if (canvasContainer) {
       canvasContainer.style.pointerEvents = 'auto';
@@ -85,30 +114,44 @@ export class SceneManager {
     // uses this to suppress toasts for the session the user is actively
     // watching (3D turn indicator already signals the same thing there).
     GameSessionManager.instance.setForeground(lobbyId);
+
+    // Hide the "Go Fish" intro overlay now that a game is selected as
+    // foreground. It reappears on leaveGame() or on a dismiss that
+    // destroys the foregrounded session.
+    document.body.classList.add('has-foreground-game');
+
+    // Unmute the full-screen loader now that the user is on the game
+    // scene. While on the menu, callDelegated-driven proving/sending
+    // states are suppressed (muted loader) so the menu doesn't show
+    // "Awaiting confirmation: …" for background-session txs.
+    globalLoader.setMuted(false);
   }
 
-  private enterMenu(): void {
+  /**
+   * Called externally (e.g. by a dismiss handler) when we want to stop
+   * rendering the currently foregrounded game. Not wired to navigation —
+   * the canvas only changes via explicit game entry. This is the exit
+   * path when the user dismisses the game they were watching.
+   */
+  leaveGame(): void {
     if (this.activeScene === 'menu') return;
     this.activeScene = 'menu';
     this.currentLobbyId = null;
     GameSessionManager.instance.setForeground(null);
 
-    console.log('[SceneManager] Entering menu scene');
+    console.log('[SceneManager] Leaving game scene');
     this.gameScene.stop();
+    globalLoader.setMuted(true);
 
-    // Restore DOM overlay for non-game screens
-    const appContainer = document.getElementById('app-container');
-    if (appContainer) {
-      appContainer.style.display = '';
-    }
+    // No foreground game → bring back the "Go Fish" intro overlay.
+    document.body.classList.remove('has-foreground-game');
 
-    // Disable pointer events on canvas so DOM UI is interactive
     const canvasContainer = document.getElementById('three-canvas-container');
     if (canvasContainer) {
       canvasContainer.style.pointerEvents = 'none';
     }
 
-    // Restore demo scene for visual background
+    // Demo scene as a fallback visual.
     this.app.setPlayerHand([
       { rank: 'A', suit: 'hearts' },
       { rank: '3', suit: 'diamonds' },

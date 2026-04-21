@@ -3,8 +3,9 @@ import { MidnightService } from '../services/MidnightService';
 import * as GoFishContractService from '../services/GoFishContractService';
 import { PlayerKeyManager } from '../services/PlayerKeyManager';
 import { registerSecret as batcherRegisterSecret } from '../services/BatcherMidnightService';
-import { setCachedGame } from '../services/HandCache';
+import { setCachedGame, getCachedGame } from '../services/HandCache';
 import { isBatcherModeEnabled } from '../proving/batcher-providers';
+import { applyMyMask as applyMyMaskFlow } from './SetupFlow';
 import type {
   SessionSnapshot,
   SetupPhase,
@@ -51,13 +52,6 @@ export class GameSession extends EventTarget {
   private askInProgress = false;
   private respondInProgress = false;
   private drawInProgress = false;
-  /** True while the post-deal scoreInitialBooks tx is in flight (V3.3: only
-   *  submitted when the initial hand actually has a book; sentinel path is
-   *  skipped entirely). */
-  private initialBooksInProgress = false;
-  /** Tracks whether we've already submitted scoreInitialBooks this session
-   *  so reloads / WS re-fires don't double-submit. */
-  private initialBookSubmitted = false;
 
   // V3.3 empty-hand flow flags
   private requestDrawInProgress = false;
@@ -65,7 +59,10 @@ export class GameSession extends EventTarget {
   private opponentDrawInProgress = false;
   private skipTurnInProgress = false;
 
-  // V3.1 asker-side book scoring (after a transfer)
+  // Single mutex for ALL book-scoring paths: auto-book on turn start,
+  // asker-side book after transfer. The V3.3 scoreInitialBooks path is
+  // gone — checkAndScoreBook is the universal book-scoring circuit now
+  // (see runAutoScoreBook / maybeClaimBookAfterTransfer).
   private scoringBookInProgress = false;
 
   // V4.2 end-game detector — fired at most once per terminal condition.
@@ -79,9 +76,6 @@ export class GameSession extends EventTarget {
    */
   private expectedMinHandSize = 0;
 
-  /** Direct WS subscription for setup coordination. */
-  private unsubscribeSetupWs: (() => void) | null = null;
-
   /** Cached inFlight so we can diff transitions and emit events. */
   private lastInFlight: InFlightState = null;
 
@@ -90,10 +84,25 @@ export class GameSession extends EventTarget {
 
   private started = false;
 
+  /** Synchronous re-entry guard for runAutomaticSetup. The existing
+   *  setupPhase check only flips to 'dealing' after two awaits (mask +
+   *  status read), so adapter polls that fire during those awaits can all
+   *  slip past `setupPhase === 'idle'` in parallel and issue duplicate
+   *  applyMask / dealCards txs. This flag is set BEFORE any await and
+   *  cleared in finally. */
+  private setupInProgress = false;
+
+  /** Display name from /lobby_state, resolved once at start(). Used by
+   *  cache writes so the Active Games card shows "Alice's Lobby" instead
+   *  of the raw lobby_id. Falls back to the lobby_id if the fetch fails
+   *  (e.g., backend not ready). */
+  private displayName: string = '';
+
   constructor(lobbyId: string, walletAddress: string) {
     super();
     this.lobbyId = lobbyId;
     this.walletAddress = walletAddress;
+    this.displayName = lobbyId; // fallback until resolveDisplayName completes
   }
 
   get playerId(): 0 | 1 | 2 {
@@ -108,8 +117,6 @@ export class GameSession extends EventTarget {
     this.askInProgress = false;
     this.respondInProgress = false;
     this.drawInProgress = false;
-    this.initialBooksInProgress = false;
-    this.initialBookSubmitted = false;
     this.requestDrawInProgress = false;
     this.opponentDrawInProgress = false;
     this.skipTurnInProgress = false;
@@ -125,16 +132,28 @@ export class GameSession extends EventTarget {
     );
     this.adapter.start();
 
-    // Direct WS listener for setup coordination. When the opponent's
-    // mask or deal lands on-chain, the contract state changes but the
-    // game state fields (phase, scores, hands) look identical. This
-    // listener ensures runAutomaticSetup fires immediately.
-    this.unsubscribeSetupWs = GoFishContractService.onContractStateChange(() => {
-      if (this.setupPhase === 'waiting_for_opponent') {
-        console.log('[GameSession] WS: contract state changed while waiting_for_opponent → re-running setup');
-        this.runAutomaticSetup();
+    // Resolve the display name from /lobby_state once so cache writes
+    // don't have to guess or fall back to the raw lobby_id. Fire-and-
+    // forget — if it fails, the raw id stays as a reasonable fallback.
+    void this.resolveDisplayName();
+  }
+
+  /** Fetch the lobby_name from /lobby_state. Used to populate HandCache
+   *  with a proper display name for the Active Games sidebar card. */
+  private async resolveDisplayName(): Promise<void> {
+    try {
+      const { API_BASE_URL } = await import('../apiConfig');
+      const res = await fetch(`${API_BASE_URL}/lobby_state?lobby_id=${this.lobbyId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const name = typeof data?.lobby_name === 'string' ? data.lobby_name.trim() : '';
+      if (name) {
+        this.displayName = name;
+        console.log(`[GameSession] resolved displayName for ${this.lobbyId}: "${name}"`);
       }
-    });
+    } catch (err) {
+      console.warn('[GameSession] resolveDisplayName failed:', err);
+    }
   }
 
   /** Stop polling, tear down listeners, and emit `destroyed`. */
@@ -143,8 +162,6 @@ export class GameSession extends EventTarget {
     this.started = false;
     this.adapter?.stop();
     this.adapter = null;
-    this.unsubscribeSetupWs?.();
-    this.unsubscribeSetupWs = null;
     this.emit('destroyed', {});
   }
 
@@ -166,15 +183,14 @@ export class GameSession extends EventTarget {
       askInProgress: this.askInProgress,
       respondInProgress: this.respondInProgress,
       drawInProgress: this.drawInProgress,
-      initialBooksInProgress: this.initialBooksInProgress,
       expectedMinHandSize: this.expectedMinHandSize,
     };
   }
 
   /** Push a timestamped line to the game log. The next state emission will
    *  include it (adapter's log is the source of truth for the view). */
-  addLog(msg: string): void {
-    this.adapter?.addLog(msg);
+  addLog(msg: string, source: 'action' | 'response' | 'system' = 'action'): void {
+    this.adapter?.addLog(msg, source);
   }
 
   async forcePoll(): Promise<void> {
@@ -222,7 +238,6 @@ export class GameSession extends EventTarget {
       this.askInProgress ||
       this.respondInProgress ||
       this.drawInProgress ||
-      this.initialBooksInProgress ||
       this.requestDrawInProgress ||
       this.opponentDrawInProgress ||
       this.skipTurnInProgress ||
@@ -242,6 +257,20 @@ export class GameSession extends EventTarget {
     previous: GameSceneState | null,
     changes: StateChanges,
   ): void {
+    // current.playerId === 0 is the "wallet not yet in players list"
+    // sentinel from MidnightService.getGameState. Common after a wallet
+    // switch (collision-resolution) where the joinedLobby tx hasn't landed
+    // yet — caching _playerId from a guess would lock us into the wrong
+    // identity and submit txs as the wrong player. Skip ALL routing logic
+    // (setup / auto-respond / auto-book / cache write) until the wallet
+    // is identified.
+    if (current.playerId !== 1 && current.playerId !== 2) {
+      console.log(
+        `[GameSession] handleAdapterChange skipping — playerId unresolved (current.playerId=${current.playerId}). ` +
+        `Waiting for wallet to appear in players list.`,
+      );
+      return;
+    }
     if (this._playerId === 0 && current.playerId) {
       this._playerId = current.playerId as 1 | 2;
     }
@@ -272,10 +301,24 @@ export class GameSession extends EventTarget {
     if (current.playerId && sidebarChanged) {
       const myIdx = current.playerId - 1;
       const oppIdx = current.playerId === 1 ? 1 : 0;
+      // Prefer session-resolved displayName (from /lobby_state at start).
+      // Fall back to an existing non-raw cache entry, then to raw id.
+      // Order matters: session's displayName is the canonical EVM
+      // lobby_name, so it should win over whatever was in cache earlier.
+      const existing = getCachedGame(this.lobbyId);
+      const existingName =
+        existing?.lobbyName && existing.lobbyName !== this.lobbyId
+          ? existing.lobbyName
+          : undefined;
+      const sessionName =
+        this.displayName && this.displayName !== this.lobbyId
+          ? this.displayName
+          : undefined;
+      const cachedName = sessionName ?? existingName ?? this.lobbyId;
       setCachedGame({
         lobbyId: this.lobbyId,
         playerId: current.playerId as 1 | 2,
-        lobbyName: this.lobbyId, // sidebar prefers findResumableGames' name; this is a fallback
+        lobbyName: cachedName,
         opponentName: current.opponentName,
         cards: current.myHand,
         myScore: current.scores[myIdx] ?? 0,
@@ -288,8 +331,8 @@ export class GameSession extends EventTarget {
     }
 
     // Update the "⏳ Your turn…" / "Waiting for X…" status line in the log.
-    // This mutates adapter.gameLog in place; the view will render it via the
-    // next stateChange emission.
+    // setLog replaces the previous status entry in storage so phase polls
+    // don't spam duplicate rows; the view re-renders on the next emission.
     if (changes.phaseChanged || changes.turnChanged) {
       this.updateStatusLogLine(current);
     }
@@ -335,6 +378,31 @@ export class GameSession extends EventTarget {
         this.runRequestToDrawCard();
       } else {
         this.runSkipTurn();
+      }
+    }
+
+    // Auto-book: the V4+ contract keeps book-scoring OPTIONAL (fires only
+    // when the frontend calls it) to keep gameplay snappy. If it's my turn
+    // and I hold 3+ of any rank, submit checkAndScoreBook proactively.
+    //
+    // Gated on `setupPhase === 'done'` so the deterministic startup order
+    // holds: setup (deal) → auto-book sweep → user-action UI. Running
+    // during setup would race with dealCards confirmation.
+    //
+    // Gate on `myHand.length` (not handSizes), since we need a decrypted
+    // hand to pick the rank. On rejoin the first poll sometimes emits
+    // myHand=[] while the contract query is still in flight — using
+    // handSizes here would pass the gate, findBookableRank would return
+    // null, and the `previous===null` edge would be wasted. With this gate
+    // we retrigger on the next handChanged instead.
+    if (this.setupPhase === 'done'
+        && atMyTurnStart
+        && current.myHand.length >= 3
+        && (changes.phaseChanged || changes.handChanged || changes.turnChanged || previous === null)) {
+      const bookableRank = this.findBookableRank(current.myHand);
+      if (bookableRank !== null) {
+        console.log(`[GameSession] Auto-book triggered: rank=${RANK_NAMES[bookableRank]} (hand=${current.myHand.map(c => c.rank).join(',')})`);
+        void this.runAutoScoreBook(bookableRank);
       }
     }
 
@@ -389,11 +457,10 @@ export class GameSession extends EventTarget {
       snapshot: this.getSnapshot(),
     });
 
-    // Handle setup phase automation. With the WS subscription, state
-    // changes trigger this callback instantly — no need for 2s polling.
-    // Re-run setup when idle (first entry) OR when waiting for opponent
-    // (the WS just delivered the opponent's mask/deal landing on-chain).
-    if ((this.setupPhase === 'idle' || this.setupPhase === 'waiting_for_opponent') &&
+    // Handle setup phase automation. Only re-enter from 'idle'; mask is
+    // already applied by the time GameSession starts, so there's no
+    // waiting_for_opponent state to resume from anymore.
+    if (this.setupPhase === 'idle' &&
         (current.phase === 'dealing' || current.phase === 'turn_start')) {
       this.runAutomaticSetup();
     }
@@ -419,11 +486,10 @@ export class GameSession extends EventTarget {
     if (!this.adapter) return;
     const opName = state.opponentName || 'Opponent';
     const statusPrefix = '⏳';
-    const log = this.adapter.gameLog;
-    const lastIsStatus = log.length > 0 && log[log.length - 1].includes(statusPrefix);
     const isMyTurn = state.currentTurn === state.playerId;
 
     let statusMsg = '';
+    let source: 'status' | 'system' = 'status';
     if (state.phase === 'turn_start' && isMyTurn) {
       statusMsg = `${statusPrefix} Your turn — pick a card to ask for`;
     } else if (state.phase === 'turn_start' && !isMyTurn) {
@@ -436,14 +502,11 @@ export class GameSession extends EventTarget {
       statusMsg = `${statusPrefix} Go Fish — resolve the draw`;
     } else if (state.phase === 'game_over') {
       statusMsg = '🏁 Game Over!';
+      source = 'system';
     }
 
     if (!statusMsg) return;
-    if (lastIsStatus) {
-      log[log.length - 1] = statusMsg;
-    } else {
-      this.adapter.addLog(statusMsg.replace(/^\[.*?\] /, ''));
-    }
+    this.adapter.setLog(statusMsg, source);
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -452,6 +515,13 @@ export class GameSession extends EventTarget {
 
   /**
    * Poll for setup status until a condition is met or timeout.
+   *
+   * For `hasDealt` we also accept `handSizes[me] > 0` as a positive signal.
+   * The Midnight contract updates the handSize counter and the `hasDealt`
+   * boolean in the same call, but the indexer can expose them on slightly
+   * different schedules — without this fallback, a poll that sees the
+   * hand but not the flag times out and triggers a redundant dealCards
+   * retry (wasting a 30-60s proof cycle).
    */
   private async pollForSetupStatus(
     field: 'hasMaskApplied' | 'hasDealt',
@@ -459,13 +529,30 @@ export class GameSession extends EventTarget {
   ): Promise<boolean> {
     const startTime = Date.now();
     const pollIntervalMs = 2000;
+    const pid = this._playerId as 1 | 2;
 
     while (Date.now() - startTime < timeoutMs) {
-      const status = await MidnightService.getSetupStatus(
-        this.lobbyId,
-        this._playerId as 1 | 2,
-      );
+      const status = await MidnightService.getSetupStatus(this.lobbyId, pid);
       if (status[field]) return true;
+
+      if (field === 'hasDealt') {
+        // Fallback: if the contract shows my hand is populated, treat deal
+        // as confirmed even if the hasDealt flag hasn't surfaced yet.
+        try {
+          const rawState = await MidnightService.getGameState(
+            this.lobbyId,
+            this.walletAddress,
+          );
+          const myHandSize = rawState?.handSizes?.[pid - 1] ?? 0;
+          if (myHandSize > 0) {
+            console.log(`[GameSession] pollForSetupStatus: hasDealt still false but handSize=${myHandSize} — accepting as confirmed`);
+            return true;
+          }
+        } catch {
+          // Transient — keep polling.
+        }
+      }
+
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
     return false;
@@ -486,36 +573,96 @@ export class GameSession extends EventTarget {
   }
 
   /**
-   * Automatically run the setup sequence (applyMask + dealCards + scoreInitialBooks).
-   * Orchestrates three focused steps.
+   * Automatically run the full setup sequence:
+   *   1. Apply this player's mask (if not already on-chain).
+   *   2. Wait for opponent's mask.
+   *   3. Deal cards.
+   *   4. startGame (phase: Setup → TurnStart).
+   *
+   * Owns the entire post-EVM-join setup so the guest can skip LobbyScreen
+   * and run setup silently in the background while the user is on the
+   * menu. The host's mask is still applied from LobbyScreen (because
+   * hostReady needs to fire before the lobby is visibly joinable), but
+   * this method tolerates that — `applyMyMaskIfNeeded` short-circuits when
+   * the flag is already true on-chain.
    */
   private async runAutomaticSetup(): Promise<void> {
-    // Allow re-entry from 'idle' (first run) and 'waiting_for_opponent'
-    // (WS delivered opponent's state change). Block re-entry from
-    // 'applying_mask' / 'dealing' / 'syncing' (already in progress).
-    if (this.setupPhase !== 'idle' && this.setupPhase !== 'waiting_for_opponent') return;
-    this.setupPhase = 'applying_mask';
+    // Synchronous re-entry guard — set BEFORE any awaits. The setupPhase
+    // check is necessary too (covers the post-await transitions) but
+    // can't catch concurrent invocations that race past the first await.
+    if (this.setupInProgress) return;
+    if (this.setupPhase !== 'idle') return;
+    this.setupInProgress = true;
+    try {
+      await this.runAutomaticSetupBody();
+    } finally {
+      this.setupInProgress = false;
+    }
+  }
+
+  private async runAutomaticSetupBody(): Promise<void> {
+    // Step 1: ensure MY mask is applied. Idempotent via on-chain flag
+    // check — for the host this is usually a no-op (LobbyScreen already
+    // applied it). For the guest, this is where the mask gets applied
+    // post-join.
+    try {
+      if (!await this.applyMyMaskIfNeeded()) {
+        // Mask submit failed; stay idle, next tick retries.
+        console.log('[GameSession] applyMyMaskIfNeeded did not complete — staying idle');
+        return;
+      }
+    } catch (err) {
+      console.warn('[GameSession] applyMyMaskIfNeeded threw — staying idle', err);
+      return;
+    }
+
+    // Precondition check for the opponent's mask. Stay idle silently
+    // until both masks are on-chain — WS will re-trigger
+    // handleAdapterChange when opponent's mask lands.
+    let status;
+    try {
+      status = await MidnightService.getSetupStatus(this.lobbyId, this._playerId as 1 | 2);
+    } catch (err) {
+      console.warn('[GameSession] Precondition status read failed — staying idle', err);
+      return;
+    }
+
+    if (!status.hasMaskApplied || !status.opponentHasMaskApplied) {
+      console.log(
+        `[GameSession] Waiting for masks (mine=${status.hasMaskApplied}, opp=${status.opponentHasMaskApplied}) — staying idle`,
+      );
+      return;
+    }
+
+    // Both masks on-chain — proceed with dealing.
+    this.setupPhase = 'dealing';
 
     try {
       console.log(`[GameSession] Starting automatic setup... lobbyId=${this.lobbyId}, myPlayerId=${this._playerId}`);
-
-      const status = await MidnightService.getSetupStatus(this.lobbyId, this._playerId as 1 | 2);
       console.log('[GameSession] Setup status:', status);
 
-      if (!await this.setupMask(status)) return;
       if (!await this.setupDealCards()) return;
-      // V3.3 (2026-04-17): scoreInitialBooks no longer gates askForCard.
-      // Only submit when the hand has a 3-of-rank book; skip entirely
-      // otherwise. Always returns true — never blocks setup.
-      if (!await this.claimInitialBookIfAny()) return;
+      // V4.3: dealCards no longer transitions the phase (that write would
+      // conflict with parallel dealers' pre-state reads). We now fire an
+      // explicit startGame tx after both hasDealt flags are on-chain; this
+      // is the Setup → TurnStart transition that used to live inside
+      // dealCards itself.
+      if (!await this.setupStartGame()) return;
+      // Book scoring no longer runs inside setup. The auto-book path in
+      // handleAdapterChange takes over once setupPhase === 'done', so the
+      // ordering is deterministic: dealing settles → setup done → auto-book
+      // sweeps the hand → UI unlocks for user action.
 
       console.log('[GameSession] Automatic setup complete!');
       this.setupPhase = 'done';
-      // Setup WS listener no longer needed — unsubscribe to avoid noise
-      this.unsubscribeSetupWs?.();
-      this.unsubscribeSetupWs = null;
-      this.notify('Setup Complete', 'Waiting for game to start...', 5000);
       this.adapter?.forcePoll();
+      // On rejoin, the first handleAdapterChange already fired (with
+      // previous===null) while setupPhase was still 'idle' — so the
+      // auto-book block was gated off. Now that setup is done, kick one
+      // immediate check against the current state; without this, the user
+      // would have to wait for the next unrelated state change to trigger
+      // the sweep.
+      this.maybeKickAutoBook();
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('[GameSession] Automatic setup failed:', msg);
@@ -528,76 +675,36 @@ export class GameSession extends EventTarget {
     }
   }
 
-  /** Step 1: Apply mask. Returns false if setup should be aborted/retried.
-   *  ORDERING: P1 (lobby creator) applies first, P2 (joiner) waits for P1.
-   *  Preserves EVM player order into the Midnight contract. */
-  private async setupMask(status: { hasMaskApplied: boolean; opponentHasMaskApplied?: boolean }): Promise<boolean> {
-    if (status.hasMaskApplied) {
-      console.log('[GameSession] Mask already applied, skipping');
-      this.setupPhase = 'waiting_for_opponent';
-      return true;
-    }
-
-    // P2 must wait for P1's mask before applying their own.
-    // No scheduleSetupRetry — the WS subscription will trigger
-    // onGameStateChange when P1's mask lands, re-entering setup.
-    if (this._playerId === 2 && !status.opponentHasMaskApplied) {
-      console.log('[GameSession] Player 2 waiting for Player 1 to apply mask (WS will trigger next attempt)');
-      this.notify('Setting Up', 'Waiting for opponent to shuffle the deck...', 30000);
-      this.setupPhase = 'waiting_for_opponent';
-      return false;
-    }
-
-    this.notify('Setting Up', 'Applying cryptographic mask — proving...', 60000);
+  /** Step 2: Deal cards. Returns false if setup should be aborted/retried. */
+  /**
+   * Step 1: apply my mask if it isn't on-chain yet. Delegates to the same
+   * idempotent SetupFlow helper the LobbyScreen uses for the host.
+   *
+   * Returns true if the mask is confirmed on-chain (submitted now, or was
+   * already applied). Returns false on any failure so the caller can retry
+   * next tick without marking setup as failed.
+   */
+  private async applyMyMaskIfNeeded(): Promise<boolean> {
     const pid = this._playerId as 1 | 2;
-    const secretHex = PlayerKeyManager.getPlayerSecret(this.lobbyId, pid).toString(16).padStart(64, '0');
-    const maskResult = await MidnightService.applyMask(this.lobbyId, pid, secretHex);
-
-    if (maskResult.success) {
-      console.log('[GameSession] Mask submitted to batcher, waiting for on-chain confirmation...');
-      this.notify('Setting Up', 'Mask submitted — waiting for blockchain confirmation...', 120000);
-      // Poll until the indexer confirms the mask is on-chain.
-      // Without this wait, the setup loop retries immediately and
-      // double-submits because hasMaskApplied is still false.
-      const confirmed = await this.pollForSetupStatus('hasMaskApplied', 120000);
-      if (confirmed) {
-        console.log('[GameSession] Mask confirmed on-chain — forcing adapter poll so both browsers sync');
-        this.adapter?.forcePoll(); // Trigger state refresh for WS listeners
-        this.setupPhase = 'waiting_for_opponent';
-        return true;
-      }
-      console.warn('[GameSession] Mask submitted but not confirmed within timeout');
-      this.notify('Warning', 'Mask may not have landed — retrying...', 10000);
-      this.scheduleSetupRetry(5000);
-      return false;
+    // Cheap short-circuit: if the flag is already up on-chain, skip the
+    // SetupFlow call entirely (saves one getSetupStatus round-trip).
+    try {
+      const status = await MidnightService.getSetupStatus(this.lobbyId, pid);
+      if (status.hasMaskApplied) return true;
+    } catch {
+      // If we can't read status, try the apply path — it will re-query.
     }
-
-    const err = maskResult.errorMessage ?? '';
-    if (err.includes('already applied') || err.includes('Player has already applied')) {
-      console.log('[GameSession] Mask already applied (detected via error) - continuing');
-      this.setupPhase = 'waiting_for_opponent';
+    this.notify('Setting Up', 'Applying your mask…', 120000);
+    this.addLog('🔐 Applying mask — proving…');
+    const result = await applyMyMaskFlow(this.lobbyId, pid);
+    if (result.success) {
+      this.addLog('🔐 Mask applied');
       return true;
     }
-    if (err.includes('timed out') || err.includes('NetworkError') || err.includes('fetch') ||
-        err.includes('EffectStream processing validation failed') || err.includes('Timeout')) {
-      console.log('[GameSession] Mask timed out, polling for on-chain confirmation...');
-      const confirmed = await this.pollForSetupStatus('hasMaskApplied', 30000);
-      if (confirmed) {
-        this.setupPhase = 'waiting_for_opponent';
-        return true;
-      }
-      this.notify('Setting Up', 'Retrying mask...', 10000);
-      this.scheduleSetupRetry(10000);
-      return false;
-    }
-
-    console.log(`[GameSession] Mask failed: ${err}, will retry in 5s`);
-    this.notify('Error', err || 'Mask failed', 5000);
-    this.scheduleSetupRetry(5000);
+    console.warn('[GameSession] applyMyMaskIfNeeded failed:', result.errorMessage);
     return false;
   }
 
-  /** Step 2: Deal cards. Returns false if setup should be aborted/retried. */
   private async setupDealCards(): Promise<boolean> {
     const updatedStatus = await MidnightService.getSetupStatus(this.lobbyId, this._playerId as 1 | 2);
     console.log('[GameSession] Updated setup status:', updatedStatus);
@@ -607,30 +714,24 @@ export class GameSession extends EventTarget {
       return true;
     }
 
-    // Wait for opponent to apply their mask
+    // Defensive: both masks should already be on-chain by the time we reach
+    // the game screen (enforced by the lobby-screen flow), but a stale
+    // session could sneak through. If so, bail and let the retry loop poll.
     if (!updatedStatus.opponentHasMaskApplied) {
-      console.log('[GameSession] Waiting for opponent to apply mask (WS will trigger next attempt)');
+      console.warn('[GameSession] Opponent mask missing at deal step — retrying');
       this.notify('Setting Up', 'Waiting for opponent...', 30000);
-      this.setupPhase = 'waiting_for_opponent';
+      this.scheduleSetupRetry(5000);
       return false;
     }
 
-    // Brief pause for indexer to sync after opponent's mask lands.
-    if (this.setupPhase === 'waiting_for_opponent') {
-      console.log('[GameSession] Opponent mask applied, brief sync pause...');
-      this.notify('Setting Up', 'Syncing blockchain state...', 10000);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      this.setupPhase = 'dealing';
-    }
-
-    const postSyncStatus = await MidnightService.getSetupStatus(this.lobbyId, this._playerId as 1 | 2);
-    console.log('[GameSession] Post-sync setup status:', postSyncStatus);
-
-    // V4.2 (2026-04-18): the contract no longer requires P1-deals-first.
-    // Either player can submit dealCards once both masks are on-chain.
-    // The deck-top counter serializes the two calls naturally, and
-    // `hasDealt` already dedups — no explicit ordering wait needed.
-
+    // V4.3 (2026-04-20): both browsers can submit dealCards truly in parallel.
+    // Previous V4.2 claim that "the deck-top counter serializes the two calls
+    // naturally" was incorrect — the counter is a Map-typed ledger field, so
+    // reads commit to exact values and the second tx was silently rejected
+    // with a proof-check mismatch. The circuit was rewritten to consume fixed
+    // disjoint indices (P1→0..3, P2→4..7) without touching the counter.
+    // Phase transition is now a separate startGame call — see setupStartGame.
+    //
     // Attempt dealCards with inline retry for "mask not yet on-chain" failures.
     // The batcher can take 30-60s to finalize applyMask transactions; we poll
     // until the on-chain state accepts the deal or we give up after 10 minutes.
@@ -702,112 +803,94 @@ export class GameSession extends EventTarget {
   }
 
   /**
-   * V3.3 (2026-04-17): `scoreInitialBooks` is no longer a gate for
-   * `askForCard`. We only submit the tx when the initial 4-card hand
-   * actually contains a 3-of-a-kind book; otherwise we skip entirely and
-   * return immediately so gameplay starts within seconds instead of
-   * blocking on the ~60s batcher confirmation.
+   * V4.3: Step 3 — transition phase from Setup to TurnStart.
    *
-   * The submit itself is fire-and-forget — we don't wait for either
-   * player's flag to flip. Contract auto-books any transferred book via
-   * checkAndScoreBook (asker-side) or the inline inspection in
-   * `afterGoFish`, so a player who forfeits their initial book just holds
-   * those cards for a little longer, no protocol damage.
+   * Parallel-safe dealCards (introduced in V4.3) does NOT flip phase because
+   * reading the opponent's hasDealt flag inside dealCards would commit the
+   * proof to a stale pre-state and cause one of the two parallel txs to be
+   * rejected. Instead we call the dedicated `startGame` circuit here, after
+   * both hasDealt flags are visible on-chain. Either player may trigger it;
+   * the contract self-dedups via `assert(phase == Setup)`, so both browsers
+   * racing the call is fine — whichever lands first wins, the other's
+   * "Game already started" response is mapped to success.
    *
-   * Always returns `true` (never blocks setup). Errors are reported via
-   * `notify()` but don't fail the setup flow.
+   * Exit condition: contract phase is no longer 'dealing' (Setup). That
+   * handles both "we submitted startGame" and "the opponent submitted it
+   * faster" uniformly.
    */
-  private async claimInitialBookIfAny(): Promise<boolean> {
+  private async setupStartGame(): Promise<boolean> {
     const pid = this._playerId as 1 | 2;
+    const deadlineMs = Date.now() + 10 * 60 * 1000;
 
-    if (this.initialBookSubmitted) return true;
-
-    // Best-effort short-circuit: if my flag is already true on-chain (e.g.,
-    // page reload mid-setup), don't submit again.
-    const alreadyScored = await GoFishContractService
-      .queryHasInitialBooksScored(this.lobbyId, pid)
-      .catch(() => false);
-    if (alreadyScored) {
-      this.initialBookSubmitted = true;
-      return true;
-    }
-
-    // Read the hand; abort if the ledger isn't ready yet (dealing lag).
-    let hand21: boolean[];
-    try {
-      hand21 = await GoFishContractService.queryDiscoverHand(this.lobbyId, pid);
-    } catch (err) {
-      console.warn('[GameSession] claimInitialBookIfAny: discoverHand failed, skipping:', err);
-      return true;
-    }
-
-    const bookIndices = this.computeInitialBookIndices(hand21);
-    if (bookIndices[0] === 255n) {
-      // Sentinel path — no book to claim. Skipped entirely under V3.3;
-      // contract doesn't require us to flag this.
-      console.log(`[GameSession] claimInitialBookIfAny: no initial book for pid=${pid}, skipping`);
-      return true;
-    }
-
-    this.initialBooksInProgress = true;
-    this.recomputeInFlight();
-    try {
-      this.notify('Claiming Book', 'You dealt an opening book — claiming it...', 30000);
-      this.addLog(`📚 Claiming opening book of rank ${bookIndices[0] % 7n}s...`);
-      await GoFishContractService.callScoreInitialBooks(this.lobbyId, pid, bookIndices);
-      this.initialBookSubmitted = true;
-      this.addLog('✅ Opening book claimed');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn('[GameSession] claimInitialBookIfAny failed (non-fatal):', msg);
-      // Don't fail setup — the book just stays unclaimed in hand. Transfer
-      // book scoring still works for it later if they end up trading the rank.
-    } finally {
-      this.initialBooksInProgress = false;
-      this.recomputeInFlight();
-    }
-    return true;
-  }
-
-  /** Poll both players' `hasDealt` flags until both are true, or timeout.
-   *  The contract asserts dealing-complete before scoreInitialBooks; this
-   *  ensures we don't submit before the opponent's dealCards tx has landed. */
-  private async waitForBothDealt(timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadlineMs) {
+      // Short-circuit if phase already advanced (opponent may have started).
       try {
-        const [p1, p2] = await Promise.all([
-          MidnightService.getSetupStatus(this.lobbyId, 1),
-          MidnightService.getSetupStatus(this.lobbyId, 2),
-        ]);
-        if (p1.hasDealt && p2.hasDealt) return true;
+        const gs = await MidnightService.getGameState(this.lobbyId, this.walletAddress);
+        if (gs && gs.phase !== 'dealing') {
+          console.log('[GameSession] Phase already advanced — startGame unnecessary');
+          this.adapter?.forcePoll();
+          return true;
+        }
       } catch (err) {
-        // Transient read failure — keep polling.
-        console.warn('[GameSession] waitForBothDealt: status read failed, retrying', err);
+        console.warn('[GameSession] setupStartGame getGameState probe failed', err);
       }
-      await new Promise(r => setTimeout(r, 2000));
+
+      // Require the opponent's deal to land before attempting startGame;
+      // otherwise the "Player X has not dealt" assert is a guaranteed revert
+      // that costs a full proof cycle to discover.
+      let status;
+      try {
+        status = await MidnightService.getSetupStatus(this.lobbyId, pid);
+      } catch (err) {
+        console.warn('[GameSession] setupStartGame getSetupStatus failed', err);
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+
+      if (!status.hasDealt || !status.opponentHasDealt) {
+        console.log(
+          `[GameSession] startGame waiting — my=${status.hasDealt} opp=${status.opponentHasDealt}`,
+        );
+        this.notify('Setting Up', 'Waiting for opponent to finish dealing...', 30000);
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+
+      this.notify('Setting Up', 'Starting game...', 30000);
+      const res = await MidnightService.startGame(this.lobbyId, pid);
+      if (!res.success) {
+        console.log(`[GameSession] startGame attempt failed: ${res.errorMessage}`);
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
+      }
+
+      console.log('[GameSession] startGame submitted — polling for phase advance');
+      this.notify('Setting Up', 'Start submitted — awaiting blockchain confirmation...', 60000);
+      if (await this.pollForPhaseAdvance(60000)) {
+        console.log('[GameSession] Phase advanced out of Setup — start complete');
+        this.adapter?.forcePoll();
+        return true;
+      }
+      console.warn('[GameSession] startGame submitted but phase stayed in dealing — retrying');
     }
+
+    console.warn('[GameSession] setupStartGame timed out');
+    this.notify('Error', 'Setup stuck at start — retrying', 10000);
+    this.scheduleSetupRetry(10000);
     return false;
   }
 
-  /** Given the 21-wide boolean vector from discoverHand, find any 3 cards
-   *  sharing a rank (rank = idx % 7). Returns their indices as a sorted
-   *  triple of bigints, or the sentinel [255n, 255n, 255n] for "no book". */
-  private computeInitialBookIndices(hand21: boolean[]): [bigint, bigint, bigint] {
-    const byRank = new Map<number, number[]>();
-    for (let i = 0; i < hand21.length; i++) {
-      if (!hand21[i]) continue;
-      const r = i % 7;
-      if (!byRank.has(r)) byRank.set(r, []);
-      byRank.get(r)!.push(i);
+  /** Poll for the contract phase to advance out of Setup/'dealing'. */
+  private async pollForPhaseAdvance(timeoutMs: number): Promise<boolean> {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      try {
+        const gs = await MidnightService.getGameState(this.lobbyId, this.walletAddress);
+        if (gs && gs.phase !== 'dealing') return true;
+      } catch { /* transient — keep polling */ }
+      await new Promise(r => setTimeout(r, 2000));
     }
-    for (const idxs of byRank.values()) {
-      if (idxs.length >= 3) {
-        const sorted = idxs.slice(0, 3).sort((a, b) => a - b);
-        return [BigInt(sorted[0]), BigInt(sorted[1]), BigInt(sorted[2])];
-      }
-    }
-    return [255n, 255n, 255n];
+    return false;
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -899,6 +982,87 @@ export class GameSession extends EventTarget {
   }
 
   /**
+   * Scan the current hand for a rank held 3 (or more) times. Returns the
+   * numeric rank index (0–6, where 0=A, 1=2, …, 6=7) of the first bookable
+   * rank, or null if none qualifies. The caller is responsible for turn
+   * gating — this helper is stateless.
+   */
+  private findBookableRank(hand: GameSceneState['myHand']): number | null {
+    const counts = new Map<string, number>();
+    for (const card of hand) {
+      counts.set(card.rank, (counts.get(card.rank) ?? 0) + 1);
+    }
+    for (const [rank, count] of counts) {
+      if (count >= 3) {
+        const idx = RANK_NAMES.indexOf(rank as typeof RANK_NAMES[number]);
+        if (idx >= 0) return idx;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Auto-book helper: submit `checkAndScoreBook` for `rankIndex` when it's
+   * this player's turn and they hold 3+ of that rank. Best-effort — any
+   * failure is logged and swallowed; the next state change will retrigger
+   * the same check if the book is still there.
+   *
+   * The V4+ contract treats book-scoring as optional (no longer auto-fires
+   * on turn change), so the frontend drives it proactively whenever the
+   * condition is met.
+   */
+  /**
+   * Manually kick the auto-book check against the current adapter state.
+   * Used after `runAutomaticSetup` sets `setupPhase='done'` on rejoin —
+   * the first `handleAdapterChange` already fired (gated out because setup
+   * hadn't finished yet), and the subsequent `forcePoll` sees no state
+   * change so it won't refire. This closes the gap.
+   */
+  private maybeKickAutoBook(): void {
+    if (this.scoringBookInProgress) return;
+    const state = this.getState();
+    if (!state) return;
+    const isMyTurn = state.currentTurn === state.playerId;
+    if (state.phase !== 'turn_start' || !isMyTurn) return;
+    if (state.myHand.length < 3) return;
+    const rank = this.findBookableRank(state.myHand);
+    if (rank === null) return;
+    console.log(`[GameSession] Post-setup auto-book kick: rank=${RANK_NAMES[rank]} (hand=${state.myHand.map(c => c.rank).join(',')})`);
+    void this.runAutoScoreBook(rank);
+  }
+
+  private async runAutoScoreBook(rankIndex: number): Promise<void> {
+    if (this.scoringBookInProgress) return;
+
+    this.scoringBookInProgress = true;
+    this.recomputeInFlight();
+    try {
+      const rankLabel = RANK_NAMES[rankIndex] ?? String(rankIndex);
+      this.addLog(`📚 Auto-scoring book of ${rankLabel}s...`);
+      const result = await MidnightService.checkAndScoreBook(
+        this.lobbyId,
+        this._playerId as 1 | 2,
+        rankIndex,
+      );
+      if (result.success) {
+        this.addLog(`✅ Book of ${rankLabel}s scored`);
+        // Drive the cache/menu refresh as soon as the tx lands on-chain.
+        // Without this, we'd rely on the 30s safety poll (or a WS nudge
+        // that isn't guaranteed for score-only changes), and the sidebar
+        // would show stale scores for up to half a minute.
+        await this.adapter?.pollUntilScoreChanged();
+      } else {
+        console.warn('[GameSession] runAutoScoreBook: non-success', result.errorMessage);
+      }
+    } catch (err) {
+      console.warn('[GameSession] runAutoScoreBook threw (non-fatal):', err);
+    } finally {
+      this.scoringBookInProgress = false;
+      this.recomputeInFlight();
+    }
+  }
+
+  /**
    * V3.1 bug-fix helper: after a successful respondToAsk transfer, wait for
    * phase to settle into `turn_start` (so the transferred cards are visible
    * in our hand on-chain), count the asked rank, and submit
@@ -941,7 +1105,9 @@ export class GameSession extends EventTarget {
       );
       if (result.success) {
         this.addLog(`✅ Book of ${rankLabel}s scored`);
-        void this.adapter?.forcePoll();
+        // Same as runAutoScoreBook: drive the cache/menu refresh as soon
+        // as the tx lands on-chain, rather than waiting for the 30s poll.
+        await this.adapter?.pollUntilScoreChanged();
       } else {
         console.warn('[GameSession] checkAndScoreBook returned non-success:', result.errorMessage);
       }
@@ -1054,7 +1220,7 @@ export class GameSession extends EventTarget {
    * in a terminal-looking configuration.
    */
   private async runCheckAndEndGame(): Promise<void> {
-    this.addLog('🏁 Checking for game-over (deck + hand exhaustion)');
+    this.addLog('🏁 Checking for game-over (deck + hand exhaustion)', 'system');
     try {
       const result = await MidnightService.checkAndEndGame(
         this.lobbyId,
@@ -1098,14 +1264,14 @@ export class GameSession extends EventTarget {
     this.recomputeInFlight();
     try {
       this.notify('Responding...', 'Checking hand...', 5000);
-      this.addLog('🔍 Checking hand — proving...');
+      this.addLog('🔍 Checking hand — proving...', 'response');
       const result = await MidnightService.respondToAsk(this.lobbyId, this._playerId as 1 | 2);
       if (result.success) {
         if (result.hasCards) {
-          this.addLog(`📤 Gave ${result.cardCount} card(s) to opponent`);
+          this.addLog(`📤 Gave ${result.cardCount} card(s) to opponent`, 'response');
           this.notify('Responding...', `Transferring ${result.cardCount} card(s) — waiting for chain...`, 30000);
         } else {
-          this.addLog('🎣 Go Fish — opponent draws from deck');
+          this.addLog('🎣 Go Fish — opponent draws from deck', 'response');
           this.notify('Responding...', 'Go Fish! — waiting for chain...', 30000);
         }
 
@@ -1148,7 +1314,7 @@ export class GameSession extends EventTarget {
       this.notify('Drawing...', 'Go Fish! Resolving draw...', 5000);
       this.emit('sound', { name: 'goFish' });
 
-      this.addLog('🎣 Resolving draw — proving...');
+      this.addLog('🎣 Resolving draw — proving...', 'response');
       const result = await MidnightService.afterGoFish(
         this.lobbyId,
         this._playerId as 1 | 2,
@@ -1157,7 +1323,7 @@ export class GameSession extends EventTarget {
         this.notify('Error', result.errorMessage ?? 'afterGoFish failed', 5000);
         return;
       }
-      this.addLog('🎣 Draw resolved — submitted');
+      this.addLog('🎣 Draw resolved — submitted', 'response');
 
       const handBefore = this.getState()?.myHand ?? [];
 

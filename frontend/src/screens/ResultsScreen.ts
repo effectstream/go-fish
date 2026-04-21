@@ -5,6 +5,7 @@
 import type { GoFishGameState, GoFishPlayer } from '../../../packages/shared/data-types/src/go-fish-types';
 import { GoFishGameService } from '../services/GoFishGameService';
 import { CardComponent } from '../components/Card';
+import { soundManager } from '../three/SoundManager';
 
 export class ResultsScreen {
   private gameService: GoFishGameService;
@@ -19,6 +20,15 @@ export class ResultsScreen {
   show(lobbyId: string) {
     this.lobbyId = lobbyId;
     this.render();
+    // Win/lose cue based on whether the local player won. Skipped when the
+    // game state can't be resolved (shouldn't happen, but render() already
+    // handles it by showing "Game not found").
+    const game = this.gameService.getGameState(this.lobbyId);
+    if (game && game.winner != null) {
+      const currentPlayer = this.gameService.getCurrentPlayer(this.lobbyId);
+      if (currentPlayer?.id === game.winner) soundManager.playWin();
+      else soundManager.playLose();
+    }
   }
 
   hide() {

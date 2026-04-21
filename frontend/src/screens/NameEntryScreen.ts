@@ -4,6 +4,7 @@
 
 import { GoFishGameService } from '../services/GoFishGameService';
 import * as EffectstreamBridge from '../effectstreamBridge';
+import { soundManager } from '../three/SoundManager';
 
 export class NameEntryScreen {
   private container: HTMLElement;
@@ -99,11 +100,13 @@ export class NameEntryScreen {
     const name = this.nameInput.value.trim();
 
     if (name.length === 0) {
+      soundManager.playError();
       alert('Please enter your name');
       return;
     }
 
     if (name.length < 2) {
+      soundManager.playError();
       alert('Name must be at least 2 characters');
       return;
     }
@@ -111,6 +114,7 @@ export class NameEntryScreen {
     // Persist + set player name
     localStorage.setItem(NameEntryScreen.STORAGE_KEY, name);
     this.gameService.setPlayerName(name);
+    soundManager.playSuccess();
 
     console.log('Player name set:', name);
 

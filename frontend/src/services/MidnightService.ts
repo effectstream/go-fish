@@ -216,6 +216,29 @@ export async function dealCards(
 }
 
 /**
+ * V4.3: Start game — transitions phase from Setup to TurnStart.
+ *
+ * Called after both players have confirmed their dealCards on-chain. Either
+ * player may trigger it; the contract self-deduplicates via the
+ * `phase == Setup` assertion so repeated calls land harmlessly.
+ */
+export async function startGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  if (await shouldUseOnChainAsync()) {
+    console.log("[MidnightService] startGame via on-chain");
+    return MidnightOnChainService.startGame(lobbyId, playerId);
+  }
+
+  console.log("[MidnightService] startGame via backend");
+  return callBackendAction("start_game", {
+    lobby_id: lobbyId,
+    player_id: playerId,
+  });
+}
+
+/**
  * Ask for card action
  */
 export async function askForCard(
@@ -525,6 +548,7 @@ export interface GameStateResponse {
   players: Array<{ accountId: number; name: string; walletAddress: string }>;
   myHand: Array<{ rank: number; suit: number }>;
   myBooks: string[];
+  opponentBooks?: string[];
   gameLog: string[];
   playerName?: string;
   opponentName?: string;
@@ -582,16 +606,23 @@ export async function getGameState(
     }
   }
 
-  // Get lobby metadata (players, playerId) from the Paima REST API
+  // Get lobby metadata (players, playerId) from the Paima REST API.
+  // playerId starts as 0 (sentinel for "unknown / unresolved") so callers
+  // can tell the difference between "we identified this wallet as P1" and
+  // "we don't know yet, don't run any P1-specific logic". Specifically,
+  // GameSession only caches `_playerId` when this is non-zero, so a stale
+  // pre-join poll won't lock the session to the wrong player.
   let players: GameStateResponse['players'] = [];
-  let playerId = 1;
+  let playerId = 0;
   let playerName: string | undefined;
   let opponentName: string | undefined;
+  let lobbyStatus: string | undefined;
 
   try {
     const lobbyRes = await fetch(`${BACKEND_URL}/lobby_state?lobby_id=${lobbyId}`);
     if (lobbyRes.ok) {
       const lobby = await lobbyRes.json();
+      lobbyStatus = lobby.status;
       players = (lobby.players ?? []).map((p: any, i: number) => ({
         accountId: p.account_id,
         name: p.player_name,
@@ -602,9 +633,32 @@ export async function getGameState(
       const myIndex = players.findIndex(
         (p) => p.walletAddress.toLowerCase() === wallet.toLowerCase()
       );
-      playerId = myIndex >= 0 ? myIndex + 1 : 1;
-      playerName = players[playerId - 1]?.name;
-      opponentName = players[playerId === 1 ? 1 : 0]?.name;
+      if (myIndex < 0) {
+        // Wallet not yet in players list (propagation delay between
+        // joinedLobby tx and lobby_players insert, OR a wallet switch via
+        // switchAccount that just happened). Leave playerId=0 so callers
+        // (GameSession) won't lock onto a guessed identity and submit txs
+        // as the wrong player.
+        console.warn(
+          `[MidnightService] getGameState: wallet ${wallet} not in players for lobby ${lobbyId}`,
+          'players=',
+          players.map(p => p.walletAddress),
+          '→ playerId stays unresolved (0)',
+        );
+      } else if (
+        players.length > 1 &&
+        players[0].walletAddress.toLowerCase() === players[1].walletAddress.toLowerCase()
+      ) {
+        // Both players share the same wallet address (dev-env Hardhat
+        // account collision). The findIndex above silently picks index 0.
+        console.warn(
+          `[MidnightService] getGameState: wallet collision in lobby ${lobbyId} — both players have address ${wallet}.`,
+          'Role resolution defaults to host (playerId=1); P2 will be misidentified until wallets differ.',
+        );
+      }
+      playerId = myIndex >= 0 ? myIndex + 1 : 0;
+      playerName = playerId > 0 ? players[playerId - 1]?.name : undefined;
+      opponentName = playerId > 0 ? players[playerId === 1 ? 1 : 0]?.name : undefined;
     }
   } catch { /* best-effort */ }
 
@@ -614,10 +668,18 @@ export async function getGameState(
     // booked rank live in the contract as well — those are reconstructable
     // via indices [r, r+7, r+14] when the UI needs to render actual cards.
     const RANK_LABELS = ['A', '2', '3', '4', '5', '6', '7'];
-    const myBooksVec = playerId === 1 ? contractState.booksP1 : contractState.booksP2;
-    const myBooks = myBooksVec
-      .map((b, r) => (b ? RANK_LABELS[r] : null))
-      .filter((s): s is string => s !== null);
+    const vecToRanks = (vec: boolean[]) =>
+      vec.map((b, r) => (b ? RANK_LABELS[r] : null))
+         .filter((s): s is string => s !== null);
+    // playerId === 0 means "wallet not yet resolved" — derived per-player
+    // fields aren't meaningful in that state, so return empty arrays
+    // rather than guessing as P2 (the `=== 1` ? ... : ... fallback would).
+    const myBooks = playerId === 1 ? vecToRanks(contractState.booksP1)
+                  : playerId === 2 ? vecToRanks(contractState.booksP2)
+                  : [];
+    const opponentBooks = playerId === 1 ? vecToRanks(contractState.booksP2)
+                        : playerId === 2 ? vecToRanks(contractState.booksP1)
+                        : [];
 
     return {
       lobbyId,
@@ -631,6 +693,7 @@ export async function getGameState(
       players,
       myHand: [],
       myBooks,
+      opponentBooks,
       gameLog: [],
       playerName,
       opponentName,
@@ -639,8 +702,21 @@ export async function getGameState(
     };
   }
 
-  // Game doesn't exist on-chain yet (still in EVM dealing phase).
-  // Fall back to the backend for a basic 'dealing' response.
+  // Game doesn't exist on-chain yet.
+  //
+  // If the lobby hasn't flipped to in_progress, the mask-application flow is
+  // still running on the LobbyScreen. Returning anything here — even a
+  // synthetic 'dealing' state — would cause GameStateAdapter to fire
+  // onChange, and GameSession.handleAdapterChange would then trigger
+  // runAutomaticSetup (which reads phase='dealing' as "time to deal"). That
+  // would fail the mask precondition and surface a spurious "Setup
+  // incomplete" error. Return null instead so the adapter skips this poll.
+  if (lobbyStatus !== 'in_progress') {
+    return null;
+  }
+
+  // Lobby is in_progress but contract game hasn't materialized yet — fall
+  // back to the backend's /game_state for a basic 'dealing' response.
   try {
     const response = await fetch(`${BACKEND_URL}/game_state?lobby_id=${lobbyId}&wallet=${wallet}`);
     if (response.ok) {
@@ -661,6 +737,7 @@ export async function getGameState(
     players,
     myHand: [],
     myBooks: [],
+    opponentBooks: [],
     gameLog: [],
     playerName,
     opponentName,
@@ -704,6 +781,7 @@ export const MidnightService = {
   // Actions
   applyMask,
   dealCards,
+  startGame,
   askForCard,
   respondToAsk,
   afterGoFish,

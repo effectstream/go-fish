@@ -57,6 +57,10 @@ export const CIRCUIT_K: Readonly<Record<string, number>> = Object.freeze({
   isGameOver: 9,
   partial_decryption: 12,
   respondToAsk: 15,
+  // V4.3: startGame is a small Setup → TurnStart transition circuit split out
+  // from dealCards. Estimated at k=10 pending recompile (purely ledger reads
+  // + a single phase write, similar shape to claimTimeoutWin / switchTurn).
+  startGame: 10,
   switchTurn: 10,
 });
 

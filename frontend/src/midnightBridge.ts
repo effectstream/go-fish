@@ -331,6 +331,49 @@ export async function dealCards(
 }
 
 /**
+ * V4.3: Start the game — transition phase from Setup to TurnStart.
+ *
+ * Called after both players' dealCards transactions are on-chain. The
+ * contract dedups via `assert(phase == Setup)`, so whichever caller lands
+ * first wins; the other is rejected with "Game already started" and handled
+ * as success by the caller (phase has already transitioned).
+ */
+export async function startGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] startGame(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    const result = contract.provableCircuits.startGame(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+    );
+    circuitContext = result.context;
+
+    console.log('[MidnightBridge] startGame succeeded');
+    return { success: true };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    // Self-dedup: the other player already transitioned phase — treat as success.
+    if (msg.includes('Game already started') || msg.includes('already started')) {
+      console.log('[MidnightBridge] startGame: phase already transitioned — treating as success');
+      return { success: true };
+    }
+    console.error('[MidnightBridge] startGame failed:', error);
+    return { success: false, errorMessage: msg };
+  }
+}
+
+/**
  * Ask opponent for cards of a specific rank
  */
 export async function askForCard(
@@ -742,6 +785,7 @@ export const MidnightBridge = {
   setGameContext,
   applyMask,
   dealCards,
+  startGame,
   askForCard,
   respondToAsk,
   afterGoFish,

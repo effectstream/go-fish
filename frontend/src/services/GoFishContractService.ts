@@ -257,6 +257,7 @@ async function postToBatcher(serializedTx: string, circuitId: string, meta?: { l
 const CIRCUIT_LABELS: Record<string, string> = {
   applyMask: 'applying mask',
   dealCards: 'dealing cards',
+  startGame: 'starting game',
   scoreInitialBooks: 'scoring initial book',
   askForCard: 'asking for card',
   respondToAsk: 'checking hand',
@@ -940,6 +941,23 @@ export async function callDealCards(lobbyId: string, playerId: 1 | 2): Promise<v
   await withSecrets(lobbyId, playerId, async (gameId) => {
     await callDelegated(provider, "dealCards", () =>
       contract.callTx.dealCards(gameId, BigInt(playerId)),
+      { lobbyId, playerId },
+    );
+  });
+}
+
+// V4.3: Transition Setup → TurnStart. Parallel-safe dealCards split the phase
+// write out into this separate circuit; either player calls it after both
+// hasDealt flags land on-chain. The contract self-dedups via
+// `assert(phase == Setup)`, so a second caller's tx fails cleanly — treat
+// "Game already started" as success at the caller.
+export async function callStartGame(lobbyId: string, playerId: 1 | 2): Promise<void> {
+  const addr = await getContractAddress();
+  const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
+
+  await withSecrets(lobbyId, playerId, async (gameId) => {
+    await callDelegated(provider, "startGame", () =>
+      contract.callTx.startGame(gameId, BigInt(playerId)),
       { lobbyId, playerId },
     );
   });

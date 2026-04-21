@@ -11,6 +11,7 @@
 
 import * as EffectstreamBridge from '../effectstreamBridge';
 import { MidnightService } from '../services/MidnightService';
+import { soundManager } from '../three/SoundManager';
 
 // Config from backend
 interface AppConfig {
@@ -39,7 +40,13 @@ export class WalletScreen {
 
     // Initialize the local EVM wallet automatically (no user interaction needed)
     console.log('[WalletScreen] Initializing local EVM wallet...');
-    await EffectstreamBridge.userWalletLogin();
+    try {
+      await EffectstreamBridge.userWalletLogin();
+      soundManager.playSuccess();
+    } catch (err) {
+      soundManager.playError();
+      throw err;
+    }
     console.log('[WalletScreen] Local EVM wallet ready');
 
     // In-browser Midnight wallet is auto-created (no Lace extension needed).

@@ -795,6 +795,7 @@ button {
 }
 
 .lobby-card {
+  position: relative;
   background-color: rgba(0, 0, 0, 0.4);
   border-radius: 0.5rem;
   padding: 1rem;
@@ -804,6 +805,28 @@ button {
 
 .lobby-card:hover {
   border-color: rgba(255, 255, 255, 0.2);
+}
+
+.resume-dismiss-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  font-size: 18px;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.resume-dismiss-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .lobby-card * {
@@ -840,6 +863,25 @@ button {
 .lobby-status.in_progress {
   background-color: rgba(237, 137, 54, 0.2);
   color: var(--accent-color);
+}
+
+.lobby-status.preparing {
+  background-color: rgba(160, 174, 192, 0.2);
+  color: #a0aec0;
+}
+
+.lobby-id-chip {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 0.7rem;
+  color: #a0aec0;
+  background-color: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  user-select: all;
 }
 
 .lobby-info {

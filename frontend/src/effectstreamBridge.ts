@@ -366,6 +366,40 @@ export async function closeLobby(
 }
 
 /**
+ * Host ready: flips the host_mask_applied flag on the lobby so other clients
+ * stop showing "Preparing". Submitted by the host after their Midnight
+ * applyMask confirms on-chain. State machine validates host identity and
+ * no-ops if the flag is already set.
+ */
+export async function submitHostReady(
+  lobbyId: string
+): Promise<{ success: boolean; errorMessage?: string }> {
+  const currentWallet = await ensureWallet();
+  if (!currentWallet) {
+    return { success: false, errorMessage: "Failed to initialize wallet" };
+  }
+
+  try {
+    // Grammar expects: hostReady|lobbyID
+    const params = ["hostReady", lobbyId];
+    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
+
+    if (!result.success) {
+      return { success: false, errorMessage: "Failed to submit hostReady" };
+    }
+
+    console.log('hostReady transaction submitted:', result);
+    return { success: true };
+  } catch (error) {
+    console.error('Error submitting hostReady:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
  * Get lobby state from Paima Engine API
  */
 export async function getLobbyState(
@@ -484,6 +518,7 @@ export const EffectstreamBridge = {
   createLobby,
   joinLobby,
   closeLobby,
+  submitHostReady,
   getLobbyState,
   getOpenLobbies,
   getUserLobbies,
