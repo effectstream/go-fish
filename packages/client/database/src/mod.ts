@@ -119,4 +119,14 @@ ALTER TABLE lobbies       DROP COLUMN IF EXISTS max_players;
 ALTER TABLE lobby_players DROP COLUMN IF EXISTS is_ready;
     `,
   },
+  {
+    name: "4_host_mask_applied",
+    sql: `
+-- Host applies their Midnight mask immediately after createdLobby. While the
+-- mask is still being proved / landed on-chain, the lobby is "Preparing" and
+-- cannot be joined. The host flips this flag via the hostReady grammar tx.
+ALTER TABLE lobbies
+  ADD COLUMN IF NOT EXISTS host_mask_applied BOOLEAN NOT NULL DEFAULT false;
+    `,
+  },
 ];

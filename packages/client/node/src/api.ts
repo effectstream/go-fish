@@ -105,6 +105,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
           l.status,
           l.created_at,
           l.host_account_id,
+          l.host_mask_applied,
           (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count,
           (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name,
           ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'} as is_player_in_lobby
@@ -191,6 +192,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
           l.lobby_id,
           l.lobby_name,
           l.host_account_id,
+          l.host_mask_applied,
           l.status,
           l.created_at,
           l.started_at

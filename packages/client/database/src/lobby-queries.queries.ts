@@ -196,6 +196,27 @@ const startGameIR: any = {"usedParamSet":{"lobbyId":true},"params":[{"name":"lob
 export const startGame = new PreparedQuery<IStartGameParams, IStartGameResult>(startGameIR);
 
 
+/** 'SetHostMaskApplied' parameters type */
+export type ISetHostMaskAppliedParams = {
+  lobbyId: string;
+};
+
+/** 'SetHostMaskApplied' return type */
+export type ISetHostMaskAppliedResult = any;
+
+const setHostMaskAppliedIR: any = {"usedParamSet":{"lobbyId":true},"params":[{"name":"lobbyId","required":false,"transform":{"type":"scalar"},"locs":[{"a":61,"b":68}]}],"statement":"UPDATE lobbies\nSET host_mask_applied = true\nWHERE lobby_id = :lobbyId\nRETURNING *"};
+
+/**
+ * ```
+ * UPDATE lobbies
+ * SET host_mask_applied = true
+ * WHERE lobby_id = :lobbyId
+ * RETURNING *
+ * ```
+ */
+export const setHostMaskApplied = new PreparedQuery<ISetHostMaskAppliedParams, ISetHostMaskAppliedResult>(setHostMaskAppliedIR);
+
+
 /** 'DeleteLobbyPlayers' parameters type */
 export type IDeleteLobbyPlayersParams = {
   lobbyId: string;

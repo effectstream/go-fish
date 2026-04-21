@@ -66,6 +66,12 @@ SET status = 'in_progress', started_at = CURRENT_TIMESTAMP
 WHERE lobby_id = :lobbyId AND status = 'open'
 RETURNING *;
 
+/* @name SetHostMaskApplied */
+UPDATE lobbies
+SET host_mask_applied = true
+WHERE lobby_id = :lobbyId
+RETURNING *;
+
 /* @name DeleteLobbyPlayers */
 DELETE FROM lobby_players WHERE lobby_id = :lobbyId;
 
