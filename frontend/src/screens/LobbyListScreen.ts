@@ -343,6 +343,11 @@ export class LobbyListScreen {
     const MINI_HAND_FAN_CAP = 5;
     const visibleCards = miniHand.cards.slice(0, MINI_HAND_FAN_CAP);
     const hiddenCount = Math.max(0, miniHand.total - visibleCards.length);
+    // Only render the mini-hand strip when we have authoritative data. If the
+    // real hand is unknown (no cache yet) we render NOTHING rather than
+    // fabricating placeholder cards — the strip must always match the true
+    // game state.
+    const hasMiniHand = visibleCards.length > 0 || hiddenCount > 0;
 
     return `
       <div class="lobby-card resume-card" data-lobby-id="${game.lobbyId}">
@@ -351,15 +356,17 @@ export class LobbyListScreen {
           <h3>${game.lobbyName}</h3>
           ${inFlightPill ?? (showStatusPill ? `<span class="lobby-status ${statusClass}">${statusText}</span>` : '')}
         </div>
-        <div class="mini-hand">
-          ${visibleCards.map(c => `
-            <div class="mini-card ${c.red ? 'red' : ''}">
-              <span class="mc-rank">${c.rank}</span>
-              <span class="mc-suit">${c.suit}</span>
-            </div>
-          `).join('')}
-          ${hiddenCount > 0 ? `<div class="mini-card-more">+${hiddenCount}</div>` : ''}
-        </div>
+        ${hasMiniHand ? `
+          <div class="mini-hand">
+            ${visibleCards.map(c => `
+              <div class="mini-card ${c.red ? 'red' : ''}">
+                <span class="mc-rank">${c.rank}</span>
+                <span class="mc-suit">${c.suit}</span>
+              </div>
+            `).join('')}
+            ${hiddenCount > 0 ? `<div class="mini-card-more">+${hiddenCount}</div>` : ''}
+          </div>
+        ` : ''}
         <div class="score-row">
           <div class="score-side me ${meActive ? 'active' : ''}">
             <span class="name">${meActive ? chip : ''} You</span>
@@ -408,8 +415,13 @@ export class LobbyListScreen {
       const snap = session?.getSnapshot();
       const state = snap?.state;
 
-      // Prefer session state for "live" fields; fall back to cache.
-      if (state && snap) {
+      // Prefer session state for "live" fields — BUT only when the
+      // wallet has resolved to a real player id. state.playerId === 0 is
+      // the "wallet not yet in players list" sentinel (common for a
+      // freshly-joined game before the state machine indexes the
+      // joinedLobby tx). Using state.scores[-1] in that window would
+      // yield undefined and render a broken card.
+      if (state && snap && (state.playerId === 1 || state.playerId === 2)) {
         const myIdx = state.playerId - 1;
         const oppIdx = state.playerId === 1 ? 1 : 0;
         out.push({
@@ -496,12 +508,15 @@ export class LobbyListScreen {
 
   /** Result of {@link miniHandFor} — the rendered mini-cards plus the
    *  total count, so the sidebar can show `5 cards` next to a fan of just
-   *  the first few. */
+   *  the first few. When the real hand is unknown (no cache entry yet),
+   *  returns an empty array — callers must render NO placeholders in that
+   *  case, because faking cards misleads users about the true game state. */
   private miniHandFor(lobbyId: string): {
     cards: Array<{ rank: string; suit: string; red: boolean }>;
     total: number;
-    /** True when the data is from the real-time cache, false when it's
-     *  the seeded mock (no poll has populated the cache yet). */
+    /** True when the data is from the real-time cache. False means we have
+     *  no authoritative data yet — cards will be empty and the caller must
+     *  NOT invent placeholders. */
     live: boolean;
   } {
     const cached = getCachedGame(lobbyId);
@@ -518,37 +533,7 @@ export class LobbyListScreen {
       });
       return { cards, total: cached.cards.length, live: true };
     }
-    return { cards: this.mockMiniHand(lobbyId), total: 0, live: false };
-  }
-
-  /** Deterministic mock hand derived from the lobby id. Shows 4 cards so
-   *  each Active Games card has a sensible preview without extra contract
-   *  reads. Real hand data lives in the game screen. */
-  private mockMiniHand(seedStr: string): Array<{ rank: string; suit: string; red: boolean }> {
-    // Simple string hash for deterministic seeding
-    let hash = 0;
-    for (let i = 0; i < seedStr.length; i++) {
-      hash = ((hash << 5) - hash) + seedStr.charCodeAt(i);
-      hash |= 0;
-    }
-    const RANKS = ['A', '2', '3', '4', '5', '6', '7'];
-    const SUITS = [
-      { sym: '♥', red: true },
-      { sym: '♦', red: true },
-      { sym: '♣', red: false },
-      { sym: '♠', red: false },
-    ];
-    const hand: Array<{ rank: string; suit: string; red: boolean }> = [];
-    for (let i = 0; i < 4; i++) {
-      // LCG step from the seed hash → different index per position
-      hash = (hash * 1103515245 + 12345) | 0;
-      const rIdx = Math.abs(hash) % RANKS.length;
-      hash = (hash * 1103515245 + 12345) | 0;
-      const sIdx = Math.abs(hash) % SUITS.length;
-      const s = SUITS[sIdx];
-      hand.push({ rank: RANKS[rIdx], suit: s.sym, red: s.red });
-    }
-    return hand;
+    return { cards: [], total: 0, live: false };
   }
 
   private renderLobby(lobby: Lobby): string {
