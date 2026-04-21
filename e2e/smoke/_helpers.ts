@@ -919,6 +919,22 @@ export async function runFullSetup(
     { playerId: 2 },
   );
   await waitFor(
+    "hasDealt(2)",
+    MIDNIGHT_WAIT_MS,
+    () => read<boolean>("hasDealt", gameId, 2n),
+    v => v === true,
+  );
+
+  // V4.3: dealCards no longer flips phase — call the separate startGame
+  // circuit to transition Setup → TurnStart once both hasDealt flags are on-chain.
+  console.log("\n── startGame(gameId, 1n) ──");
+  await callDelegated(
+    walletProvider,
+    "startGame:1",
+    () => contract.callTx.startGame(gameId, 1n),
+    { playerId: 1 },
+  );
+  await waitFor(
     "phase == TurnStart",
     MIDNIGHT_WAIT_MS,
     () => read<number | bigint>("getGamePhase", gameId),

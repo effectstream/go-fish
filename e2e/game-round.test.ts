@@ -13,9 +13,11 @@
  *        - initialize (V4 owner bootstrap — captures h_hashField(TEST_ADMIN_SECRET)
  *          into the contract `owner` ledger; safe to skip if already init'd
  *          with the same secret)
- *   3. Per-game setup: applyMask ×2 → dealCards ×2 → phase=TurnStart.
- *      V4.2 relaxed the dealCards P1-first constraint; we still submit in
- *      order for reproducibility. `scoreInitialBooks` is NOT mandatory
+ *   3. Per-game setup: applyMask ×2 → dealCards ×2 → startGame → phase=TurnStart.
+ *      V4.3 split the phase transition out of dealCards (so both players can
+ *      deal in parallel); we still submit in canonical P1→P2 order for
+ *      reproducibility and then call startGame once to flip the phase.
+ *      `scoreInitialBooks` is NOT mandatory
  *      (V3.3) — `askForCard` no longer gates on it. Callers that want to
  *      claim an opening book invoke `runInitialBookScoring(...)` explicitly;
  *      this test skips it.
