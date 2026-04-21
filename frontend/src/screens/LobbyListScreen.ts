@@ -408,10 +408,6 @@ export class LobbyListScreen {
       const snap = session?.getSnapshot();
       const state = snap?.state;
 
-      // Session exists but state is still null (mid-mask prep). Hide
-      // until the adapter starts returning real state.
-      if (session && !state && !cached) continue;
-
       // Prefer session state for "live" fields; fall back to cache.
       if (state && snap) {
         const myIdx = state.playerId - 1;
@@ -419,13 +415,33 @@ export class LobbyListScreen {
         out.push({
           lobbyId,
           playerId: (snap.playerId || cached?.playerId || 1) as 1 | 2,
-          lobbyName: cached?.lobbyName || lobbyId.slice(0, 12),
+          lobbyName: session?.name || cached?.lobbyName || lobbyId.slice(0, 12),
           opponentName: state.opponentName || cached?.opponentName || 'Opponent',
           myScore: state.scores[myIdx],
           opponentScore: state.scores[oppIdx],
           isMyTurn: state.currentTurn === state.playerId,
           phase: PHASE_STRING_TO_NUMBER[state.phase] ?? cached?.phase ?? 0,
           inFlight: snap.inFlight,
+        });
+        continue;
+      }
+
+      // Session with no state yet (e.g., just-joined — state poll hasn't
+      // completed, no cache entry). Render a minimal placeholder using
+      // the session's resolved display name so the user sees their
+      // newly-picked game appear on the menu right away. Fields default
+      // to "preparing" semantics.
+      if (session) {
+        out.push({
+          lobbyId,
+          playerId: (snap?.playerId || 1) as 1 | 2,
+          lobbyName: session.name || cached?.lobbyName || lobbyId.slice(0, 12),
+          opponentName: cached?.opponentName || 'Opponent',
+          myScore: cached?.myScore ?? 0,
+          opponentScore: cached?.opponentScore ?? 0,
+          isMyTurn: cached?.isMyTurn ?? false,
+          phase: cached?.phase ?? 0,
+          inFlight: snap?.inFlight ?? null,
         });
         continue;
       }

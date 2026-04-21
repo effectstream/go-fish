@@ -180,7 +180,13 @@ export class GameStateAdapter {
     // phase, just that we've moved past `currentPhase`. This is robust
     // across contract phase-flow changes (e.g., V3.1+ transfer goes
     // wait_response → turn_start directly instead of via wait_transfer).
-    let everSawCurrent = false;
+    // Seed from the current adapter state. If previousState already shows
+    // `currentPhase` (common: the handler that triggered this call just
+    // observed the transition *into* currentPhase), we only need to wait
+    // for the exit. Without this seed, a concurrent adapter poll firing
+    // between tx submit and our first `forcePoll` can race past
+    // currentPhase entirely — everSawCurrent stays false, we time out.
+    let everSawCurrent = this.previousState?.phase === currentPhase;
     while (Date.now() < deadline) {
       await this.forcePoll();
       const state = this.previousState;
@@ -202,26 +208,31 @@ export class GameStateAdapter {
   }
 
   /**
-   * Poll until EITHER player's score diverges from the snapshot observed at
-   * entry. Used after a book-scoring tx: the Midnight batcher can take up
-   * to ~30s to land the tx, and we want to drive the cache/menu refresh as
-   * soon as the contract confirms — not wait for the next 30s safety poll.
+   * Poll until EITHER player's score diverges from `baselineScores`. Used
+   * after a book-scoring tx: the Midnight batcher can take up to ~30s to
+   * land the tx, and we want to drive the cache/menu refresh as soon as
+   * the contract confirms — not wait for the next 30s safety poll.
+   *
+   * Callers MUST pass a baseline captured BEFORE submitting the tx.
+   * Relying on `this.previousState` at entry is unsafe: a concurrent
+   * adapter poll (30s interval or WS-driven) can update previousState to
+   * the post-change value between the tx submit and this call, making
+   * "score changed" trivially false and causing a 30s wait-then-timeout.
    *
    * Returns the post-change state (null on timeout).
    */
   async pollUntilScoreChanged(
+    baselineScores: [number, number],
     timeoutMs = 30_000,
     intervalMs = 2_000,
   ): Promise<GameSceneState | null> {
-    const baseline = this.previousState;
-    if (!baseline) return null;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await this.forcePoll();
       const state = this.previousState;
       if (state && (
-        state.scores[0] !== baseline.scores[0] ||
-        state.scores[1] !== baseline.scores[1]
+        state.scores[0] !== baselineScores[0] ||
+        state.scores[1] !== baselineScores[1]
       )) {
         return state;
       }

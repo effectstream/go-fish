@@ -109,6 +109,14 @@ export class GameSession extends EventTarget {
     return this._playerId;
   }
 
+  /** Display name from /lobby_state (resolved async on start). Falls back
+   *  to the raw lobby_id until resolved. Read by LobbyListScreen so the
+   *  Active Games card can render a proper name even before the session
+   *  has any game state. */
+  get name(): string {
+    return this.displayName;
+  }
+
   /** Begin polling + setup. Idempotent. */
   start(): void {
     if (this.started) return;
@@ -1036,6 +1044,10 @@ export class GameSession extends EventTarget {
 
     this.scoringBookInProgress = true;
     this.recomputeInFlight();
+    // Capture the pre-tx score BEFORE the await. Concurrent adapter polls
+    // can otherwise update previousState to the post-book score before
+    // pollUntilScoreChanged snapshots its baseline.
+    const baselineScores: [number, number] = this.getState()?.scores ?? [0, 0];
     try {
       const rankLabel = RANK_NAMES[rankIndex] ?? String(rankIndex);
       this.addLog(`📚 Auto-scoring book of ${rankLabel}s...`);
@@ -1050,7 +1062,7 @@ export class GameSession extends EventTarget {
         // Without this, we'd rely on the 30s safety poll (or a WS nudge
         // that isn't guaranteed for score-only changes), and the sidebar
         // would show stale scores for up to half a minute.
-        await this.adapter?.pollUntilScoreChanged();
+        await this.adapter?.pollUntilScoreChanged(baselineScores);
       } else {
         console.warn('[GameSession] runAutoScoreBook: non-success', result.errorMessage);
       }
@@ -1095,6 +1107,9 @@ export class GameSession extends EventTarget {
 
     this.scoringBookInProgress = true;
     this.recomputeInFlight();
+    // Capture pre-tx score before the await — see runAutoScoreBook for
+    // why: concurrent adapter polls can otherwise race past baseline.
+    const baselineScores: [number, number] = this.getState()?.scores ?? [0, 0];
     try {
       const rankLabel = RANK_NAMES[rankIndex] ?? String(rankIndex);
       this.addLog(`📚 Claiming book of ${rankLabel}s...`);
@@ -1107,7 +1122,7 @@ export class GameSession extends EventTarget {
         this.addLog(`✅ Book of ${rankLabel}s scored`);
         // Same as runAutoScoreBook: drive the cache/menu refresh as soon
         // as the tx lands on-chain, rather than waiting for the 30s poll.
-        await this.adapter?.pollUntilScoreChanged();
+        await this.adapter?.pollUntilScoreChanged(baselineScores);
       } else {
         console.warn('[GameSession] checkAndScoreBook returned non-success:', result.errorMessage);
       }

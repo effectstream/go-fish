@@ -384,9 +384,48 @@ export class GameScene {
       globalLoader.hide();
       globalLoader.setBackground(null);
     } else if (localActionRunning) {
-      // Local tx in flight — let callDelegated's foreground loader drive
-      // the message; clear any stale background waiting text.
-      globalLoader.setBackground(null);
+      // Local tx in flight. "Awaiting confirmation: X" should ONLY show
+      // while the tx is actually pending on-chain — not for the entire
+      // multi-step wait (e.g., askForCard's full flow includes the
+      // opponent's respond, which is a SEPARATE tx we shouldn't take
+      // credit for). As soon as the phase has moved past the action's
+      // pre-submit phase, the action's tx has landed → hide foreground,
+      // let the phase-based background text (below) describe the new
+      // state.
+      const myTxLanded =
+        (snapshot.askInProgress    && state.phase !== 'turn_start') ||
+        (snapshot.drawInProgress   && state.phase !== 'wait_draw_check') ||
+        (snapshot.respondInProgress && state.phase !== 'wait_response');
+      if (myTxLanded) {
+        globalLoader.hide();
+        let msg = `Waiting for ${opName}…`;
+        switch (state.phase) {
+          case 'wait_response':
+            msg = isMyTurn
+              ? `Waiting for ${opName} to respond…`
+              : `${opName} is asking — we'll respond automatically…`;
+            break;
+          case 'turn_start':
+            msg = isMyTurn ? `Your turn — preparing…` : `Waiting for ${opName} to ask…`;
+            break;
+          case 'wait_transfer':
+            msg = isMyTurn
+              ? `${opName} is transferring cards…`
+              : `Transferring cards to ${opName}…`;
+            break;
+          case 'wait_draw':
+            msg = isMyTurn ? `Drawing from the deck…` : `${opName} is drawing…`;
+            break;
+          case 'wait_draw_check':
+            msg = isMyTurn ? `Resolving your draw…` : `${opName} is drawing…`;
+            break;
+        }
+        globalLoader.setBackground('waiting', msg);
+      } else {
+        // Tx still pending — let callDelegated's foreground loader drive
+        // the "Awaiting confirmation: X" message; clear stale background.
+        globalLoader.setBackground(null);
+      }
     } else {
       // Everything else is a waiting state. Pick the most descriptive
       // message for the current phase / turn; fall back to a generic

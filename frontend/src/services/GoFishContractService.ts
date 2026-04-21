@@ -699,16 +699,42 @@ export async function queryCircuit<T = any>(
   circuitName: string,
   ...args: any[]
 ): Promise<T | null> {
-  // Always fetch fresh state from the indexer via HTTP. The WS
-  // subscription is notification-only (triggers re-queries), not a
-  // cache — this eliminates stale-state bugs entirely.
+  // One-shot convenience: fetch state + run one circuit. For batch reads
+  // (queryGameState, queryHandFromContract), prefer fetchContractState()
+  // + runCircuitOnState() so N circuits share one HTTP round-trip.
+  const cs = await fetchContractState();
+  if (!cs) return null;
+  return runCircuitOnState<T>(cs, circuitName, ...args);
+}
+
+/**
+ * Fetch the raw on-chain contract state from the indexer. One HTTP
+ * round-trip; use runCircuitOnState() to evaluate any number of
+ * impureCircuits against the returned state locally.
+ *
+ * Reusing one state across multiple reads is safe — the state is an
+ * immutable snapshot from the indexer at fetch time. Subsequent circuit
+ * evaluations produce deterministic results from that snapshot.
+ */
+export async function fetchContractState(): Promise<any | null> {
   const addr = await getContractAddress();
   const provider = getPublicDataProvider();
   const cs = await provider.queryContractState(addr as any);
+  return cs ?? null;
+}
+
+/**
+ * Evaluate an impureCircuit against an already-fetched contract state.
+ * No HTTP. Paired with fetchContractState() to avoid duplicate network
+ * round-trips when reading multiple circuits from the same snapshot.
+ */
+export function runCircuitOnState<T = any>(
+  cs: any,
+  circuitName: string,
+  ...args: any[]
+): T | null {
   if (!cs) return null;
-
   const { contract, init } = getLocalContract();
-
   try {
     const ctx = {
       currentPrivateState: init.privateState,
@@ -719,7 +745,7 @@ export async function queryCircuit<T = any>(
     const result = contract.impureCircuits[circuitName](ctx, ...args);
     return result.result as T;
   } catch (err) {
-    console.warn(`[GoFishContractService] queryCircuit(${circuitName}) failed:`, (err as Error).message);
+    console.warn(`[GoFishContractService] runCircuitOnState(${circuitName}) failed:`, (err as Error).message);
     return null;
   }
 }
@@ -755,26 +781,30 @@ export async function queryGameState(lobbyId: string): Promise<{
 } | null> {
   const gameId = lobbyIdToGameId(lobbyId);
 
-  // Check if game exists on-chain (always fresh HTTP query)
-  const exists = await queryCircuit<boolean>("doesGameExist", gameId);
+  // ONE HTTP fetch for the whole state. All 10 reads below execute
+  // locally against this snapshot. Previously each queryCircuit did its
+  // own HTTP round-trip → 10 requests per getGameState. Per-poll load
+  // dropped from ~31 requests (10 state + 21 hand) to ~2.
+  const cs = await fetchContractState();
+  if (!cs) return null;
+
+  // Check if game exists on-chain (runs on our snapshot, no network)
+  const exists = runCircuitOnState<boolean>(cs, "doesGameExist", gameId);
   if (!exists) return null;
 
-  // Read all fields in parallel. deckSize is the total deck array length
-  // (21 for this game), topCardIndex is how many have been drawn. Remaining
-  // deck count = deckSize - topCardIndex.
-  const [phase, turn, scores, sizes, gameOver, deckEmpty, deckSize, topCardIndex, books1, books2] =
-    await Promise.all([
-      queryCircuit<number | bigint>("getGamePhase", gameId),
-      queryCircuit<number | bigint>("getCurrentTurn", gameId),
-      queryCircuit<[number | bigint, number | bigint]>("getScores", gameId),
-      queryCircuit<[number | bigint, number | bigint]>("getHandSizes", gameId),
-      queryCircuit<boolean>("isGameOver", gameId),
-      queryCircuit<boolean>("isDeckEmpty", gameId),
-      queryCircuit<number | bigint>("get_deck_size", gameId),
-      queryCircuit<number | bigint>("get_top_card_index", gameId),
-      queryCircuit<boolean[]>("getBookedRanks", gameId, 1n),
-      queryCircuit<boolean[]>("getBookedRanks", gameId, 2n),
-    ]);
+  // Read all fields locally from the same snapshot. deckSize is the total
+  // deck array length (21 for this game), topCardIndex is how many have
+  // been drawn. Remaining deck count = deckSize - topCardIndex.
+  const phase       = runCircuitOnState<number | bigint>(cs, "getGamePhase", gameId);
+  const turn        = runCircuitOnState<number | bigint>(cs, "getCurrentTurn", gameId);
+  const scores      = runCircuitOnState<[number | bigint, number | bigint]>(cs, "getScores", gameId);
+  const sizes       = runCircuitOnState<[number | bigint, number | bigint]>(cs, "getHandSizes", gameId);
+  const gameOver    = runCircuitOnState<boolean>(cs, "isGameOver", gameId);
+  const deckEmpty   = runCircuitOnState<boolean>(cs, "isDeckEmpty", gameId);
+  const deckSize    = runCircuitOnState<number | bigint>(cs, "get_deck_size", gameId);
+  const topCardIndex = runCircuitOnState<number | bigint>(cs, "get_top_card_index", gameId);
+  const books1      = runCircuitOnState<boolean[]>(cs, "getBookedRanks", gameId, 1n);
+  const books2      = runCircuitOnState<boolean[]>(cs, "getBookedRanks", gameId, 2n);
 
   const deckRemaining = Math.max(0, Number(deckSize ?? 21) - Number(topCardIndex ?? 0));
   const fallbackRanks = [false, false, false, false, false, false, false];
@@ -831,10 +861,15 @@ export async function queryHandFromContract(
   }
 
   try {
+    // One HTTP fetch for the whole state, then all 21 per-card reads run
+    // locally against the same snapshot. Previously this enumeration did
+    // 21 HTTP round-trips per hand read.
+    const cs = await fetchContractState();
+    if (!cs) return [];
     const hand: number[] = [];
-    // Enumerate all 21 cards (7 ranks × 3 suits)
     for (let i = 0; i < 21; i++) {
-      const has = await queryCircuit<boolean>(
+      const has = runCircuitOnState<boolean>(
+        cs,
         "doesPlayerHaveSpecificCard",
         gameId,
         BigInt(playerId),

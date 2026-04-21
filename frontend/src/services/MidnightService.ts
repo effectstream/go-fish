@@ -512,20 +512,21 @@ export async function getSetupStatus(
   const opponentId: 1 | 2 = playerId === 1 ? 2 : 1;
   const gameId = GoFishContractService.lobbyIdToGameId(lobbyId);
 
-  // Check if game exists on-chain first. Many circuits (hasDealt, etc.)
-  // assert game existence and throw if called before applyMask creates it.
-  const exists = await GoFishContractService.queryCircuit<boolean>("doesGameExist", gameId);
-  if (!exists) {
-    // Game not on-chain yet — everything is false
+  // ONE HTTP fetch; the five circuit checks below all run locally
+  // against the same snapshot. Previously this method fired 5 separate
+  // HTTP round-trips (doesGameExist + 2× hasMaskApplied + 2× hasDealt).
+  const cs = await GoFishContractService.fetchContractState();
+  if (!cs) {
     return { hasMaskApplied: false, hasDealt: false, opponentHasMaskApplied: false, opponentHasDealt: false };
   }
-
-  // Each query does a fresh HTTP call to the indexer (no cache).
-  // Run sequentially to avoid indexer overload on parallel requests.
-  const myMask = await GoFishContractService.queryBoolCircuit("hasMaskApplied", lobbyId, playerId);
-  const oppMask = await GoFishContractService.queryBoolCircuit("hasMaskApplied", lobbyId, opponentId);
-  const myDealt = await GoFishContractService.queryBoolCircuit("hasDealt", lobbyId, playerId);
-  const oppDealt = await GoFishContractService.queryBoolCircuit("hasDealt", lobbyId, opponentId);
+  const exists = GoFishContractService.runCircuitOnState<boolean>(cs, "doesGameExist", gameId);
+  if (!exists) {
+    return { hasMaskApplied: false, hasDealt: false, opponentHasMaskApplied: false, opponentHasDealt: false };
+  }
+  const myMask  = GoFishContractService.runCircuitOnState<boolean>(cs, "hasMaskApplied", gameId, BigInt(playerId))   === true;
+  const oppMask = GoFishContractService.runCircuitOnState<boolean>(cs, "hasMaskApplied", gameId, BigInt(opponentId)) === true;
+  const myDealt  = GoFishContractService.runCircuitOnState<boolean>(cs, "hasDealt", gameId, BigInt(playerId))   === true;
+  const oppDealt = GoFishContractService.runCircuitOnState<boolean>(cs, "hasDealt", gameId, BigInt(opponentId)) === true;
 
   return {
     hasMaskApplied: myMask,
