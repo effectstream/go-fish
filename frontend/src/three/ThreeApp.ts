@@ -7,7 +7,7 @@ import { Deck3D } from './objects/Deck3D';
 import { OpponentHand } from './objects/OpponentHand';
 import { InputManager } from './InputManager';
 import { createPostProcessing } from './effects/PostProcessing';
-import { animateDeal, animateTransfer } from './animations/CardAnimations';
+import { animateDeal, animateTransfer, animateCardLeave } from './animations/CardAnimations';
 import type { EffectComposer } from 'postprocessing';
 import type { Card } from '../../../packages/shared/data-types/src/go-fish-types';
 
@@ -192,13 +192,20 @@ export class ThreeApp {
         animateDeal(added, deckLocal, restPos, 0, 0.55).catch(() => {});
       }
     } else if (roll < 0.75 && currentHand.length > 1) {
-      // REMOVE — animate the target card flying to the deck, THEN setCards
-      // without it so the remaining cards re-layout into the gap.
+      // REMOVE — two demo variants, picked 50/50 so the idle scene exercises
+      // both card-exit animations:
+      //   (a) fly-to-deck: the old "discard back into the deck" motion.
+      //   (b) leave-hand:  the opponent-takes-your-card arc from
+      //       animateCardLoss. Mirrors exactly what happens in a real game
+      //       when an ask-hit removes cards from your hand.
       const idx = Math.floor(Math.random() * currentHand.length);
       const cards3d = this.playerHand.getCards();
       const removed = cards3d[idx];
+      const removedCard = currentHand[idx]!;
       const next = currentHand.slice(0, idx).concat(currentHand.slice(idx + 1));
-      if (removed) {
+      const variant: 'deck' | 'leave' = Math.random() < 0.5 ? 'deck' : 'leave';
+
+      if (removed && variant === 'deck') {
         animateTransfer(removed, removed.mesh.position.clone(), deckLocal, 0.55)
           .then(() => {
             this.playerHand.setCards(next);
@@ -208,6 +215,13 @@ export class ThreeApp {
             this.playerHand.setCards(next);
             this.inputManager.setInteractiveCards(this.playerHand.getCards());
           });
+      } else if (removed && variant === 'leave') {
+        // Same flow GameScene uses when a real hand update removes cards:
+        // detach + arc-out via animateCardLoss, then reset the hand so the
+        // remaining cards close the fan immediately.
+        this.animateCardLoss([removedCard]);
+        this.playerHand.setCards(next);
+        this.inputManager.setInteractiveCards(this.playerHand.getCards());
       } else {
         this.playerHand.setCards(next);
         this.inputManager.setInteractiveCards(this.playerHand.getCards());
@@ -267,6 +281,36 @@ export class ThreeApp {
   setPlayerHand(cards: Card[]): void {
     this.playerHand.setCards(cards);
     this.inputManager.setInteractiveCards(this.playerHand.getCards());
+  }
+
+  /**
+   * Animate cards leaving the player's hand (taken by opponent on ask-hit,
+   * or flying to a book pile). Detaches the matching Card3D instances from
+   * the hand, reparents them to the scene so they survive the next
+   * {@link setPlayerHand} call, and runs an independent arc-out tween before
+   * disposing.
+   *
+   * Non-blocking: the caller should still invoke {@link setPlayerHand} with
+   * the new hand state immediately so the remaining cards re-layout into
+   * the gap without waiting for the animation to finish.
+   */
+  animateCardLoss(lostCards: Card[]): void {
+    if (lostCards.length === 0) return;
+    const detached = this.playerHand.detachCards(
+      (c) => lostCards.some((l) => l.rank === c.rank && l.suit === c.suit),
+    );
+    for (const card of detached) {
+      card.setInteractive(false);
+      // Reparent to the scene, preserving world transform — the next
+      // setCards call on the hand would otherwise wipe these meshes via
+      // clear().
+      this.scene.attach(card.mesh);
+      const finish = () => {
+        this.scene.remove(card.mesh);
+        card.dispose();
+      };
+      animateCardLeave(card).then(finish).catch(finish);
+    }
   }
 
   /** Update opponent's visible card count. */

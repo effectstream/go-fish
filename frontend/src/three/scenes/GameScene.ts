@@ -290,6 +290,19 @@ export class GameScene {
 
     // Update 3D objects
     if (changes.handChanged) {
+      // Animate any cards that LEFT the hand (taken by opponent, or flown
+      // to a book pile) before swapping in the new hand. Running this
+      // before setPlayerHand lets the detached Card3D instances survive
+      // the clear() via scene.attach, and setPlayerHand's re-layout still
+      // fills the gap immediately so remaining cards don't freeze mid-fan.
+      if (previous) {
+        const lost = previous.myHand.filter(
+          c => !state.myHand.some(n => n.rank === c.rank && n.suit === c.suit),
+        );
+        if (lost.length > 0) {
+          this.app.animateCardLoss(lost);
+        }
+      }
       this.app.setPlayerHand(state.myHand);
 
       // Play deal animation on first hand load — but only when we actually
@@ -701,9 +714,9 @@ export class GameScene {
       6000,
     );
 
-    // Note: The cards are already removed from the hand by setPlayerHand, so we
-    // can't animate the removed Card3D objects. The camera shake + notification
-    // provides the feedback.
+    // The visual "card leaving" animation is handled upstream in onStateChange
+    // via app.animateCardLoss() — this function covers the AUDIO + camera
+    // shake + notification layer.
   }
 
   private showBookCompletionEffect(state: GameSceneState): void {

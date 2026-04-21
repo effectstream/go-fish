@@ -129,6 +129,50 @@ export function animateTransfer(
   });
 }
 
+/**
+ * Animate a card leaving the player's hand (taken by opponent on ask-hit, or
+ * completing a book). The card arcs up + forward, spins slightly, and shrinks
+ * out. Duration is intentionally in the 800–1000ms range so the user SEES the
+ * card move rather than watching it vanish instantly.
+ */
+export function animateCardLeave(
+  card: Card3D,
+  duration: number = 0.9,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const mesh = card.mesh;
+    const start = mesh.position.clone();
+    const startRotZ = mesh.rotation.z;
+    // Arc target: up and forward (toward the opponent zone, -Z in world
+    // space). X is pulled slightly toward centre so clumps of cards don't
+    // fly out on parallel tracks.
+    const endY = start.y + 1.2;
+    const endZ = start.z - 3.5;
+    const endX = start.x * 0.3;
+
+    const tl = gsap.timeline({ onComplete: resolve });
+    tl.to(mesh.position, {
+      x: endX,
+      y: endY,
+      z: endZ,
+      duration,
+      ease: 'power2.out',
+    }, 0);
+    tl.to(mesh.rotation, {
+      z: startRotZ + 0.8,
+      duration,
+      ease: 'power2.out',
+    }, 0);
+    // Scale to near-zero in the last 40% so the card visibly shrinks away
+    // at the end of its arc rather than blinking out.
+    tl.to(mesh.scale, {
+      x: 0.01, y: 0.01, z: 0.01,
+      duration: duration * 0.4,
+      ease: 'power2.in',
+    }, duration * 0.6);
+  });
+}
+
 /** Book completion celebration — cards gather and flash. */
 export function animateBookComplete(
   cards: Card3D[],

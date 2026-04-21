@@ -41,6 +41,31 @@ export class CardHand {
     return this.cards;
   }
 
+  /**
+   * Remove matching cards from the hand WITHOUT disposing them. Returns the
+   * extracted Card3D instances so the caller can animate them out (e.g. when
+   * a card is lost to an opponent). The hand is NOT re-laid-out here — call
+   * {@link setCards} next to replace the full list, which will lay out the
+   * remaining cards into their new positions.
+   *
+   * After detaching, the Card3D meshes are still children of `this.group`.
+   * Callers that want to animate them independently of the hand should call
+   * `scene.attach(card.mesh)` to reparent while preserving world transform.
+   */
+  detachCards(predicate: (card: Card) => boolean): Card3D[] {
+    const detached: Card3D[] = [];
+    const kept: Card3D[] = [];
+    for (const c of this.cards) {
+      if (predicate(c.card)) {
+        detached.push(c);
+      } else {
+        kept.push(c);
+      }
+    }
+    this.cards = kept;
+    return detached;
+  }
+
   private layoutCards(): void {
     const count = this.cards.length;
     if (count === 0) return;
