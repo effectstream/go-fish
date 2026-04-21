@@ -49,6 +49,14 @@ const DURATION_JITTER: Record<LoaderState, number> = {
 
 const SYMBOL_COUNT = 6;
 
+/** Show "Taking more than expected…" subtitle once overtime exceeds this. */
+const OVERTIME_HINT_AFTER_MS = 2000;
+/** Switch to a longer reassurance message once overtime exceeds this. */
+const OVERTIME_HINT_LONG_AFTER_MS = 10000;
+
+const OVERTIME_HINT_SHORT = 'Taking more than expected, please wait…';
+const OVERTIME_HINT_LONG = 'Still working - please wait…';
+
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -94,12 +102,33 @@ function ensureStyles(): void {
       animation-timing-function: ease-in-out;
       will-change: transform, opacity;
     }
+    #${ROOT_ID} .gl-text-col {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
     #${ROOT_ID} .gl-message {
       color: #e8e8ee;
       font-size: 13px;
       font-weight: 500;
       white-space: nowrap;
       letter-spacing: 0.2px;
+    }
+    #${ROOT_ID} .gl-overtime-hint {
+      color: #f2b56b;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      max-width: 320px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #${ROOT_ID} .gl-overtime-hint.visible {
+      opacity: 1;
     }
     #${ROOT_ID} .gl-countdown {
       margin-left: 6px;
@@ -128,7 +157,10 @@ function ensureRoot(): HTMLDivElement {
   el.id = ROOT_ID;
   el.innerHTML = `
     <div class="gl-symbols"></div>
-    <div class="gl-message"></div>
+    <div class="gl-text-col">
+      <div class="gl-message"></div>
+      <div class="gl-overtime-hint" hidden></div>
+    </div>
     <div class="gl-countdown" hidden></div>
   `;
   document.body.appendChild(el);
@@ -325,6 +357,33 @@ class GlobalLoaderImpl {
     el.textContent = over ? `+${formatCountdown(-remaining)}` : formatCountdown(remaining);
     el.classList.toggle('gl-countdown-over', over);
     el.hidden = false;
+
+    this.updateOvertimeHint(root, over ? -remaining : 0);
+  }
+
+  /**
+   * Surface a subtitle under the loader message when the proof / send is
+   * running past its estimated duration. Threshold constants defined at top
+   * of file. Hidden (opacity 0) while under the first threshold so it doesn't
+   * flash for tiny overages.
+   */
+  private updateOvertimeHint(root: HTMLElement, overByMs: number): void {
+    const el = root.querySelector('.gl-overtime-hint') as HTMLDivElement | null;
+    if (!el) return;
+    if (overByMs < OVERTIME_HINT_AFTER_MS) {
+      el.classList.remove('visible');
+      el.hidden = true;
+      return;
+    }
+    const text = overByMs >= OVERTIME_HINT_LONG_AFTER_MS
+      ? OVERTIME_HINT_LONG
+      : OVERTIME_HINT_SHORT;
+    if (el.textContent !== text) el.textContent = text;
+    el.hidden = false;
+    // Toggle .visible on the next frame so the CSS transition plays.
+    if (!el.classList.contains('visible')) {
+      requestAnimationFrame(() => el.classList.add('visible'));
+    }
   }
 
   private hideCountdownEl(): void {
@@ -332,6 +391,11 @@ class GlobalLoaderImpl {
     if (!root) return;
     const el = root.querySelector('.gl-countdown') as HTMLDivElement | null;
     if (el) el.hidden = true;
+    const hintEl = root.querySelector('.gl-overtime-hint') as HTMLDivElement | null;
+    if (hintEl) {
+      hintEl.classList.remove('visible');
+      hintEl.hidden = true;
+    }
   }
 }
 
