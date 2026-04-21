@@ -55,6 +55,13 @@ export class GameScene {
   // deck shuffle animation on the transition edge only. null = not yet known.
   private lastWasSetup: boolean | null = null;
 
+  /** Resolved winner from the contract (0 = draw, 1 = P1, 2 = P2). Set once
+   *  isGameOver flips to true and MidnightService.getWinner resolves.
+   *  Undefined while loading or not yet game-over. */
+  private resolvedWinner: 0 | 1 | 2 | undefined = undefined;
+  /** Guard so the winner read fires at most once per game-over transition. */
+  private winnerFetchStarted = false;
+
   constructor(app: ThreeApp) {
     this.app = app;
     this.animationQueue = new AnimationQueue();
@@ -203,6 +210,8 @@ export class GameScene {
     this.pendingAskRankIndex = -1;
     this.initialDealPlayed = false;
     this.lastWasSetup = null;
+    this.winnerFetchStarted = false;
+    this.resolvedWinner = undefined;
     void this.app.stopDeckShuffle();
     turnIndicator.hide();
     globalLoader.setBackground(null);
@@ -284,6 +293,43 @@ export class GameScene {
     };
     this.hud.onSkipDrawClick = () => this.session?.skipDraw();
     this.hud.onBackToLobby = () => this.navigateToLobbyList();
+    this.hud.onConcedeClick = () => this.handleConcedeClick();
+  }
+
+  /**
+   * Fire the concede tx for the current session's player. The session's own
+   * inFlight flag + the global loader's 'proving' state ensure no double-
+   * submit. Result is observed via the normal game-state poll (phase flips
+   * to GameOver, winner field populates).
+   */
+  private async handleConcedeClick(): Promise<void> {
+    if (!this.session) return;
+    const snap = this.session.getSnapshot();
+    const pid = snap.playerId;
+    if (pid !== 1 && pid !== 2) {
+      console.warn('[GameScene] concede blocked — playerId not resolved');
+      return;
+    }
+    // Tx-in-flight guard (shared PR B7 pattern) — swallow the click with a
+    // toast if another proof/send is already running on this session.
+    const { ensureNotBusy } = await import('../../utils/txGuard');
+    if (!ensureNotBusy()) return;
+    try {
+      const { MidnightService } = await import('../../services/MidnightService');
+      const result = await MidnightService.concede(this.session.lobbyId, pid);
+      if (!result.success) {
+        console.warn('[GameScene] concede failed:', result.errorMessage);
+        this.hud.showNotification('Concede failed', result.errorMessage ?? 'Try again.', 5000);
+        return;
+      }
+      // Force a poll so the UI flips to the GameOver state without waiting
+      // for the next tick.
+      await this.session.forcePoll();
+    } catch (err) {
+      console.error('[GameScene] concede threw:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.hud.showNotification('Concede failed', msg, 5000);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -605,6 +651,33 @@ export class GameScene {
       this.showGainedCardsNotification(state, previous);
     }
 
+    // Fetch resolved winner once per game-over transition. Score-based
+    // inference doesn't work for Setup-concede (scores stay 0) or for any
+    // concede path (loser can have any score). getWinner is a pure-read
+    // circuit — one HTTP round-trip, then we cache.
+    if (state.isGameOver && !this.winnerFetchStarted) {
+      this.winnerFetchStarted = true;
+      const lobbyId = this.session?.lobbyId;
+      if (lobbyId) {
+        void (async () => {
+          try {
+            const { MidnightService } = await import('../../services/MidnightService');
+            const w = await MidnightService.getWinner(lobbyId);
+            this.resolvedWinner = w;
+            // Re-emit the current snapshot so the HUD re-renders with the
+            // newly-resolved winner without waiting for another tick.
+            this.session?.refreshSnapshot();
+          } catch (err) {
+            console.warn('[GameScene] getWinner failed:', err);
+          }
+        })();
+      }
+    } else if (!state.isGameOver && this.winnerFetchStarted) {
+      // New game / reset — clear cached winner.
+      this.winnerFetchStarted = false;
+      this.resolvedWinner = undefined;
+    }
+
     // Update HUD
     this.hud.update({
       phase: state.phase,
@@ -616,6 +689,7 @@ export class GameScene {
       // glance which game is on screen. Falls back to undefined while the
       // session's displayName is still resolving.
       lobbyName: this.session?.name,
+      playerId: state.playerId === 1 || state.playerId === 2 ? state.playerId : undefined,
       myScore: state.scores[state.playerId - 1],
       opponentScore: state.scores[state.playerId === 1 ? 1 : 0],
       myHandSize: state.handSizes[state.playerId - 1],
@@ -625,6 +699,7 @@ export class GameScene {
       opponentBooks: state.opponentBooks,
       gameLog: state.gameLog,
       isGameOver: state.isGameOver,
+      winner: this.resolvedWinner,
       respondInProgress: snapshot.respondInProgress,
       askInProgress: snapshot.askInProgress,
     });

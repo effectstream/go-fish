@@ -9,6 +9,9 @@ export interface HUDState {
   /** Human-readable lobby name resolved from /lobby_state. Rendered in the
    *  top-left slot of the turn bar. Undefined while still resolving. */
   lobbyName?: string;
+  /** Which player slot the viewer occupies (1 or 2). Used by the GameOver
+   *  result panel to pick the right you-won / you-lost copy. */
+  playerId?: 1 | 2;
   myScore: number;
   opponentScore: number;
   myHandSize: number;
@@ -18,6 +21,10 @@ export interface HUDState {
   opponentBooks: string[];
   gameLog: GameLogEntry[];
   isGameOver: boolean;
+  /** Resolved winner from the contract. 0 = draw (legitimate, e.g.
+   *  Setup-concede); 1 or 2 = that player won; undefined = not yet
+   *  fetched. Only consulted when isGameOver is true. */
+  winner?: 0 | 1 | 2;
   respondInProgress?: boolean;
   askInProgress?: boolean;
 }
@@ -68,13 +75,22 @@ export class GameHUD {
   private waitingBanner: HTMLDivElement;
   private muteBtn: HTMLButtonElement;
   private volumeSlider: HTMLInputElement;
+  private menuBtn: HTMLButtonElement;
+  private menuPopover: HTMLDivElement;
+  private modalOverlay: HTMLDivElement;
+  private menuOpen = false;
   private notificationTimeout: number | null = null;
+  /** Last phase seen by updateActionPanel — the 3-dots menu's label copy
+   *  ("Concede" vs "Close Game") depends on this. */
+  private lastPhase: string = '';
 
   // Action callbacks
   onRespondClick: (() => void) | null = null;
   onGoFishClick: (() => void) | null = null;
   onSkipDrawClick: (() => void) | null = null;
   onBackToLobby: (() => void) | null = null;
+  /** Fires when the user confirms Concede / Close Game from the 3-dots menu. */
+  onConcedeClick: (() => void) | null = null;
 
   // Opponent selection callback
   onOpponentSelected: ((opponentId: number) => void) | null = null;
@@ -234,6 +250,93 @@ export class GameHUD {
     audioGroup.appendChild(this.volumeSlider);
 
     this.container.appendChild(audioGroup);
+
+    // Three-dots `⋮` menu — top-right of the canvas. Holds destructive /
+    // rare actions (Concede, Close Game) so we don't pile more buttons
+    // onto the main HUD. Phase-dependent label handled in updateMenu().
+    this.menuBtn = document.createElement('button');
+    this.menuBtn.className = 'hud-menu-btn';
+    this.menuBtn.textContent = '⋮';
+    this.menuBtn.title = 'More actions';
+    this.menuBtn.setAttribute('aria-label', 'More actions');
+    this.menuBtn.dataset.sfx = 'none';
+    this.menuBtn.style.cssText = `
+      position: absolute; top: 10px; right: 18px;
+      width: 36px; height: 36px;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.55);
+      color: #ffcc66;
+      border: 1px solid rgba(255, 170, 0, 0.45);
+      border-radius: 10px;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      pointer-events: auto;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    `;
+    this.menuBtn.addEventListener('mouseenter', () => {
+      this.menuBtn.style.background = 'rgba(0, 0, 0, 0.75)';
+      this.menuBtn.style.borderColor = '#ffaa00';
+    });
+    this.menuBtn.addEventListener('mouseleave', () => {
+      this.menuBtn.style.background = 'rgba(0, 0, 0, 0.55)';
+      this.menuBtn.style.borderColor = 'rgba(255, 170, 0, 0.45)';
+    });
+    this.menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleMenu();
+    });
+    this.container.appendChild(this.menuBtn);
+
+    // Popover that drops down from the 3-dots button.
+    this.menuPopover = document.createElement('div');
+    this.menuPopover.className = 'hud-menu-popover';
+    this.menuPopover.style.cssText = `
+      position: absolute; top: 52px; right: 18px;
+      z-index: 21;
+      min-width: 180px;
+      background: rgba(20, 10, 20, 0.94);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(255, 170, 0, 0.45);
+      border-radius: 10px;
+      padding: 6px;
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55);
+      pointer-events: auto;
+      display: none;
+    `;
+    this.container.appendChild(this.menuPopover);
+
+    // Click outside → close popover. Attached to the container's parent
+    // (document) because the HUD itself has pointer-events: none on
+    // non-interactive areas; the capture-phase listener sees clicks before
+    // any other handler.
+    document.addEventListener('click', (e) => {
+      if (!this.menuOpen) return;
+      const target = e.target as Node | null;
+      if (target && (this.menuBtn.contains(target) || this.menuPopover.contains(target))) return;
+      this.closeMenu();
+    });
+
+    // Modal overlay — owned by the HUD so confirmations stay on top of the
+    // canvas. Hidden until showConfirmModal() populates it.
+    this.modalOverlay = document.createElement('div');
+    this.modalOverlay.className = 'hud-modal-overlay';
+    this.modalOverlay.style.cssText = `
+      position: fixed; inset: 0;
+      z-index: 50;
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(3px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    `;
+    this.modalOverlay.addEventListener('click', (e) => {
+      if (e.target === this.modalOverlay) this.hideConfirmModal();
+    });
+    this.container.appendChild(this.modalOverlay);
   }
 
   show(): void {
@@ -272,10 +375,151 @@ export class GameHUD {
   }
 
   update(state: HUDState): void {
+    this.lastPhase = state.phase;
     this.updateTurnBar(state);
     this.updateScorePanel(state);
     this.updateActionPanel(state);
     this.updateLogPanel(state);
+    this.updateMenu(state);
+  }
+
+  /**
+   * Toggle 3-dots button visibility + popover contents based on game phase.
+   * - GameOver: hide the button entirely (nothing to do).
+   * - Setup (phase === 'dealing'): label = "Close Game" (draw outcome).
+   * - Active: label = "Concede" (opponent wins).
+   */
+  private updateMenu(state: HUDState): void {
+    if (state.isGameOver) {
+      this.menuBtn.style.display = 'none';
+      this.closeMenu();
+      return;
+    }
+    this.menuBtn.style.display = 'flex';
+
+    const isSetup = state.phase === 'dealing';
+    const label = isSetup ? 'Close Game' : 'Concede';
+    this.menuPopover.innerHTML = `
+      <button class="hud-menu-item tx-guarded" data-action="concede" style="
+        display: block;
+        width: 100%;
+        background: transparent;
+        color: #ffcccc;
+        border: none;
+        padding: 10px 14px;
+        text-align: left;
+        font-size: 14px;
+        font-weight: 600;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.12s ease;
+      ">${label}</button>
+    `;
+    const itemBtn = this.menuPopover.querySelector('[data-action="concede"]') as HTMLButtonElement | null;
+    if (itemBtn) {
+      itemBtn.addEventListener('mouseenter', () => {
+        itemBtn.style.background = 'rgba(255, 60, 60, 0.18)';
+      });
+      itemBtn.addEventListener('mouseleave', () => {
+        itemBtn.style.background = 'transparent';
+      });
+      itemBtn.addEventListener('click', () => {
+        this.closeMenu();
+        this.promptConcede(isSetup);
+      });
+    }
+  }
+
+  private toggleMenu(): void {
+    if (this.menuOpen) this.closeMenu();
+    else this.openMenu();
+  }
+
+  private openMenu(): void {
+    this.menuPopover.style.display = 'block';
+    this.menuOpen = true;
+  }
+
+  private closeMenu(): void {
+    this.menuPopover.style.display = 'none';
+    this.menuOpen = false;
+  }
+
+  /** Build and show the Concede / Close Game confirmation modal. */
+  private promptConcede(isSetup: boolean): void {
+    const title = isSetup ? 'Close this game?' : 'Concede this game?';
+    const body = isSetup
+      ? 'Both players will be marked a draw. No winner, no loser.'
+      : 'Your opponent will win. This cannot be undone.';
+    const confirmLabel = isSetup ? 'Close Game' : 'Concede';
+    this.showConfirmModal({
+      title,
+      body,
+      confirmLabel,
+      danger: true,
+      onConfirm: () => {
+        this.hideConfirmModal();
+        this.onConcedeClick?.();
+      },
+    });
+  }
+
+  private showConfirmModal(opts: {
+    title: string;
+    body: string;
+    confirmLabel: string;
+    cancelLabel?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  }): void {
+    const confirmBg = opts.danger ? '#b5322c' : '#4caf50';
+    this.modalOverlay.innerHTML = `
+      <div class="hud-modal" style="
+        background: rgba(25, 15, 20, 0.96);
+        border: 1px solid rgba(255, 170, 0, 0.4);
+        border-radius: 14px;
+        padding: 22px 24px;
+        max-width: 420px;
+        color: #f0e6d0;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
+      ">
+        <h3 style="margin: 0 0 10px; color: #ffaa00; font-size: 20px;">${escapeHtml(opts.title)}</h3>
+        <p style="margin: 0 0 18px; line-height: 1.45; opacity: 0.9;">${escapeHtml(opts.body)}</p>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+          <button class="hud-modal-cancel tx-guarded" style="
+            padding: 10px 18px;
+            background: transparent;
+            color: #ccc;
+            border: 1px solid #555;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+          ">${escapeHtml(opts.cancelLabel ?? 'Cancel')}</button>
+          <button class="hud-modal-confirm tx-guarded" style="
+            padding: 10px 20px;
+            background: ${confirmBg};
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+          ">${escapeHtml(opts.confirmLabel)}</button>
+        </div>
+      </div>
+    `;
+    const confirmBtn = this.modalOverlay.querySelector('.hud-modal-confirm') as HTMLButtonElement | null;
+    const cancelBtn = this.modalOverlay.querySelector('.hud-modal-cancel') as HTMLButtonElement | null;
+    if (confirmBtn) confirmBtn.addEventListener('click', opts.onConfirm);
+    if (cancelBtn) cancelBtn.addEventListener('click', () => this.hideConfirmModal());
+    this.modalOverlay.style.display = 'flex';
+  }
+
+  private hideConfirmModal(): void {
+    this.modalOverlay.style.display = 'none';
+    this.modalOverlay.innerHTML = '';
   }
 
   private updateTurnBar(state: HUDState): void {
@@ -300,7 +544,19 @@ export class GameHUD {
     let phaseHtml: string = '';
 
     if (state.isGameOver) {
-      turnHtml = '<span style="color: #ffaa00;">Game Over!</span>';
+      // Winner-specific copy once getWinner resolves. While it's still
+      // loading (GameScene kicks off the read on the isGameOver edge),
+      // fall back to the generic "Game Over!" so the user sees something.
+      if (state.winner === 0) {
+        turnHtml = '<span style="color: #88ccff;">🤝 It\'s a Draw</span>';
+      } else if (state.winner !== undefined && state.playerId !== undefined) {
+        const won = state.winner === state.playerId;
+        turnHtml = won
+          ? '<span style="color: #b3e8a0;">🎉 You Won!</span>'
+          : '<span style="color: #ff9e9e;">😔 You Lost</span>';
+      } else {
+        turnHtml = '<span style="color: #ffaa00;">Game Over!</span>';
+      }
     } else if (state.phase === 'dealing' || (state.phase === 'turn_start' && state.myHandSize === 0)) {
       // Indexer lag: phase may flip to turn_start before cards arrive in the
       // player's hand. Keep showing "Setting Up" until the local hand is
