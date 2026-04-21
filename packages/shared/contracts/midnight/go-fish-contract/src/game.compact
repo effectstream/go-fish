@@ -34,6 +34,57 @@ import './Deck' prefix deck_;
 import './Hand' prefix hand_;
 import './GoFish' prefix go_fish_;
 
+// Re-export every submodule ledger so the top-level contract's TS Ledger
+// interface exposes them directly. Reads go through the Midnight indexer
+// (no tx needed); writes still only happen via circuits in each module.
+// Prefixes preserved — per compactc changelog, exported names are not
+// auto-camel-cased in the generated TS output.
+export {
+    // GoFish — enum
+    go_fish_GamePhase,
+    // GoFish — ledgers
+    go_fish_gameExists,
+    go_fish_currentTurn,
+    go_fish_phase,
+    go_fish_scoreP1,
+    go_fish_scoreP2,
+    go_fish_booksP1,
+    go_fish_booksP2,
+    go_fish_winner,
+    go_fish_preDrawRankCount,
+    go_fish_initialBooksScoredP1,
+    go_fish_initialBooksScoredP2,
+    go_fish_cardsDealtP1,
+    go_fish_cardsDealtP2,
+    go_fish_maskAppliedP1,
+    go_fish_maskAppliedP2,
+    go_fish_hasDealtP1,
+    go_fish_hasDealtP2,
+    go_fish_lastAskedRank,
+    go_fish_lastAskingPlayer,
+    go_fish_lastMoveAt,
+    go_fish_lastDrawnCard,
+    go_fish_playerPubKey1,
+    go_fish_playerPubKey2,
+
+    // Hand
+    hand_cardOwnership,
+    hand_handSize1,
+    hand_handSize2,
+
+    // Deck — static (shared across games)
+    deck_deckCurveToCard,
+    deck_reverseDeckCurveToCard,
+    deck_staticDeckInitialized,
+    // Deck — per-game
+    deck_gamePlayersKeysHashes,
+    deck_gamePlayersKeysInverses,
+    deck_gameDeck,
+    deck_gameDeckSize,
+    deck_gameTopCardIndex,
+    deck_gameSemiMaskedToFullyMasked
+};
+
 // Specialized divisor-by-7 witness for card-index normalization.
 // Card index = rank + suit*7 with rank in [0..6] and suit in [0..2].
 // The witness returns (suit, rank); the circuit verifies rank < 7 and
