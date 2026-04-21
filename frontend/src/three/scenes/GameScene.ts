@@ -294,6 +294,36 @@ export class GameScene {
     this.hud.onSkipDrawClick = () => this.session?.skipDraw();
     this.hud.onBackToLobby = () => this.navigateToLobbyList();
     this.hud.onConcedeClick = () => this.handleConcedeClick();
+    this.hud.onClaimTimeoutClick = () => this.handleClaimTimeoutClick();
+  }
+
+  /** Fire the claimTimeoutWin tx. Only invoked after the HUD confirms the
+   *  countdown has crossed `lastMoveAt + 605s` (5s buffer). Same guard
+   *  pattern as handleConcedeClick. */
+  private async handleClaimTimeoutClick(): Promise<void> {
+    if (!this.session) return;
+    const snap = this.session.getSnapshot();
+    const pid = snap.playerId;
+    if (pid !== 1 && pid !== 2) {
+      console.warn('[GameScene] claimTimeoutWin blocked — playerId not resolved');
+      return;
+    }
+    const { ensureNotBusy } = await import('../../utils/txGuard');
+    if (!ensureNotBusy()) return;
+    try {
+      const { MidnightService } = await import('../../services/MidnightService');
+      const result = await MidnightService.claimTimeoutWin(this.session.lobbyId, pid);
+      if (!result.success) {
+        console.warn('[GameScene] claimTimeoutWin failed:', result.errorMessage);
+        this.hud.showNotification('Claim failed', result.errorMessage ?? 'Try again.', 5000);
+        return;
+      }
+      await this.session.forcePoll();
+    } catch (err) {
+      console.error('[GameScene] claimTimeoutWin threw:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.hud.showNotification('Claim failed', msg, 5000);
+    }
   }
 
   /**
@@ -700,6 +730,11 @@ export class GameScene {
       gameLog: state.gameLog,
       isGameOver: state.isGameOver,
       winner: this.resolvedWinner,
+      lastMoveAt: state.lastMoveAt,
+      // 600s matches the contract's TURN_TIMEOUT. Hard-coding here keeps
+      // the HUD one query lighter per poll tick — the value only changes
+      // when the contract is re-deployed.
+      turnTimeoutSecs: 600,
       respondInProgress: snapshot.respondInProgress,
       askInProgress: snapshot.askInProgress,
     });

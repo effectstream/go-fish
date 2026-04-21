@@ -25,6 +25,13 @@ export interface HUDState {
    *  Setup-concede); 1 or 2 = that player won; undefined = not yet
    *  fetched. Only consulted when isGameOver is true. */
   winner?: 0 | 1 | 2;
+  /** Unix seconds (contract time) of the last game-progressing move. Used
+   *  by the countdown pill to compute remaining time before the opponent
+   *  can be claimed timeout against. 0 = read failed / no move yet. */
+  lastMoveAt?: number;
+  /** Turn timeout in seconds. Contract constant (600) but surfaced in
+   *  HUDState so the HUD doesn't hard-code it. */
+  turnTimeoutSecs?: number;
   respondInProgress?: boolean;
   askInProgress?: boolean;
 }
@@ -78,6 +85,12 @@ export class GameHUD {
   private menuBtn: HTMLButtonElement;
   private menuPopover: HTMLDivElement;
   private modalOverlay: HTMLDivElement;
+  private countdownPill: HTMLDivElement;
+  private countdownTimer: number | null = null;
+  /** Latest HUDState cached for the countdown ticker between `update()` calls
+   *  so the pill can interpolate with Date.now() at 200ms without waiting
+   *  for a full adapter poll. */
+  private lastState: HUDState | null = null;
   private menuOpen = false;
   private notificationTimeout: number | null = null;
   /** Last phase seen by updateActionPanel — the 3-dots menu's label copy
@@ -91,6 +104,8 @@ export class GameHUD {
   onBackToLobby: (() => void) | null = null;
   /** Fires when the user confirms Concede / Close Game from the 3-dots menu. */
   onConcedeClick: (() => void) | null = null;
+  /** Fires when the user confirms Claim Win from the timeout pill. */
+  onClaimTimeoutClick: (() => void) | null = null;
 
   // Opponent selection callback
   onOpponentSelected: ((opponentId: number) => void) | null = null;
@@ -319,6 +334,36 @@ export class GameHUD {
       this.closeMenu();
     });
 
+    // Timeout-countdown pill — top-center under the turn bar. Hidden by
+    // default; shown only when the opponent is the active player AND we
+    // have a valid lastMoveAt. Transforms into a Claim Win button once the
+    // countdown crosses `-CLAIM_BUFFER_SECS` (wall-clock buffer over the
+    // contract's 600s check).
+    this.countdownPill = document.createElement('div');
+    this.countdownPill.className = 'hud-countdown-pill';
+    this.countdownPill.style.cssText = `
+      position: absolute;
+      top: 100px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 15;
+      padding: 8px 18px;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255, 170, 0, 0.45);
+      border-radius: 999px;
+      color: #ffd88a;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      pointer-events: auto;
+      display: none;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    `;
+    this.container.appendChild(this.countdownPill);
+
     // Modal overlay — owned by the HUD so confirmations stay on top of the
     // canvas. Hidden until showConfirmModal() populates it.
     this.modalOverlay = document.createElement('div');
@@ -372,15 +417,137 @@ export class GameHUD {
 
   hide(): void {
     this.container.remove();
+    this.stopCountdownTicker();
   }
 
   update(state: HUDState): void {
     this.lastPhase = state.phase;
+    this.lastState = state;
     this.updateTurnBar(state);
     this.updateScorePanel(state);
     this.updateActionPanel(state);
     this.updateLogPanel(state);
     this.updateMenu(state);
+    this.updateCountdown();
+    this.ensureCountdownTicker();
+  }
+
+  /**
+   * Start the 200ms countdown ticker if not already running. Keeps the
+   * pill text fresh between adapter polls (which can be 5–10s apart) by
+   * interpolating with Date.now(). Stopped on hide/dispose.
+   */
+  private ensureCountdownTicker(): void {
+    if (this.countdownTimer !== null) return;
+    this.countdownTimer = window.setInterval(() => this.updateCountdown(), 200);
+  }
+
+  private stopCountdownTicker(): void {
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+  }
+
+  /**
+   * Re-render the timeout-countdown pill against the last HUDState and the
+   * current wall clock. Shows:
+   *   - nothing, when it's my turn, mid-setup, mid-game-over, or lastMoveAt is unset
+   *   - "⏳ Opponent times out in M:SS" while remaining > 60s
+   *   - "⏳ Opponent times out in X.Xs" while 5 ≤ remaining ≤ 60
+   *   - "Claim Win" button once remaining ≤ -CLAIM_BUFFER_SECS (5s buffer
+   *     over the 600s contract check, so the tx doesn't deterministically
+   *     revert).
+   */
+  private updateCountdown(): void {
+    const state = this.lastState;
+    if (!state) {
+      this.countdownPill.style.display = 'none';
+      return;
+    }
+    const canClaim =
+      !state.isGameOver &&
+      state.phase !== 'dealing' &&
+      state.playerId !== undefined &&
+      state.lastMoveAt !== undefined &&
+      state.lastMoveAt > 0;
+
+    if (!canClaim) {
+      this.countdownPill.style.display = 'none';
+      return;
+    }
+
+    // Only show on the opponent's turn. If it's my turn, I'm the one being
+    // timed — showing this would be self-incrimination.
+    if (state.isMyTurn) {
+      this.countdownPill.style.display = 'none';
+      return;
+    }
+
+    const TURN_TIMEOUT_SECS = state.turnTimeoutSecs ?? 600;
+    const CLAIM_BUFFER_SECS = 5;
+    const nowSecs = Date.now() / 1000;
+    const elapsed = nowSecs - state.lastMoveAt!;
+    const remaining = TURN_TIMEOUT_SECS - elapsed;
+
+    const canClaimNow = remaining <= -CLAIM_BUFFER_SECS;
+
+    if (canClaimNow) {
+      this.countdownPill.style.background = 'rgba(181, 50, 44, 0.95)';
+      this.countdownPill.style.borderColor = '#ff6b6b';
+      this.countdownPill.style.color = '#ffffff';
+      this.countdownPill.style.padding = '0';
+      this.countdownPill.innerHTML = `
+        <button class="hud-claim-win-btn tx-guarded" style="
+          all: unset;
+          cursor: pointer;
+          padding: 10px 22px;
+          font-size: 14px;
+          font-weight: 700;
+          letter-spacing: 0.3px;
+          color: #ffffff;
+          display: inline-block;
+        ">⚡ Claim Win (Opponent timed out)</button>
+      `;
+      const btn = this.countdownPill.querySelector('.hud-claim-win-btn') as HTMLButtonElement | null;
+      if (btn) {
+        btn.addEventListener('click', () => this.promptClaimTimeoutWin());
+      }
+      this.countdownPill.style.display = 'block';
+      return;
+    }
+
+    // Still counting down — render the pill text.
+    this.countdownPill.style.background = 'rgba(0, 0, 0, 0.75)';
+    this.countdownPill.style.borderColor = 'rgba(255, 170, 0, 0.45)';
+    this.countdownPill.style.color = '#ffd88a';
+    this.countdownPill.style.padding = '8px 18px';
+
+    let text: string;
+    if (remaining > 60) {
+      const mins = Math.floor(remaining / 60);
+      const secs = Math.floor(remaining - mins * 60);
+      text = `${mins}:${secs.toString().padStart(2, '0')}`;
+    } else {
+      // Under a minute — one-decimal-second for visible tension.
+      const clamped = Math.max(0, remaining);
+      text = `${clamped.toFixed(1)}s`;
+    }
+    this.countdownPill.textContent = `⏳ ${state.opponentName || 'Opponent'} times out in ${text}`;
+    this.countdownPill.style.display = 'block';
+  }
+
+  private promptClaimTimeoutWin(): void {
+    this.showConfirmModal({
+      title: 'Claim the win?',
+      body: 'Your opponent has been inactive past the turn timeout. Claiming will end the game with you as the winner.',
+      confirmLabel: 'Claim Win',
+      danger: false,
+      onConfirm: () => {
+        this.hideConfirmModal();
+        this.onClaimTimeoutClick?.();
+      },
+    });
   }
 
   /**

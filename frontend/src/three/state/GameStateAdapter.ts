@@ -29,6 +29,10 @@ export interface GameSceneState {
   gameLog: GameLogEntry[];
   /** Last rank asked on-chain (numeric index 0–6). null when no ask in progress. */
   lastAskedRank: number | null;
+  /** Unix seconds — contract timestamp of the most recent game-progressing
+   *  move (set on ask / respond / draw / etc.). Drives the turn-timeout
+   *  countdown. 0 = never moved or read failed. */
+  lastMoveAt: number;
 }
 
 export type GameStateChangeHandler = (
@@ -320,6 +324,15 @@ export class GameStateAdapter {
       const myPlayer = players[rawState.playerId - 1];
       const opponentPlayer = players[rawState.playerId === 1 ? 1 : 0];
 
+      // Pull lastMoveAt from the contract in parallel with the rest of the
+      // poll. Swallow errors — 0 just disables the countdown for this tick.
+      let lastMoveAt = 0;
+      try {
+        lastMoveAt = await MidnightService.getLastMoveAt(this.lobbyId);
+      } catch (err) {
+        console.warn('[GameStateAdapter] getLastMoveAt failed:', err instanceof Error ? err.message : String(err));
+      }
+
       const current: GameSceneState = {
         phase: rawState.phase ?? 'dealing',
         playerId: rawState.playerId,
@@ -335,6 +348,7 @@ export class GameStateAdapter {
         opponentName: opponentPlayer?.name ?? 'Opponent',
         gameLog: this.gameLog,
         lastAskedRank: (rawState.lastAskedRank as number | null | undefined) ?? null,
+        lastMoveAt,
       };
 
       const changes = this.detectChanges(current, this.previousState);
