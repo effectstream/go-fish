@@ -98,6 +98,15 @@ export class GameScene {
     // the 3D scene paints the right hand/deck before the next poll returns.
     this.hydrateFromSession(session);
 
+    // Force a stateChange emission from the current snapshot so the HUD /
+    // loader / turn indicator render immediately. Without this, if the
+    // next poll returns an unchanged state (common when swapping to a
+    // stable background session), `detectChanges` finds no diff and
+    // silently drops the update — leaving the loader and turn indicator
+    // blank. The invariant we want: while on a game, one of Proving /
+    // Awaiting TX / Waiting for Player / Your Turn is ALWAYS showing.
+    session.refreshSnapshot();
+
     // Force a poll so we get a fresh stateChange shortly. Background
     // sessions keep polling on their own timer, but the user expects snappy
     // feedback when they switch to one.

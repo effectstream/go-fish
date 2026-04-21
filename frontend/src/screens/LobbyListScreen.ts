@@ -817,6 +817,15 @@ export class LobbyListScreen {
             console.warn('[LobbyListScreen] getOrCreate after join failed:', err);
           }
         }
+        // IMPORTANT: clear the pending-join flag BEFORE dispatching
+        // navigate. `dispatchEvent` is synchronous and UIManager's
+        // listener will call `show()` → `render()` before this function
+        // returns. If pendingJoinLobbyId is still set, render bails early
+        // (guard meant to prevent re-enabling the Join button during a
+        // join). Since show() clears container.innerHTML first, bailing
+        // would leave the sidebar blank until the next event-driven
+        // re-render.
+        this.pendingJoinLobbyId = null;
         // Stay on the lobby list. The guest's LobbyScreen used to be where
         // applyMask(P2) ran — that now lives inside GameSession, so the
         // screen has no job on the guest side. The Active Games card will

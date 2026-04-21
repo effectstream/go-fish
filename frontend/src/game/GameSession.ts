@@ -92,6 +92,11 @@ export class GameSession extends EventTarget {
    *  cleared in finally. */
   private setupInProgress = false;
 
+  /** Dedup key for {@link logWaitingFor}. Same key in a row is a no-op;
+   *  different key appends a new log line. Cleared when a non-waiting log
+   *  fires so re-entering the same waiting state later re-logs once. */
+  private lastWaitingForKey: string | null = null;
+
   /** Display name from /lobby_state, resolved once at start(). Used by
    *  cache writes so the Active Games card shows "Alice's Lobby" instead
    *  of the raw lobby_id. Falls back to the lobby_id if the fetch fails
@@ -198,7 +203,24 @@ export class GameSession extends EventTarget {
   /** Push a timestamped line to the game log. The next state emission will
    *  include it (adapter's log is the source of truth for the view). */
   addLog(msg: string, source: 'action' | 'response' | 'system' = 'action'): void {
+    // Any non-waiting log resets the dedup key so a later waiting state with
+    // the same key can re-log once (e.g., we moved past "waiting for opp mask"
+    // and later re-enter "waiting for opp deal" — unrelated, both should log).
+    this.lastWaitingForKey = null;
     this.adapter?.addLog(msg, source);
+  }
+
+  /**
+   * Log a "waiting for opponent to X" canvas entry, deduplicated so a polling
+   * loop that repeatedly hits the same waiting branch only writes one line.
+   * `key` is the dedup identifier (e.g. 'opp-mask'); `message` is the log
+   * text. Calling {@link addLog} clears the dedup key so unrelated waiting
+   * states later will log again.
+   */
+  private logWaitingFor(key: string, message: string): void {
+    if (this.lastWaitingForKey === key) return;
+    this.lastWaitingForKey = key;
+    this.adapter?.addLog(message, 'system');
   }
 
   async forcePoll(): Promise<void> {
@@ -218,6 +240,43 @@ export class GameSession extends EventTarget {
 
   private notify(title: string, message: string, durationMs: number): void {
     this.emit('notification', { title, message, durationMs });
+  }
+
+  /**
+   * Public wrapper around `emitSnapshotRefresh` — called by GameScene
+   * after attaching to a session so the HUD / loader / turn indicator
+   * render from the current snapshot without waiting for the next real
+   * state change (which may not come if nothing on-chain has moved).
+   */
+  refreshSnapshot(): void {
+    this.emitSnapshotRefresh();
+  }
+
+  /**
+   * Fire a `stateChange` event with the current state and empty `changes`.
+   * Used when a *session-local* field (e.g., setupPhase) flips but the
+   * on-chain state is unchanged — the adapter's detectChanges would drop
+   * such an update, but subscribers (GameScene) need to re-render so
+   * their rendering logic sees the new snapshot. No-op if no state yet.
+   */
+  private emitSnapshotRefresh(): void {
+    const state = this.getState();
+    if (!state) return;
+    this.emit('stateChange', {
+      current: state,
+      previous: state,
+      changes: {
+        phaseChanged: false,
+        turnChanged: false,
+        handChanged: false,
+        scoresChanged: false,
+        handSizesChanged: false,
+        deckCountChanged: false,
+        gameLogChanged: false,
+        gameOver: false,
+      },
+      snapshot: this.getSnapshot(),
+    });
   }
 
   private showBanner(message: string | null): void {
@@ -639,11 +698,15 @@ export class GameSession extends EventTarget {
       console.log(
         `[GameSession] Waiting for masks (mine=${status.hasMaskApplied}, opp=${status.opponentHasMaskApplied}) — staying idle`,
       );
+      if (!status.opponentHasMaskApplied) {
+        this.logWaitingFor('opp-mask', '⏳ Waiting for opponent to apply their mask…');
+      }
       return;
     }
 
     // Both masks on-chain — proceed with dealing.
     this.setupPhase = 'dealing';
+    this.addLog('🎴 Both masks applied — dealing cards', 'system');
 
     try {
       console.log(`[GameSession] Starting automatic setup... lobbyId=${this.lobbyId}, myPlayerId=${this._playerId}`);
@@ -663,6 +726,14 @@ export class GameSession extends EventTarget {
 
       console.log('[GameSession] Automatic setup complete!');
       this.setupPhase = 'done';
+      // On rejoin of an already-set-up game, the follow-up forcePoll
+      // returns a state identical to the initial poll — detectChanges
+      // finds no diff, so the adapter silently drops the update. The
+      // view then never re-renders with setupPhase='done' and stays
+      // showing "Your turn — preparing…" despite the game being ready.
+      // Fire an explicit snapshot event so subscribers refresh regardless
+      // of whether on-chain state moved.
+      this.emitSnapshotRefresh();
       this.adapter?.forcePoll();
       // On rejoin, the first handleAdapterChange already fired (with
       // previous===null) while setupPhase was still 'idle' — so the
@@ -698,17 +769,21 @@ export class GameSession extends EventTarget {
     // SetupFlow call entirely (saves one getSetupStatus round-trip).
     try {
       const status = await MidnightService.getSetupStatus(this.lobbyId, pid);
-      if (status.hasMaskApplied) return true;
+      if (status.hasMaskApplied) {
+        this.addLog('🔐 Your mask is already on-chain', 'system');
+        return true;
+      }
     } catch {
       // If we can't read status, try the apply path — it will re-query.
     }
     this.notify('Setting Up', 'Applying your mask…', 120000);
-    this.addLog('🔐 Applying mask — proving…');
+    this.addLog('🔐 Applying your mask — proving locally…');
     const result = await applyMyMaskFlow(this.lobbyId, pid);
     if (result.success) {
-      this.addLog('🔐 Mask applied');
+      this.addLog('🔐 Your mask applied');
       return true;
     }
+    this.addLog(`⚠️ Mask apply failed: ${result.errorMessage ?? 'unknown error'} — retrying`, 'system');
     console.warn('[GameSession] applyMyMaskIfNeeded failed:', result.errorMessage);
     return false;
   }
@@ -719,6 +794,7 @@ export class GameSession extends EventTarget {
 
     if (updatedStatus.hasDealt) {
       console.log('[GameSession] Cards already dealt, skipping');
+      this.addLog('🎴 Your deal is already on-chain', 'system');
       return true;
     }
 
@@ -728,6 +804,7 @@ export class GameSession extends EventTarget {
     if (!updatedStatus.opponentHasMaskApplied) {
       console.warn('[GameSession] Opponent mask missing at deal step — retrying');
       this.notify('Setting Up', 'Waiting for opponent...', 30000);
+      this.logWaitingFor('opp-mask-deal', '⏳ Waiting for opponent\'s mask before dealing…');
       this.scheduleSetupRetry(5000);
       return false;
     }
@@ -750,16 +827,23 @@ export class GameSession extends EventTarget {
 
     const dealDeadlineMs = Date.now() + 10 * 60 * 1000; // 10 minute deadline (batcher retry can take 90s+)
     let lastErr = '';
+    let dealAttempted = false;
     while (Date.now() < dealDeadlineMs) {
       this.notify('Setting Up', 'Dealing cards...', 30000);
+      if (!dealAttempted) {
+        this.addLog('🎴 Dealing cards — this can take up to a minute…');
+        dealAttempted = true;
+      }
       const dealResult = await MidnightService.dealCards(this.lobbyId, pid, secretHex, seedHex);
 
       if (dealResult.success) {
         console.log('[GameSession] Cards submitted to batcher, waiting for on-chain confirmation...');
         this.notify('Setting Up', 'Cards submitted — waiting for blockchain confirmation...', 120000);
+        this.addLog('🎴 Deal submitted — waiting for blockchain confirmation…', 'system');
         const confirmed = await this.pollForSetupStatus('hasDealt', 120000);
         if (confirmed) {
           console.log('[GameSession] Cards dealt and confirmed on-chain — forcing adapter poll so both browsers sync');
+          this.addLog('🎴 Your deal confirmed on-chain');
           this.adapter?.forcePoll(); // Trigger state refresh for WS listeners
           return true;
         }
@@ -860,22 +944,29 @@ export class GameSession extends EventTarget {
           `[GameSession] startGame waiting — my=${status.hasDealt} opp=${status.opponentHasDealt}`,
         );
         this.notify('Setting Up', 'Waiting for opponent to finish dealing...', 30000);
+        if (!status.opponentHasDealt) {
+          this.logWaitingFor('opp-deal', '⏳ Waiting for opponent to finish dealing…');
+        }
         await new Promise(r => setTimeout(r, 3000));
         continue;
       }
 
       this.notify('Setting Up', 'Starting game...', 30000);
+      this.addLog('▶️ Both deals on-chain — starting game…');
       const res = await MidnightService.startGame(this.lobbyId, pid);
       if (!res.success) {
         console.log(`[GameSession] startGame attempt failed: ${res.errorMessage}`);
+        this.addLog(`⚠️ Start attempt failed: ${res.errorMessage ?? 'unknown'} — retrying`, 'system');
         await new Promise(r => setTimeout(r, 5000));
         continue;
       }
 
       console.log('[GameSession] startGame submitted — polling for phase advance');
       this.notify('Setting Up', 'Start submitted — awaiting blockchain confirmation...', 60000);
+      this.addLog('▶️ Start submitted — waiting for blockchain confirmation…', 'system');
       if (await this.pollForPhaseAdvance(60000)) {
         console.log('[GameSession] Phase advanced out of Setup — start complete');
+        this.addLog('✅ Game started!', 'system');
         this.adapter?.forcePoll();
         return true;
       }
