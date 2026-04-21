@@ -71,6 +71,15 @@ export class Deck3D {
 
   get glowing(): boolean { return this._glowing; }
 
+  /**
+   * Returns the individual card-back meshes in the stack (bottom-to-top
+   * order). Used by the shuffle animation orchestrator during Setup; must
+   * be called AFTER setCount or the stack will be empty.
+   */
+  getCardMeshes(): THREE.Mesh[] {
+    return this.cardMeshes;
+  }
+
   /** Update the visual representation based on remaining card count. */
   setCount(count: number): void {
     this.clear();

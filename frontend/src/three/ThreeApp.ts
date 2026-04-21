@@ -8,6 +8,7 @@ import { OpponentHand } from './objects/OpponentHand';
 import { InputManager } from './InputManager';
 import { createPostProcessing } from './effects/PostProcessing';
 import { animateDeal, animateTransfer, animateCardLeave } from './animations/CardAnimations';
+import { startShuffleLoop } from './animations/ShuffleAnimations';
 import type { EffectComposer } from 'postprocessing';
 import type { Card } from '../../../packages/shared/data-types/src/go-fish-types';
 
@@ -318,6 +319,39 @@ export class ThreeApp {
     this.opponentHand.setCardCount(count);
   }
 
+  private deckShuffleStopFn: (() => Promise<void>) | null = null;
+
+  /**
+   * Begin an indefinite shuffle animation on the deck. If a shuffle is
+   * already running, it is torn down first so the new loop captures the
+   * current deck meshes (setDeckCount rebuilds them, invalidating the prior
+   * snapshot). Used during Setup to keep the scene alive while proofs
+   * generate.
+   */
+  startDeckShuffle(): void {
+    if (this.deckShuffleStopFn) {
+      const old = this.deckShuffleStopFn;
+      this.deckShuffleStopFn = null;
+      // Don't await — old tweens target meshes the deck has replaced and
+      // don't render anyway. Letting them drain in the background is fine.
+      void old();
+    }
+    const meshes = this.deck.getCardMeshes();
+    if (meshes.length === 0) return;
+    this.deckShuffleStopFn = startShuffleLoop(meshes);
+  }
+
+  /**
+   * Halt the shuffle loop. Resolves once the current variant has been killed
+   * and every deck mesh has settled back to its rest pose (≤350ms). Safe to
+   * call even when no shuffle is running.
+   */
+  async stopDeckShuffle(): Promise<void> {
+    const stop = this.deckShuffleStopFn;
+    this.deckShuffleStopFn = null;
+    if (stop) await stop();
+  }
+
   /** Update opponent's name. */
   setOpponentName(name: string): void {
     this.opponentHand.setName(name);
@@ -328,9 +362,13 @@ export class ThreeApp {
     this.opponentHand.setHighlighted(highlighted);
   }
 
-  /** Update deck count. */
+  /** Update deck count. If a deck shuffle is currently running, restart it
+   *  so the loop captures the fresh card meshes (Deck3D.setCount disposes
+   *  and rebuilds them). */
   setDeckCount(count: number): void {
+    const wasShuffling = this.deckShuffleStopFn !== null;
     this.deck.setCount(count);
+    if (wasShuffling) this.startDeckShuffle();
   }
 
   /** Enable or disable pulsing glow on the deck (e.g., during draw phase). */

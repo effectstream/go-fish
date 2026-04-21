@@ -51,6 +51,10 @@ export class GameScene {
   // First-hand animation guard — prevents replaying the deal on rejoin.
   private initialDealPlayed = false;
 
+  // Tracks the last-observed "phase === dealing" state so we start/stop the
+  // deck shuffle animation on the transition edge only. null = not yet known.
+  private lastWasSetup: boolean | null = null;
+
   constructor(app: ThreeApp) {
     this.app = app;
     this.animationQueue = new AnimationQueue();
@@ -135,6 +139,23 @@ export class GameScene {
     this.pendingAskRankIndex = -1;
     this.initialDealPlayed = false;
 
+    // Reset scene to a clean pre-setup state. The idle/demo animation leaves
+    // random cards in the player hand and a drifting deck count; without
+    // this reset, a freshly-created game shows a phantom hand until the
+    // first real state arrives.
+    this.app.setPlayerHand([]);
+    this.app.setOpponentCardCount(0);
+    this.app.setDeckCount(21);
+
+    // Kick off the shuffle animation immediately. Setup can run for 30–90s
+    // before any on-chain state arrives (host's applyMask → wait for P2 →
+    // dealCards), so we cannot wait for `state.phase === 'dealing'` — the
+    // contract state stays null for the host's entire pre-join window.
+    // onStateChange / hydrateFromSession will stop the shuffle once setup
+    // reports done.
+    this.lastWasSetup = true;
+    this.app.startDeckShuffle();
+
     this.hud.show();
     this.hud.hideWaitingBanner();
 
@@ -181,6 +202,8 @@ export class GameScene {
     this.pendingAskRank = null;
     this.pendingAskRankIndex = -1;
     this.initialDealPlayed = false;
+    this.lastWasSetup = null;
+    void this.app.stopDeckShuffle();
     turnIndicator.hide();
     globalLoader.setBackground(null);
     this.hud.hideWaitingBanner();
@@ -209,6 +232,15 @@ export class GameScene {
     this.app.setOpponentCardCount(state.handSizes[opponentIdx]);
     this.app.setDeckCount(state.deckCount);
     this.app.setOpponentName(state.opponentName);
+
+    // Shuffle is started in mount(). If we're attaching to an already-in-
+    // progress game (past Setup), stop it here so we don't flash the
+    // shuffle animation before the deal animation fires.
+    const setupDone = state.phase !== 'dealing' && state.myHand.length > 0;
+    if (setupDone && this.lastWasSetup === true) {
+      this.lastWasSetup = false;
+      void this.app.stopDeckShuffle();
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -287,6 +319,26 @@ export class GameScene {
 
   private onStateChange(detail: StateChangeDetail): void {
     const { current: state, previous, changes, snapshot } = detail;
+
+    // Deck shuffle animation — started in mount(); stopped here once setup
+    // reports done or we detect we're attaching to an already-in-progress
+    // game. Using `setupPhase === 'done'` (session-local) rather than the
+    // contract phase because the contract `phase` field only flips to
+    // non-dealing AFTER startGame lands, while `setupPhase` covers the full
+    // mask → deal → startGame arc.
+    const setupDone =
+      snapshot.setupPhase === 'done' ||
+      (state.phase !== 'dealing' && state.myHand.length > 0) ||
+      state.isGameOver;
+    const shouldShuffle = !setupDone;
+    if (shouldShuffle !== this.lastWasSetup) {
+      this.lastWasSetup = shouldShuffle;
+      if (shouldShuffle) {
+        this.app.startDeckShuffle();
+      } else {
+        void this.app.stopDeckShuffle();
+      }
+    }
 
     // Update 3D objects
     if (changes.handChanged) {
