@@ -621,9 +621,9 @@ export circuit getLastMoveAt(gameId: Bytes<32>): Uint<64> {
 }
 
 // Return the turn timeout constant (exposed so off-chain code can read it).
-// 300 seconds = 5 minutes per turn.
+// 600 seconds = 10 minutes = 6-min turn target + 4-min past-drift allowance.
 export circuit getTurnTimeout(): Uint<64> {
-    return 300 as Uint<64>;
+    return 600 as Uint<64>;
 }
 
 }

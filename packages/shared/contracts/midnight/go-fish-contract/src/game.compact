@@ -91,6 +91,17 @@ circuit registerCallerAsPlayer(gameId: Bytes<32>, playerId: Uint<64>): [] {
     return [];
 }
 
+// Accepted drift between caller-claimed `now` and on-chain blockTime:
+//   blockTime - 240s  <=  now  <=  blockTime + 120s
+// +120s future: tolerates honest clock skew forward.
+// -240s past: tolerates mempool/batcher lag before inclusion.
+// Real Unix timestamps are >> 120, so `now - 120` cannot underflow in practice.
+circuit assertNowWithinWindow(now: Uint<64>): [] {
+    assert(blockTimeGte(disclose(now - 120 as Uint<64>)), "Claimed now is too far in the future");
+    assert(blockTimeLte(disclose(now + 240 as Uint<64>)), "Claimed now is too far in the past");
+    return [];
+}
+
 // Constructor only initializes the static deck mappings (shared across all games)
 constructor() {
     // deck_init_static_deck();
@@ -325,10 +336,7 @@ export circuit askForCard(gameId: Bytes<32>, askingPlayerId: Uint<64>, targetRan
     assert(disclosed_rank >= 0 && disclosed_rank < 7, "Invalid card rank");
 
     // RULE 4: Timestamp must not be in the future (allow BLOCK_TIME seconds of drift)
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     // OPT-B: Fetch secrets once, use countCardsOfRank_withSecrets for both the "has card" check
     // and the pre-draw count. Replaces the previous doesPlayerHaveCard + countCardsOfRank calls
@@ -379,10 +387,7 @@ export circuit respondToAsk(gameId: Bytes<32>, respondingPlayerId: Uint<64>, now
     assert(disclosed_respondingId == 1 as Uint<64> || disclosed_respondingId == 2 as Uint<64>, "Invalid player index");
 
     // RULE 3: Timestamp must not be in the future
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     // Get the rank being asked for
     const targetRank = go_fish_getLastAskedRank(gid);
@@ -534,10 +539,7 @@ export circuit afterGoFish(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>)
     assert(disclosed_playerId == currentTurn, "Only current player can call afterGoFish");
 
     // RULE 3: Timestamp
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     const lastRank = go_fish_getLastAskedRank(gid);
 
@@ -824,10 +826,7 @@ export circuit requestToDrawCard(gameId: Bytes<32>, playerId: Uint<64>, now: Uin
     const deckSize = deck_getDeckSize(gid);
     assert(topIndex as Uint<64> < deckSize, "Deck is empty — use skipTurn instead");
 
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     // Record caller as the asking player so drawCard knows who to target.
     // V4.2: no sentinel lastAskedRank write — nothing on-chain reads it in this
@@ -858,10 +857,7 @@ export circuit drawCard(gameId: Bytes<32>, opponentPlayerId: Uint<64>, now: Uint
     const askingPlayerId = go_fish_getLastAskingPlayer(gid);
     assert(disclosed_opponentId != askingPlayerId, "Asking player cannot call drawCard for themselves");
 
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     // Fetch both secrets (the caller's is real; the asker's is a dummy here, but
     // only the caller's invScalar is actually USED — dummy inv is discarded via
@@ -918,10 +914,7 @@ export circuit skipTurn(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): [
     const deckSize = deck_getDeckSize(gid);
     assert(topIndex as Uint<64> >= deckSize, "Deck has cards — use requestToDrawCard instead");
 
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     go_fish_setLastMoveAt(gid, now);
     go_fish_switchTurn(gid);
@@ -974,10 +967,7 @@ export circuit scoreInitialBooks(
     assert(!go_fish_hasInitialBooksScored(gid, playerId), "Initial books already scored");
 
     // Timestamp drift check.
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
     // "No book" sentinel.
     const noBook: Boolean = (i1 == 255 as Uint<8>) && (i2 == 255 as Uint<8>) && (i3 == 255 as Uint<8>);
@@ -1259,6 +1249,9 @@ export circuit doesGameExist(gameId: Bytes<32>): Boolean {
 // Claim a win because the active player failed to move within TURN_TIMEOUT seconds.
 // Can only be called by the waiting player (i.e. NOT the current turn holder).
 // Requires that the block timestamp is >= lastMoveAt + TURN_TIMEOUT.
+// No `now` parameter: the decision is made purely against on-chain `lastMoveAt`
+// and `blockTime`, so no caller-supplied timestamp enters the logic and no
+// drift window is needed.
 export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [] {
     const gid = disclose(gameId);
     const disclosed_claimingId = disclose(claimingPlayerId);
@@ -1278,10 +1271,10 @@ export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [
     assert(disclosed_claimingId != currentTurn, "Active player cannot claim timeout against themselves");
     assert(disclosed_claimingId == 1 as Uint<64> || disclosed_claimingId == 2 as Uint<64>, "Invalid player index");
 
-    // RULE: The timeout window must have elapsed
+    // RULE: The timeout window must have elapsed (6-min turn target + 4-min past-drift allowance = 10 min wall).
     const lastMoveAt = go_fish_getLastMoveAt(gid);
     assert(
-        blockTimeGte(disclose(lastMoveAt + 300 as Uint<64>)),
+        blockTimeGte(disclose(lastMoveAt + 600 as Uint<64>)),
         "Timeout period has not elapsed yet"
     );
 
@@ -1294,35 +1287,42 @@ export circuit claimTimeoutWin(gameId: Bytes<32>, claimingPlayerId: Uint<64>): [
 // CONCEDE
 // ============================================
 
-// Voluntarily end the game — the OTHER player wins. Any active game, any turn,
-// no timeout required. Caller must be the registered player for the claimed
-// playerId (enforced by assertCallerIsPlayer: the caller's public key must match
-// what was registered at applyMask time), so this can't be called on behalf of
-// someone else.
+// Voluntarily end the game. Caller must be the registered player for the
+// claimed playerId (enforced by verifyCallerIsPlayer: the caller's secret hash
+// must match what was registered at applyMask time), so this can't be called on
+// behalf of someone else.
+//
+// Result depends on the current phase:
+//   - Setup    → draw (winner = 0). Game never started; no one "won".
+//                Valid even if only one player has applied mask — the
+//                unregistered slot simply cannot auth as its own playerId.
+//   - In-progress (TurnStart / WaitForResponse / WaitForTransfer / WaitForDraw /
+//                WaitForDrawCheck) → the OTHER player wins.
+//   - GameOver → rejected.
 export circuit concede(gameId: Bytes<32>, playerId: Uint<64>, now: Uint<64>): [] {
     const gid = disclose(gameId);
     const disclosed_playerId = disclose(playerId);
 
     assert(go_fish_doesGameExist(gid), "Game does not exist");
 
-    // AUTH: caller's public key must match the registered key for this playerId.
+    // AUTH: caller's secret hash must match the one registered for this playerId.
     verifyCallerIsPlayer(gid,playerId);
 
     assert(disclosed_playerId == 1 as Uint<64> || disclosed_playerId == 2 as Uint<64>, "Invalid player index");
 
-    // Game must be in progress.
+    // Only reject the already-finished case. Setup concedes are allowed and
+    // produce a draw.
     const currentPhase = go_fish_getPhase(gid);
-    assert(currentPhase != go_fish_GamePhase.Setup, "Game has not started yet");
     assert(currentPhase != go_fish_GamePhase.GameOver, "Game is already over");
 
     // Timestamp drift check (consistent with other player-initiated circuits).
-    assert(
-        blockTimeLt(disclose(now + 120 as Uint<64>)),
-        "Claimed timestamp is too far in the future"
-    );
+    assertNowWithinWindow(now);
 
-    // Opponent wins.
-    const winnerId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+    // Setup → draw; otherwise opponent wins.
+    const opponentId: Uint<64> = (disclosed_playerId == 1 as Uint<64>) ? 2 as Uint<64> : 1 as Uint<64>;
+    const winnerId: Uint<64> = (currentPhase == go_fish_GamePhase.Setup)
+        ? 0 as Uint<64>
+        : opponentId;
     go_fish_setLastMoveAt(gid, now);
     go_fish_endGameWithWinner(gid, winnerId);
     return [];
