@@ -18,6 +18,7 @@
         "midnight-contract:clean": "rm -rf midnight-level-db midnight-level-db-deploy && rm -f contract.json contract-go-fish.undeployed.json deployment-state.json",
         "midnight-contract:deploy": "deno task midnight-contract:clean && deno --unstable-detect-cjs -A deploy.ts",
         "midnight-contract:deploy-quick": "deno task midnight-contract:clean && MIDNIGHT_DEPLOY_VERIFIER_KEYS_LIMIT=1 deno --unstable-detect-cjs -A deploy.ts",
+        "midnight-contract:initialize": "deno --unstable-detect-cjs -A contract-initialize.ts",
         "midnight-faucet:start": "deno run -A faucet.ts",
         "test": "deno run -A example.test.ts"
     },
