@@ -49,8 +49,8 @@ const DUST_FEE_BLOCKS_MARGIN = 5;
 /** Wallet sync progress logging throttle interval */
 const WALLET_SYNC_THROTTLE_MS = 10_000;
 
-/** Wallet sync timeout (5 minutes) */
-const WALLET_SYNC_TIMEOUT_MS = 300_000;
+/** Wallet sync timeout (15 minutes — initial sync can be slow) */
+const WALLET_SYNC_TIMEOUT_MS = 900_000;
 
 const GENESIS_MINT_WALLET_SEED =
   "0000000000000000000000000000000000000000000000000000000000000001";
