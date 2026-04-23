@@ -14,7 +14,7 @@
  */
 
 import { type DeployConfig, deployMidnightContract } from "./deploy.midnight.ts";
-import { midnightNetworkConfig } from "./midnight-env.ts";
+import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
 import {
   Contract,
   witnesses,

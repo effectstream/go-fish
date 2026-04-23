@@ -33,7 +33,7 @@ import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-pri
 import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 
-import { midnightNetworkConfig } from "./midnight-env.ts";
+import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
 import {
   buildWalletFacade,
   syncAndWaitForFunds,

@@ -32,8 +32,7 @@
   },
   "imports": {
     "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.10.24",
-    "@go-fish/midnight-contracts": "./packages/shared/contracts/midnight/deno.json",
-    "@go-fish/midnight-contracts/midnight-env": "./packages/shared/contracts/midnight/midnight-env.ts"
+    "@go-fish/midnight-contracts": "./packages/shared/contracts/midnight/deno.json"
   },
   "allowScripts": ["npm:classic-level@3.0.0", "npm:cpu-features@0.0.10", "npm:esbuild@0.27.3", "npm:fsevents@2.3.3", "npm:msgpackr-extract@3.0.3", "npm:protobufjs@7.5.4", "npm:ssh2@1.17.0"],
   "lint": {

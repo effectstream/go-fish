@@ -140,10 +140,11 @@ function createTtl(): Date {
   return new Date(Date.now() + TTL_DURATION_MS);
 }
 
+const DEFAULT_STORAGE_PASSWORD = "D3vP@ssw0rd!xK9m";
+
 function checkEnvVariables(): void {
   if (!Deno.env.get("MIDNIGHT_STORAGE_PASSWORD")) {
-    // Set a default password for local development
-    Deno.env.set("MIDNIGHT_STORAGE_PASSWORD", "D3vP@ssw0rd!xK9m");
+    Deno.env.set("MIDNIGHT_STORAGE_PASSWORD", DEFAULT_STORAGE_PASSWORD);
     log.info("MIDNIGHT_STORAGE_PASSWORD not set, using default for local dev");
   }
 }
@@ -422,7 +423,7 @@ function configureProviders(
       midnightDbName: "midnight-level-db-deploy", // Use separate DB for deployment to avoid lock conflicts
       privateStateStoreName,
       signingKeyStoreName,
-      privateStoragePasswordProvider: () => Promise.resolve(Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") ?? "D3vP@ssw0rd!xK9m"),
+      privateStoragePasswordProvider: () => Promise.resolve(Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") ?? DEFAULT_STORAGE_PASSWORD),
       accountId: unshieldedKeystore.getBech32Address().asString(),
     }),
     publicDataProvider: indexerPublicDataProvider(

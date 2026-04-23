@@ -4,8 +4,7 @@
     "exports": {
         ".": "./go-fish-contract/src/_index.ts",
         "./witnesses": "./go-fish-contract/src/witnesses.ts",
-        "./contract": "./go-fish-contract/src/managed/contract/index.js",
-        "./midnight-env": "./midnight-env.ts"
+        "./contract": "./go-fish-contract/src/managed/contract/index.js"
     },
     "tasks": {
         "contract:compile": "cd go-fish-contract && deno task compact",
