@@ -30,6 +30,8 @@ interface LobbyStateResponse {
   host_mask_applied?: boolean;
   lobby_name: string;
   status: string;
+  created_at?: string;
+  is_expired?: boolean;
 }
 
 /**
@@ -82,6 +84,9 @@ export class LobbyScreen {
    *  "opponent joined" sound on the 1 → 2 transition. */
   private lastPlayerCount: number = 0;
 
+  /** True once the expiry popup has been shown — prevents repeat popups. */
+  private expiryShown: boolean = false;
+
   private static readonly MAX_FETCH_FAILS = 5;
 
   constructor(container: HTMLElement) {
@@ -105,6 +110,7 @@ export class LobbyScreen {
     this.navigationTriggered = false;
     this.lastRenderSig = '';
     this.lastPlayerCount = 0;
+    this.expiryShown = false;
 
     await this.tick();
     // 3s poll — covers lobby-state (player joins, host_mask_applied flip) and
@@ -125,12 +131,48 @@ export class LobbyScreen {
     const lobby = await this.fetchLobbyState();
     if (!lobby) return;
 
+    if (this.checkLobbyExpired(lobby)) return;
+
     this.resolveRole(lobby);
     this.detectPlayerJoined(lobby);
     await this.refreshMaskStatus();
     this.kickMaskFlowIfNeeded();
     this.maybeLeaveLobbyOnReady(lobby);
     this.render(lobby);
+  }
+
+  /** If the lobby is still open and has exceeded the 10-minute TTL, show an
+   *  expiry popup and stop polling. Uses the server-computed `is_expired`
+   *  flag so we don't depend on client/server clock agreement. */
+  private checkLobbyExpired(lobby: LobbyStateResponse): boolean {
+    if (this.expiryShown) return true;
+    if (!lobby.is_expired) return false;
+    if ((lobby.players || []).length >= 2) return false;
+
+    this.expiryShown = true;
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = undefined;
+    }
+    this.showExpiredPopup(lobby.lobby_name);
+    return true;
+  }
+
+  private showExpiredPopup(lobbyName: string): void {
+    this.container.innerHTML = `
+      <div class="lobby-screen" style="display:flex;align-items:center;justify-content:center;height:100%;">
+        <div style="background:#1a1a2e;border:1px solid rgba(255,255,255,0.15);border-radius:0.5rem;padding:2rem;max-width:340px;text-align:center;">
+          <h2 style="color:#e2e8f0;margin:0 0 1rem;">Lobby Closed</h2>
+          <p style="color:#a0aec0;margin:0 0 1.5rem;line-height:1.5;">
+            <strong style="color:#e2e8f0;">${lobbyName}</strong> was open for 10 minutes without anyone joining and has been removed from the lobby list.
+          </p>
+          <button id="expired-ok-btn" class="btn btn-primary" style="min-width:120px;">OK</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('expired-ok-btn')?.addEventListener('click', () => {
+      this.dispatchEvent('navigate', { screen: 'lobby-list' });
+    });
   }
 
   /** Fire a one-shot "opponent joined" sound on the 1 → 2 transition. */

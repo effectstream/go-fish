@@ -60,7 +60,6 @@ export class GameScene {
    *  Undefined while loading or not yet game-over. */
   private resolvedWinner: 0 | 1 | 2 | undefined = undefined;
   /** Guard so the winner read fires at most once per game-over transition. */
-  private winnerFetchStarted = false;
 
   constructor(app: ThreeApp) {
     this.app = app;
@@ -207,10 +206,10 @@ export class GameScene {
     this.app.inputManager.setOpponentSelectMode(false);
     this.animationQueue.clear();
     this.pendingAskRank = null;
+    this.hud.clearActionPanel();
     this.pendingAskRankIndex = -1;
     this.initialDealPlayed = false;
     this.lastWasSetup = null;
-    this.winnerFetchStarted = false;
     this.resolvedWinner = undefined;
     void this.app.stopDeckShuffle();
     turnIndicator.hide();
@@ -681,30 +680,9 @@ export class GameScene {
       this.showGainedCardsNotification(state, previous);
     }
 
-    // Fetch resolved winner once per game-over transition. Score-based
-    // inference doesn't work for Setup-concede (scores stay 0) or for any
-    // concede path (loser can have any score). getWinner is a pure-read
-    // circuit — one HTTP round-trip, then we cache.
-    if (state.isGameOver && !this.winnerFetchStarted) {
-      this.winnerFetchStarted = true;
-      const lobbyId = this.session?.lobbyId;
-      if (lobbyId) {
-        void (async () => {
-          try {
-            const { MidnightService } = await import('../../services/MidnightService');
-            const w = await MidnightService.getWinner(lobbyId);
-            this.resolvedWinner = w;
-            // Re-emit the current snapshot so the HUD re-renders with the
-            // newly-resolved winner without waiting for another tick.
-            this.session?.refreshSnapshot();
-          } catch (err) {
-            console.warn('[GameScene] getWinner failed:', err);
-          }
-        })();
-      }
-    } else if (!state.isGameOver && this.winnerFetchStarted) {
-      // New game / reset — clear cached winner.
-      this.winnerFetchStarted = false;
+    if (state.isGameOver) {
+      this.resolvedWinner = state.winner;
+    } else {
       this.resolvedWinner = undefined;
     }
 
@@ -777,10 +755,11 @@ export class GameScene {
   private onEnded(d: EndedDetail): void {
     const state = d.snapshot.state;
     if (!state) return;
-    const won = state.scores[state.playerId - 1] > state.scores[state.playerId === 1 ? 1 : 0];
+    const won = d.winner === state.playerId;
+    const draw = d.winner === null;
     this.hud.showNotification(
-      won ? 'You Won!' : 'Game Over',
-      won ? 'Congratulations!' : 'Better luck next time.',
+      won ? 'You Won!' : draw ? 'Draw!' : 'Game Over',
+      won ? 'Congratulations!' : draw ? 'It\'s a tie.' : 'Better luck next time.',
       10000,
     );
   }
@@ -982,21 +961,13 @@ export class GameScene {
   }
 
   private navigateToLobbyList(): void {
-    // Restore the app-container first so UIManager can process the event
-    const appContainer = document.getElementById('app-container');
-    if (appContainer) {
-      appContainer.style.display = '';
-    }
-
-    // Dispatch on the app-container so UIManager's listener catches it
-    if (appContainer) {
-      appContainer.dispatchEvent(
-        new CustomEvent('navigate', {
-          detail: { screen: 'lobby-list' },
-          bubbles: true,
-        }),
-      );
-    }
+    document.body.dispatchEvent(new CustomEvent('leave-game', { bubbles: false }));
+    document.body.dispatchEvent(
+      new CustomEvent('navigate', {
+        detail: { screen: 'lobby-list' },
+        bubbles: false,
+      }),
+    );
   }
 
   dispose(): void {

@@ -661,7 +661,10 @@ export async function getGameState(
   let lobbyStatus: string | undefined;
 
   try {
-    const lobbyRes = await fetch(`${BACKEND_URL}/lobby_state?lobby_id=${lobbyId}`);
+    const lobbyRes = await fetch(
+      `${BACKEND_URL}/lobby_state?lobby_id=${lobbyId}`,
+      { cache: 'no-store' },
+    );
     if (lobbyRes.ok) {
       const lobby = await lobbyRes.json();
       lobbyStatus = lobby.status;
@@ -671,16 +674,14 @@ export async function getGameState(
         walletAddress: p.wallet_address,
       }));
 
-      // Determine which player we are by wallet address
+      // Determine which player we are by wallet address.
+      // Null-safe: wallet_address can be null when the account_id in
+      // lobby_players doesn't have a matching effectstream.addresses row
+      // (race between Paima auto-tracking and our state machine insert).
       const myIndex = players.findIndex(
-        (p) => p.walletAddress.toLowerCase() === wallet.toLowerCase()
+        (p) => p.walletAddress?.toLowerCase() === wallet.toLowerCase()
       );
       if (myIndex < 0) {
-        // Wallet not yet in players list (propagation delay between
-        // joinedLobby tx and lobby_players insert, OR a wallet switch via
-        // switchAccount that just happened). Leave playerId=0 so callers
-        // (GameSession) won't lock onto a guessed identity and submit txs
-        // as the wrong player.
         console.warn(
           `[MidnightService] getGameState: wallet ${wallet} not in players for lobby ${lobbyId}`,
           'players=',
@@ -689,10 +690,8 @@ export async function getGameState(
         );
       } else if (
         players.length > 1 &&
-        players[0].walletAddress.toLowerCase() === players[1].walletAddress.toLowerCase()
+        players[0].walletAddress?.toLowerCase() === players[1].walletAddress?.toLowerCase()
       ) {
-        // Both players share the same wallet address (dev-env Hardhat
-        // account collision). The findIndex above silently picks index 0.
         console.warn(
           `[MidnightService] getGameState: wallet collision in lobby ${lobbyId} — both players have address ${wallet}.`,
           'Role resolution defaults to host (playerId=1); P2 will be misidentified until wallets differ.',
@@ -702,7 +701,9 @@ export async function getGameState(
       playerName = playerId > 0 ? players[playerId - 1]?.name : undefined;
       opponentName = playerId > 0 ? players[playerId === 1 ? 1 : 0]?.name : undefined;
     }
-  } catch { /* best-effort */ }
+  } catch (err) {
+    console.warn('[MidnightService] getGameState: lobby_state fetch/parse failed:', err);
+  }
 
   if (contractState) {
     // Convert the 7-wide booked-ranks vector into a user-facing list of
@@ -741,6 +742,8 @@ export async function getGameState(
       opponentName,
       booksP1: contractState.booksP1,
       booksP2: contractState.booksP2,
+      lastMoveAt: contractState.lastMoveAt,
+      winner: contractState.winner,
     };
   }
 

@@ -15,8 +15,10 @@ import {
   getAddressByAddress,
   newAddressWithId,
   newAccount,
-  updateAddressAccount
+  updateAddressAccount,
+  newScheduledTimestampData,
 } from "@paimaexample/db";
+import { AddressType } from "@paimaexample/utils";
 import {
   createLobby,
   joinLobby,
@@ -26,7 +28,11 @@ import {
   deleteLobbyPlayers,
   deleteLobby,
   setHostMaskApplied,
+  finishLobby,
 } from "@go-fish/database";
+import * as path from "@std/path";
+import { computeLedgerDiff, logLedgerDiff } from "./ledger-diff.ts";
+import { projectMidnightGamesFromDiff } from "./midnight-games-sync.ts";
 
 const stm = new PaimaSTM<typeof grammar, any>(grammar);
 
@@ -38,7 +44,11 @@ const MAX_PLAYERS = 2;
  */
 stm.addStateTransition("createdLobby", function* (data) {
   const { playerName, lobbyName } = data.parsedInput;
-  const walletAddress = data.signerAddress;
+  // Normalize to lowercase — Paima auto-creates effectstream.addresses
+  // entries in lowercase, but data.signerAddress can be checksummed
+  // (mixed-case). The framework's getAddressByAddress is case-sensitive,
+  // so a mismatch creates a duplicate account and breaks wallet resolution.
+  const walletAddress = data.signerAddress?.toLowerCase();
   if (!walletAddress) {
     console.error('[createdLobby] No signer address');
     return;
@@ -115,7 +125,7 @@ stm.addStateTransition("createdLobby", function* (data) {
  */
 stm.addStateTransition("joinedLobby", function* (data) {
   const { playerName, lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
+  const walletAddress = data.signerAddress?.toLowerCase();
   if (!walletAddress) {
     console.error('[joinedLobby] No signer address');
     return;
@@ -209,7 +219,7 @@ stm.addStateTransition("joinedLobby", function* (data) {
  */
 stm.addStateTransition("closedLobby", function* (data) {
   const { lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
+  const walletAddress = data.signerAddress?.toLowerCase();
   if (!walletAddress) {
     console.error('[closedLobby] No signer address');
     return;
@@ -263,7 +273,7 @@ stm.addStateTransition("closedLobby", function* (data) {
  */
 stm.addStateTransition("hostReady", function* (data) {
   const { lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
+  const walletAddress = data.signerAddress?.toLowerCase();
   if (!walletAddress) {
     console.error('[hostReady] No signer address');
     return;
@@ -297,8 +307,76 @@ stm.addStateTransition("hostReady", function* (data) {
  * For now we just log the payload — a minimal observability hook.
  */
 stm.addStateTransition("event_midnight", function* (data) {
-  // const { payload } = data.parsedInput as { payload: unknown };
-  console.log(`🎉 [MIDNIGHT] block=${data.blockHeight} payload:`, data.parsedInput);
+  const { payload } = data.parsedInput as { payload: Record<string, unknown> };
+  const { diffs, isInitial } = computeLedgerDiff(payload);
+  logLedgerDiff(diffs, isInitial, data.blockHeight);
+  yield* projectMidnightGamesFromDiff(diffs, data.blockHeight);
+
+  // Schedule Midnight contract cleanup 2 hours after each new game is created.
+  // Skip the initial snapshot (node restart) — those games already had cleanup
+  // scheduled on their original creation, or have already been cleaned up.
+  const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+  for (const d of diffs) {
+    if (!isInitial && d.op === "add" && d.path.startsWith("go_fish_gameExists.") && d.new === true) {
+      const evmId = d.path.slice("go_fish_gameExists.".length);
+      yield* World.resolve(newScheduledTimestampData, {
+        from_address: "0x0",
+        from_address_type: AddressType.NONE,
+        future_ms_timestamp: new Date(data.blockTimestamp + TWO_HOURS_MS),
+        input_data: JSON.stringify(["cleanupGame", evmId]),
+      });
+      console.log(`⏰ [event_midnight] Scheduled cleanupGame for "${evmId}" at +2h`);
+    }
+  }
+});
+
+/**
+ * Handle cleanupGame — scheduled system action that removes all on-chain
+ * Midnight contract state for a finished (or stale) game.
+ * Spawns an isolated Deno subprocess that proves the cleanupGame circuit
+ * and delegates balancing/submission to the batcher (same pattern as pvp-v2).
+ */
+stm.addStateTransition("cleanupGame", function* (data) {
+  const { gameId } = data.parsedInput;
+
+  // Mark the EVM lobby as finished if still in_progress (catches stale games)
+  yield* World.resolve(finishLobby, { lobbyId: gameId });
+
+  setTimeout(async () => {
+    try {
+      console.log(`🧹 [cleanupGame] Scheduled cleanup fired for gameId: ${gameId}`);
+
+      const scriptPath = path.resolve(
+        import.meta.dirname!,
+        "..", "..", "..", "shared", "contracts", "midnight",
+        "contract-gofish-cleanup.ts",
+      );
+      const command = new Deno.Command("deno", {
+        args: ["run", "-A", "--unstable-detect-cjs", scriptPath, gameId],
+        env: {
+          MIDNIGHT_ADMIN_SECRET: Deno.env.get("MIDNIGHT_ADMIN_SECRET") || "",
+          MIDNIGHT_CLEAN_SEED: Deno.env.get("MIDNIGHT_CLEAN_SEED") || "",
+          MIDNIGHT_NETWORK_ID: Deno.env.get("MIDNIGHT_NETWORK_ID") || "",
+          MIDNIGHT_STORAGE_PASSWORD: Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") || "",
+          BATCHER_URL: Deno.env.get("BATCHER_URL") || "",
+        },
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      const child = command.spawn();
+      child.status.then((status) => {
+        if (status.success) {
+          console.log(`✅ [cleanupGame] cleanup script succeeded for gameId=${gameId}`);
+        } else {
+          console.error(`❌ [cleanupGame] cleanup script exited with code ${status.code} for gameId=${gameId}`);
+        }
+      }).catch((err) => {
+        console.error(`❌ [cleanupGame] cleanup script status error for gameId=${gameId}:`, err);
+      });
+    } catch (err) {
+      console.error(`❌ [cleanupGame] failed to spawn cleanup script for gameId=${gameId}:`, err);
+    }
+  }, 0);
 });
 
 /**

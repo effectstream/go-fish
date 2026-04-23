@@ -406,7 +406,7 @@ export async function getLobbyState(
   lobbyId: string
 ): Promise<{ success: boolean; lobby?: any; errorMessage?: string }> {
   try {
-    const response = await fetch(`${PAIMA_API_URL}/lobby_state?lobby_id=${lobbyId}`);
+    const response = await fetch(`${PAIMA_API_URL}/lobby_state?lobby_id=${lobbyId}`, { cache: 'no-store' });
 
     if (!response.ok) {
       return { success: false, errorMessage: `HTTP ${response.status}` };

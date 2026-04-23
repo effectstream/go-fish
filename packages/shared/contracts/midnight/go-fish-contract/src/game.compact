@@ -1125,6 +1125,12 @@ export circuit getWinner(gameId: Bytes<32>): Uint<64> {
     return go_fish_getWinner(gid);
 }
 
+export circuit getLastMoveAt(gameId: Bytes<32>): Uint<64> {
+    const gid = disclose(gameId);
+    assert(go_fish_doesGameExist(gid), "Game does not exist");
+    return go_fish_getLastMoveAt(gid);
+}
+
 export circuit isDeckEmpty(gameId: Bytes<32>): Boolean {
     const gid = disclose(gameId);
     assert(go_fish_doesGameExist(gid), "Game does not exist");

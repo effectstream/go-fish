@@ -123,6 +123,18 @@ button {
   box-shadow: 0 4px 12px rgba(237, 137, 54, 0.4);
 }
 
+.btn-success {
+  background-color: #38a169;
+  color: white;
+  cursor: default;
+}
+
+.btn-danger {
+  background-color: #c53030;
+  color: white;
+  cursor: default;
+}
+
 .btn-secondary {
   background-color: var(--secondary-color);
   color: white;
@@ -828,6 +840,12 @@ body.tx-in-flight .tx-guarded {
 
 .lobby-card:hover {
   border-color: rgba(255, 255, 255, 0.2);
+}
+
+.resume-card.active,
+.lobby-card.active {
+  border: 2px solid #d4a843;
+  box-shadow: 0 0 12px rgba(212, 168, 67, 0.5), inset 0 0 6px rgba(212, 168, 67, 0.1);
 }
 
 .resume-dismiss-btn {

@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS game_moves (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Games projection driven purely from Midnight ledger diffs. No foreign keys;
+-- no strong consistency with the EVM tables. evm_id is the ASCII decode of
+-- midnight_id (the Bytes<32> key the contract uses).
+CREATE TABLE IF NOT EXISTS midnight_games (
+    midnight_id    TEXT PRIMARY KEY,
+    evm_id         TEXT UNIQUE,
+    host_pubkey    TEXT,
+    joiner_pubkey  TEXT,
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at       TIMESTAMP,
+    state          TEXT NOT NULL DEFAULT 'ongoing'
+);
+
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_lobbies_status ON lobbies(status);
 CREATE INDEX IF NOT EXISTS idx_lobbies_created ON lobbies(created_at DESC);
@@ -75,3 +88,5 @@ CREATE INDEX IF NOT EXISTS idx_lobby_players_lobby ON lobby_players(lobby_id);
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
 CREATE INDEX IF NOT EXISTS idx_game_players_game ON game_players(game_id);
 CREATE INDEX IF NOT EXISTS idx_game_moves_game ON game_moves(game_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_midnight_games_state ON midnight_games(state);
+CREATE INDEX IF NOT EXISTS idx_midnight_games_evm_id ON midnight_games(evm_id);

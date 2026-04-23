@@ -44,6 +44,8 @@ export interface CachedGame {
   phase: number;
   /** Local in-flight state from the session (proving/sending/waiting/null). */
   inFlight: InFlightState;
+  /** Ledger-resolved winner (0 = none/draw, 1 = P1, 2 = P2). */
+  winner: 0 | 1 | 2;
   /** ms-since-epoch when the writer last refreshed this entry. */
   updatedAt: number;
 }

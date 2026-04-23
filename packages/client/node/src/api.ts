@@ -89,7 +89,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       let accountId: number | null = null;
       if (wallet) {
         const accountResult = await db.query(`
-          SELECT account_id FROM effectstream.addresses WHERE address = $1
+          SELECT account_id FROM effectstream.addresses WHERE address = LOWER($1)
         `, [wallet]);
         if (accountResult.rows.length > 0) {
           accountId = accountResult.rows[0].account_id;
@@ -108,10 +108,13 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
           l.host_mask_applied,
           (SELECT COUNT(*) FROM lobby_players WHERE lobby_id = l.lobby_id) as player_count,
           (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = l.host_account_id LIMIT 1) as host_name,
+          (SELECT player_name FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id != l.host_account_id LIMIT 1) as guest_name,
           ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'} as is_player_in_lobby
         FROM lobbies l
-        WHERE l.status = 'open'
-          AND l.created_at > NOW() - INTERVAL '10 minutes'
+        WHERE (
+          (l.status = 'open' AND l.created_at > NOW() - INTERVAL '10 minutes')
+          OR (l.status = 'in_progress' AND ${accountId !== null ? `EXISTS(SELECT 1 FROM lobby_players WHERE lobby_id = l.lobby_id AND account_id = ${accountId})` : 'false'})
+        )
         ORDER BY l.created_at DESC
         LIMIT $1 OFFSET $2
       `, [count, offset]);
@@ -142,7 +145,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     try {
       // Get account ID from wallet address via effectstream.addresses
       const accountResult = await db.query(`
-        SELECT account_id FROM effectstream.addresses WHERE address = $1
+        SELECT account_id FROM effectstream.addresses WHERE address = LOWER($1)
       `, [wallet]);
 
       if (accountResult.rows.length === 0) {
@@ -161,6 +164,10 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
         FROM lobbies l
         INNER JOIN lobby_players lp ON l.lobby_id = lp.lobby_id
         WHERE lp.account_id = $1
+          AND (
+            l.status != 'open'
+            OR l.created_at > NOW() - INTERVAL '10 minutes'
+          )
         ORDER BY l.created_at DESC
         LIMIT $2 OFFSET $3
       `, [accountId, count, offset]);
@@ -195,7 +202,9 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
           l.host_mask_applied,
           l.status,
           l.created_at,
-          l.started_at
+          l.started_at,
+          (l.status = 'open'
+           AND l.created_at <= NOW() - INTERVAL '10 minutes') AS is_expired
         FROM lobbies l
         WHERE l.lobby_id = $1
       `, [lobby_id]);
@@ -211,13 +220,22 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       // when an account has multiple entries in effectstream.addresses (which
       // happens when Paima auto-tracks the sender address AND our state machine
       // also creates an address record).
+      // COALESCE fallback: if the account_id from lobby_players has no
+      // matching effectstream.addresses row (can happen when a case-sensitive
+      // address lookup in the state machine created a new account whose
+      // address insert collided with the existing lowercase entry), fall
+      // back to the account's primary_address from effectstream.accounts.
       const playersResult = await db.query(`
         SELECT
           lp.account_id,
           lp.player_name,
           lp.joined_at,
-          (SELECT addr.address FROM effectstream.addresses addr
-           WHERE addr.account_id = lp.account_id LIMIT 1) as wallet_address
+          COALESCE(
+            (SELECT addr.address FROM effectstream.addresses addr
+             WHERE addr.account_id = lp.account_id LIMIT 1),
+            (SELECT acct.primary_address FROM effectstream.accounts acct
+             WHERE acct.id = lp.account_id)
+          ) as wallet_address
         FROM lobby_players lp
         WHERE lp.lobby_id = $1
         ORDER BY lp.joined_at ASC
@@ -276,7 +294,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
     // Get account ID from wallet address
     const accountResult = await db.query(`
-      SELECT account_id FROM effectstream.addresses WHERE address = $1
+      SELECT account_id FROM effectstream.addresses WHERE address = LOWER($1)
     `, [wallet]);
 
     if (accountResult.rows.length === 0) {
@@ -386,7 +404,6 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       description: "Total points earned across all games. Win = 100 pts, loss = 10 pts.",
       scoreUnit: "Points",
       sortOrder: "DESC",
-      type: "cumulative",
     },
   ] as const;
 
@@ -538,6 +555,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     const identity = {
       address: user.midnight_address,
       delegatedFrom: [] as string[],
+      displayName: null as string | null,
     };
 
     // Normalise the channel query param (single string or array)

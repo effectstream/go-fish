@@ -49,6 +49,7 @@
     "@midnight-ntwrk/ledger": "npm:@midnight-ntwrk/ledger-v8@8.0.3",
     "@midnight-ntwrk/ledger-v8": "npm:@midnight-ntwrk/ledger-v8@8.0.3",
     "@midnight-ntwrk/zswap": "npm:@midnight-ntwrk/zswap@4.0.0",
-    "@types/node": "npm:@types/node@^20.0.0"
+    "@types/node": "npm:@types/node@^20.0.0",
+    "@std/path": "jsr:@std/path"
   }
 }

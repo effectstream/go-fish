@@ -54,6 +54,15 @@ export const goFishL2Grammar = {
    * Idempotent — the state machine no-ops if the flag is already true.
    */
   hostReady: [['lobbyID', LobbyID]],
+
+  /**
+   * Cleanup Game (scheduled, system-only): cleanupGame|gameId
+   *
+   * Fired by a scheduled timer ~2 hours after game creation.
+   * Calls the Midnight cleanupGame circuit (owner path, callerPlayerId=0)
+   * to remove all on-chain state for the game (hands, deck, scores, etc.).
+   */
+  cleanupGame: [['gameId', LobbyID]],
 } as const satisfies GrammarDefinition;
 
 export const grammar = {

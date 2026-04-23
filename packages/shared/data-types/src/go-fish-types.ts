@@ -125,6 +125,7 @@ export interface Lobby {
   name: string;
   hostId: string;
   hostName: string;
+  guestName?: string;
   playerCount: number;
   status: 'waiting' | 'in_progress' | 'finished';
   createdAt: number;

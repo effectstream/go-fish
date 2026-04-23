@@ -779,13 +779,13 @@ export async function queryGameState(lobbyId: string): Promise<{
    *  index r is true iff that player has booked rank r. */
   booksP1: boolean[];
   booksP2: boolean[];
+  lastMoveAt: number;
+  winner: 0 | 1 | 2;
 } | null> {
   const gameId = lobbyIdToGameId(lobbyId);
 
-  // ONE HTTP fetch for the whole state. All 10 reads below execute
-  // locally against this snapshot. Previously each queryCircuit did its
-  // own HTTP round-trip → 10 requests per getGameState. Per-poll load
-  // dropped from ~31 requests (10 state + 21 hand) to ~2.
+  // ONE HTTP fetch for the whole state. All reads below execute locally
+  // against this snapshot — no extra HTTP round-trips.
   const cs = await fetchContractState();
   if (!cs) return null;
 
@@ -806,9 +806,17 @@ export async function queryGameState(lobbyId: string): Promise<{
   const topCardIndex = runCircuitOnState<number | bigint>(cs, "get_top_card_index", gameId);
   const books1      = runCircuitOnState<boolean[]>(cs, "getBookedRanks", gameId, 1n);
   const books2      = runCircuitOnState<boolean[]>(cs, "getBookedRanks", gameId, 2n);
+  const rawLastMove = runCircuitOnState<bigint | number>(cs, "getLastMoveAt", gameId);
+  const rawWinner   = runCircuitOnState<bigint | number>(cs, "getWinner", gameId);
 
   const deckRemaining = Math.max(0, Number(deckSize ?? 21) - Number(topCardIndex ?? 0));
   const fallbackRanks = [false, false, false, false, false, false, false];
+
+  const winnerNum = typeof rawWinner === "bigint" ? Number(rawWinner) : (rawWinner ?? 0);
+
+  if (gameOver === true || rawWinner !== null) {
+    console.log(`[queryGameState] gameOver=${gameOver} rawWinner=${rawWinner} (type=${typeof rawWinner}) → winnerNum=${winnerNum} rawLastMove=${rawLastMove}`);
+  }
 
   return {
     phase: Number(phase ?? 0),
@@ -820,6 +828,8 @@ export async function queryGameState(lobbyId: string): Promise<{
     deckCount: deckRemaining,
     booksP1: books1 ?? fallbackRanks,
     booksP2: books2 ?? fallbackRanks,
+    lastMoveAt: typeof rawLastMove === "bigint" ? Number(rawLastMove) : (rawLastMove ?? 0),
+    winner: (winnerNum === 1 || winnerNum === 2) ? winnerNum : 0,
   };
 }
 
@@ -1196,11 +1206,13 @@ export async function callCheckAndEndGame(
 export async function callClaimTimeoutWin(lobbyId: string, playerId: 1 | 2): Promise<void> {
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
-  const gameId = lobbyIdToGameId(lobbyId);
 
-  await callDelegated(provider, "claimTimeoutWin", () =>
-    contract.callTx.claimTimeoutWin(gameId, BigInt(playerId))
-  );
+  await withSecrets(lobbyId, playerId, async (gameId) => {
+    await callDelegated(provider, "claimTimeoutWin", () =>
+      contract.callTx.claimTimeoutWin(gameId, BigInt(playerId)),
+      { lobbyId, playerId },
+    );
+  });
 }
 
 /**
@@ -1214,13 +1226,14 @@ export async function callClaimTimeoutWin(lobbyId: string, playerId: 1 | 2): Pro
 export async function callConcede(lobbyId: string, playerId: 1 | 2): Promise<void> {
   const addr = await getContractAddress();
   const { contract, provider } = await getJoinedContract(addr, `privateState-${lobbyId}-${playerId}`);
-  const gameId = lobbyIdToGameId(lobbyId);
   const nowSecs = BigInt(Math.floor(Date.now() / 1000));
 
-  await callDelegated(provider, "concede", () =>
-    contract.callTx.concede(gameId, BigInt(playerId), nowSecs),
-    { lobbyId, playerId },
-  );
+  await withSecrets(lobbyId, playerId, async (gameId) => {
+    await callDelegated(provider, "concede", () =>
+      contract.callTx.concede(gameId, BigInt(playerId), nowSecs),
+      { lobbyId, playerId },
+    );
+  });
 }
 
 /**

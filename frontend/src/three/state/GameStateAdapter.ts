@@ -33,6 +33,8 @@ export interface GameSceneState {
    *  move (set on ask / respond / draw / etc.). Drives the turn-timeout
    *  countdown. 0 = never moved or read failed. */
   lastMoveAt: number;
+  /** Ledger-resolved winner (0 = none/draw, 1 = P1, 2 = P2). */
+  winner: 0 | 1 | 2;
 }
 
 export type GameStateChangeHandler = (
@@ -66,6 +68,10 @@ export class GameStateAdapter {
   private lastHandLog: string | null = null;
   private onChange: GameStateChangeHandler;
   private polling = false;
+  /** Set during poll() when playerId is unresolved; checked in finally to
+   *  schedule a fast re-poll AFTER polling=false so the retry isn't silently
+   *  dropped by the re-entrancy guard. */
+  private needsFastRetry = false;
   private midnightAddressRegistered = false;
 
   /** Frontend-driven action log — persisted per lobby in localStorage so a
@@ -266,9 +272,11 @@ export class GameStateAdapter {
       // joinedLobby tx. The 30s safety poll is way too slow here, and WS
       // doesn't fire for this transition (the Midnight contract state
       // hasn't changed; only the EVM lobby_players row was inserted).
-      // Schedule a fast re-poll until the wallet shows up.
+      // Flag for a fast re-poll; the actual setTimeout lives in finally{}
+      // so it fires AFTER polling=false — otherwise the retry can race
+      // into the re-entrancy guard and get silently dropped.
       if (rawState.playerId === 0) {
-        setTimeout(() => this.poll(), 2000);
+        this.needsFastRetry = true;
       }
 
       // Decrypt player hand using the real player secret stored in PlayerKeyManager.
@@ -324,14 +332,8 @@ export class GameStateAdapter {
       const myPlayer = players[rawState.playerId - 1];
       const opponentPlayer = players[rawState.playerId === 1 ? 1 : 0];
 
-      // Pull lastMoveAt from the contract in parallel with the rest of the
-      // poll. Swallow errors — 0 just disables the countdown for this tick.
-      let lastMoveAt = 0;
-      try {
-        lastMoveAt = await MidnightService.getLastMoveAt(this.lobbyId);
-      } catch (err) {
-        console.warn('[GameStateAdapter] getLastMoveAt failed:', err instanceof Error ? err.message : String(err));
-      }
+      const lastMoveAt = (rawState.lastMoveAt as number | undefined) ?? 0;
+      const winner: 0 | 1 | 2 = (rawState.winner as 0 | 1 | 2 | undefined) ?? 0;
 
       const current: GameSceneState = {
         phase: rawState.phase ?? 'dealing',
@@ -349,6 +351,7 @@ export class GameStateAdapter {
         gameLog: this.gameLog,
         lastAskedRank: (rawState.lastAskedRank as number | null | undefined) ?? null,
         lastMoveAt,
+        winner,
       };
 
       const changes = this.detectChanges(current, this.previousState);
@@ -373,6 +376,10 @@ export class GameStateAdapter {
       console.warn('[GameStateAdapter] Poll error:', err);
     } finally {
       this.polling = false;
+      if (this.needsFastRetry) {
+        this.needsFastRetry = false;
+        setTimeout(() => this.poll(), 2000);
+      }
     }
   }
 

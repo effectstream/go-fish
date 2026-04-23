@@ -23,7 +23,8 @@ import * as EffectstreamBridge from '../effectstreamBridge';
 import { getWalletAddress } from '../effectstreamBridge';
 import * as GoFishContractService from './GoFishContractService';
 import * as PlayerKeyManager from './PlayerKeyManager';
-import { setCachedGame, getCachedGame } from './HandCache';
+import { setCachedGame, getCachedGame, clearCachedGame, listCachedGames } from './HandCache';
+import { GameSessionManager } from '../game/GameSessionManager';
 
 export class GoFishGameService {
   private static instance: GoFishGameService;
@@ -147,6 +148,7 @@ export class GoFishGameService {
         name: apiLobby.lobby_name || 'Unnamed Lobby',
         hostId: apiLobby.host_account_id?.toString() || '',
         hostName: apiLobby.host_name || 'Unknown',
+        guestName: apiLobby.guest_name || undefined,
         playerCount: parseInt(apiLobby.player_count) || 0,
         status: apiLobby.status === 'open' ? 'waiting' as const : 'in_progress' as const,
         createdAt: new Date(apiLobby.created_at).getTime(),
@@ -240,11 +242,7 @@ export class GoFishGameService {
           console.log(`[GoFishGameService] Resume skip ${lobbyId}: contract has no game`);
           continue;
         }
-        if (contractState.isGameOver) {
-          console.log(`[GoFishGameService] Resume skip ${lobbyId}: game_over`);
-          continue;
-        }
-        if (!PlayerKeyManager.hasExistingKeys(lobbyId, playerId)) {
+        if (!contractState.isGameOver && !PlayerKeyManager.hasExistingKeys(lobbyId, playerId)) {
           console.log(`[GoFishGameService] Resume skip ${lobbyId}: no local keys`);
           continue;
         }
@@ -260,6 +258,7 @@ export class GoFishGameService {
           opponentScore: contractState.scores[opponentIdx] ?? 0,
           isMyTurn: contractState.currentTurn === playerId,
           phase: contractState.phase,
+          winner: contractState.winner,
         });
       } catch (err) {
         console.warn(`[GoFishGameService] findResumableGames: error on ${lobbyId}`, err);
@@ -282,6 +281,29 @@ export class GoFishGameService {
    * device or tab whose session isn't alive here.
    */
   async refreshResumableCache(): Promise<void> {
+    const wallet = getWalletAddress();
+
+    // Fetch the server-authoritative list of the user's lobbies. Lobbies
+    // that expired (open > 10 min) are no longer returned by /user_lobbies,
+    // so any cached entry not in this set is stale and should be cleared.
+    let serverLobbyIds: Set<string> | null = null;
+    if (wallet) {
+      try {
+        const res = await EffectstreamBridge.getUserLobbies(wallet, 0, 50);
+        if (res.success && res.lobbies) {
+          serverLobbyIds = new Set(res.lobbies.map((l: any) => String(l.lobby_id)));
+        }
+      } catch { /* best-effort */ }
+    }
+
+    if (serverLobbyIds) {
+      for (const [lobbyId] of listCachedGames()) {
+        if (serverLobbyIds.has(lobbyId)) continue;
+        if (GameSessionManager.instance.get(lobbyId)) continue;
+        clearCachedGame(lobbyId);
+      }
+    }
+
     const games = await this.findResumableGames();
     for (const g of games) {
       const existing = getCachedGame(g.lobbyId);
@@ -296,6 +318,7 @@ export class GoFishGameService {
         isMyTurn: g.isMyTurn,
         phase: g.phase,
         inFlight: existing?.inFlight ?? null,
+        winner: g.winner ?? existing?.winner ?? 0,
         updatedAt: Date.now(),
       });
     }

@@ -393,6 +393,7 @@ export class GameSession extends EventTarget {
         isMyTurn: current.currentTurn === current.playerId,
         phase: PHASE_STRING_TO_NUMBER[current.phase] ?? 0,
         inFlight: this.computeInFlight(),
+        winner: current.winner ?? 0,
         updatedAt: Date.now(),
       });
     }
@@ -533,14 +534,8 @@ export class GameSession extends EventTarget {
     }
 
     if (changes.gameOver) {
-      const myIdx = current.playerId - 1;
-      const oppIdx = current.playerId === 1 ? 1 : 0;
-      const my = current.scores[myIdx];
-      const theirs = current.scores[oppIdx];
-      const winner: 1 | 2 | null =
-        my > theirs ? (current.playerId as 1 | 2) :
-        theirs > my ? (current.playerId === 1 ? 2 : 1) :
-        null;
+      const w = current.winner;
+      const winner: 1 | 2 | null = (w === 1 || w === 2) ? w : null;
       this.emit('ended', { winner, snapshot: this.getSnapshot() });
     }
   }
@@ -1434,11 +1429,18 @@ export class GameSession extends EventTarget {
       const handBefore = this.getState()?.myHand ?? [];
 
       // Wait for the chain to advance out of WaitForDrawCheck.
+      // If the adapter already shows turn_start (batcher was fast), skip
+      // the polling loop — otherwise pollUntilPhase never sees
+      // wait_draw_check, everSawCurrent stays false, and we time out.
       this.notify('Drawing...', 'Waiting for chain confirmation...', 30000);
-      const stateAfterDraw = await this.adapter?.pollUntilPhase(
-        'wait_draw_check',
-        ['turn_start'],
-      );
+      await this.adapter?.forcePoll();
+      const alreadyAdvanced = this.getState()?.phase === 'turn_start';
+      const stateAfterDraw = alreadyAdvanced
+        ? this.getState()
+        : await this.adapter?.pollUntilPhase(
+            'wait_draw_check',
+            ['turn_start'],
+          );
 
       const handAfter = stateAfterDraw?.myHand ?? this.getState()?.myHand ?? [];
 

@@ -93,9 +93,6 @@ export class GameHUD {
   private lastState: HUDState | null = null;
   private menuOpen = false;
   private notificationTimeout: number | null = null;
-  /** Last phase seen by updateActionPanel — the 3-dots menu's label copy
-   *  ("Concede" vs "Close Game") depends on this. */
-  private lastPhase: string = '';
 
   // Action callbacks
   onRespondClick: (() => void) | null = null;
@@ -125,13 +122,13 @@ export class GameHUD {
       color: #e0e0e0;
     `;
 
-    // Turn indicator bar (top) — 3-slot grid: [player name] [turn status] [phase]
+    // Turn indicator bar (top) — 3-slot grid: [player name] [turn status] [menu]
     this.turnBar = document.createElement('div');
     this.turnBar.style.cssText = `
       position: absolute; top: 0; left: 0; width: 100%;
       padding: 10px 20px;
       display: grid;
-      grid-template-columns: 1fr auto 1fr;
+      grid-template-columns: 1fr auto auto;
       align-items: center;
       gap: 12px;
       background: rgba(0, 0, 0, 0.6);
@@ -276,9 +273,7 @@ export class GameHUD {
     this.menuBtn.setAttribute('aria-label', 'More actions');
     this.menuBtn.dataset.sfx = 'none';
     this.menuBtn.style.cssText = `
-      position: absolute; top: 10px; right: 18px;
       width: 36px; height: 36px;
-      z-index: 20;
       background: rgba(0, 0, 0, 0.55);
       color: #ffcc66;
       border: 1px solid rgba(255, 170, 0, 0.45);
@@ -303,7 +298,7 @@ export class GameHUD {
       e.stopPropagation();
       this.toggleMenu();
     });
-    this.container.appendChild(this.menuBtn);
+    this.turnBar.appendChild(this.menuBtn);
 
     // Popover that drops down from the 3-dots button.
     this.menuPopover = document.createElement('div');
@@ -399,10 +394,10 @@ export class GameHUD {
     this.turnBar.innerHTML = `
       <span class="hud-name-slot loading-placeholder">Loading…</span>
       <span class="hud-turn-slot loading-placeholder">Loading…</span>
-      <span class="hud-phase-slot"></span>
     `;
+    this.turnBar.appendChild(this.menuBtn);
     this.scorePanel.innerHTML = `
-      <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Score</div>
+      <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Books</div>
       <div>Player: <span class="loading-placeholder">Loading…</span></div>
       <div style="margin-top: 6px;">Opponent: <span class="loading-placeholder">Loading…</span></div>
       <div style="margin-top: 8px; opacity: 0.6; font-size: 12px;">
@@ -420,8 +415,11 @@ export class GameHUD {
     this.stopCountdownTicker();
   }
 
+  clearActionPanel(): void {
+    this.actionPanel.innerHTML = '';
+  }
+
   update(state: HUDState): void {
-    this.lastPhase = state.phase;
     this.lastState = state;
     this.updateTurnBar(state);
     this.updateScorePanel(state);
@@ -706,9 +704,7 @@ export class GameHUD {
          ">${escapeHtml(state.lobbyName)}</span>`
       : `<span class="hud-name-slot loading-placeholder" style="justify-self: start; font-size: 14px;">Loading…</span>`;
 
-    // Choose the centre turn-status content + right-slot phase text.
     let turnHtml: string;
-    let phaseHtml: string = '';
 
     if (state.isGameOver) {
       // Winner-specific copy once getWinner resolves. While it's still
@@ -737,57 +733,31 @@ export class GameHUD {
       // to "Click a card to ask" between submission and the phase advancing
       // to wait_response on-chain.
       turnHtml = '<span style="color: #ffaa00;">Your Turn</span>';
-      phaseHtml = 'Waiting for opponent\'s response...';
     } else {
       const turnColor = state.isMyTurn ? '#ffaa00' : '#88ccff';
       const turnText = state.isMyTurn ? 'Your Turn' : `${state.opponentName}'s Turn`;
       turnHtml = `<span style="color: ${turnColor};">${turnText}</span>`;
-      phaseHtml = this.getPhaseDescription(state.phase, state.isMyTurn, state.deckCount);
     }
 
     this.turnBar.innerHTML = `
       ${nameSlot}
       <span class="hud-turn-slot">${turnHtml}</span>
-      <span class="hud-phase-slot" style="
-        justify-self: end;
-        opacity: 0.6;
-        font-size: 14px;
-        font-weight: normal;
-        max-width: 320px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      ">${phaseHtml}</span>
     `;
-  }
-
-  private getPhaseDescription(phase: string, isMyTurn: boolean, deckCount: number): string {
-    switch (phase) {
-      case 'turn_start': return isMyTurn ? 'Click a card to ask for its rank' : 'Opponent is choosing...';
-      case 'wait_response': return isMyTurn ? 'Waiting for response...' : 'Check your hand';
-      case 'wait_transfer': return 'Transferring cards...';
-      case 'wait_draw': return isMyTurn
-        ? (deckCount > 0 ? 'Click the deck to draw a card' : 'Deck is empty')
-        : 'Opponent drawing...';
-      case 'wait_draw_check': return 'Checking drawn card...';
-      default: return phase;
-    }
+    this.turnBar.appendChild(this.menuBtn);
   }
 
   private updateScorePanel(state: HUDState): void {
-    const myBooksLine = state.myBooks.length > 0
-      ? `<div style="margin-top: 2px; font-size: 12px; opacity: 0.75;">Books: ${formatBookRanks(state.myBooks)}</div>`
-      : '';
-    const oppBooksLine = state.opponentBooks.length > 0
-      ? `<div style="margin-top: 2px; font-size: 12px; opacity: 0.75;">Books: ${formatBookRanks(state.opponentBooks)}</div>`
-      : '';
+    const myBooksLabel = state.myBooks.length > 0
+      ? formatBookRanks(state.myBooks)
+      : '—';
+    const oppBooksLabel = state.opponentBooks.length > 0
+      ? formatBookRanks(state.opponentBooks)
+      : '—';
 
     this.scorePanel.innerHTML = `
-      <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Score</div>
-      <div>${state.playerName}: <strong>${state.myScore}</strong></div>
-      ${myBooksLine}
-      <div style="margin-top: 6px;">${state.opponentName}: <strong>${state.opponentScore}</strong></div>
-      ${oppBooksLine}
+      <div style="font-weight: bold; color: #ffaa00; margin-bottom: 6px;">Books</div>
+      <div>${state.playerName}: <strong>${myBooksLabel}</strong></div>
+      <div style="margin-top: 6px;">${state.opponentName}: <strong>${oppBooksLabel}</strong></div>
       <div style="margin-top: 8px; opacity: 0.6; font-size: 12px;">
         Deck: ${state.deckCount} | Your hand: ${state.myHandSize} | Their hand: ${state.opponentHandSize}
       </div>

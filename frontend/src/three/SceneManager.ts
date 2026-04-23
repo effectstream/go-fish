@@ -38,6 +38,7 @@ export class SceneManager {
     // the visible screen. The canvas swaps to that game's scene without
     // affecting which side-panel screen is showing.
     document.body.addEventListener('select-game', this.onSelectGame as EventListener, true);
+    document.body.addEventListener('leave-game', this.onLeaveGame as EventListener, true);
     // If the foregrounded session gets force-destroyed (e.g. user clicks ×
     // on the Active Games card for the game currently on the canvas),
     // tear the scene down — otherwise we'd render stale state from a
@@ -48,6 +49,7 @@ export class SceneManager {
   detach(): void {
     document.body.removeEventListener('navigate', this.onNavigate as EventListener, true);
     document.body.removeEventListener('select-game', this.onSelectGame as EventListener, true);
+    document.body.removeEventListener('leave-game', this.onLeaveGame as EventListener, true);
     GameSessionManager.instance.removeEventListener('sessionRemoved', this.onSessionRemoved as EventListener);
     this.gameScene.stop();
   }
@@ -55,6 +57,10 @@ export class SceneManager {
   private onSelectGame = (event: CustomEvent): void => {
     const { lobbyId } = event.detail || {};
     if (lobbyId) this.enterGame(lobbyId);
+  };
+
+  private onLeaveGame = (): void => {
+    this.leaveGame();
   };
 
   private onSessionRemoved = (event: CustomEvent): void => {

@@ -18,7 +18,7 @@ import { grammar } from "@go-fish/data-types/grammar";
 import { contractAddressesEvmMain } from "@go-fish/evm-contracts";
 import { readMidnightContract } from "@paimaexample/midnight-contracts/read-contract";
 import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
-import * as GoFishContract from "@go-fish/midnight-contract/contract";
+import { parseGoFishLedger } from "./ledger-parser.ts";
 
 const mainSyncProtocolName = "mainNtp";
 
@@ -119,7 +119,7 @@ export const config = new ConfigBuilder()
             },
           ).contractAddress,
           stateMachinePrefix: "event_midnight",
-          contract: { ledger: GoFishContract.ledger },
+          contract: { ledger: parseGoFishLedger },
           networkId: midnightNetworkConfig.id,
         })
       )

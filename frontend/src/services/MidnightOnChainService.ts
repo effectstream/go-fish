@@ -799,7 +799,7 @@ export async function onChainApplyMask(
       const isAlreadyApplied = msg.includes("already applied") ||
         msg.includes("Player has already applied");
       if (isDelegated || isAlreadyApplied) {
-        console.log("[MidnightOnChain] applyMask threw after delegation or already-applied — notifying backend anyway");
+        console.warn("[MidnightOnChain] applyMask threw after delegation or already-applied — notifying backend anyway. Error:", msg);
         return { success: true };
       }
       return { success: false, errorMessage: msg };
