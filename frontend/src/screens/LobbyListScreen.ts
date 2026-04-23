@@ -64,13 +64,26 @@ export class LobbyListScreen {
    *  highlight tracks the foreground session without a full re-render. */
   private applyForegroundToResumeButtons(): void {
     const fg = GameSessionManager.instance.foregroundLobbyId;
+
+    // Active Games section
     const buttons = document.querySelectorAll<HTMLElement>('.resume-btn');
     buttons.forEach(btn => {
       const lobbyId = btn.dataset.lobbyId;
-      btn.style.display = lobbyId && lobbyId === fg ? 'none' : '';
+      const isOutcome = btn.classList.contains('btn-success') || btn.classList.contains('btn-danger');
+      btn.style.display = !isOutcome && lobbyId && lobbyId === fg ? 'none' : '';
     });
     const cards = document.querySelectorAll<HTMLElement>('.resume-card');
     cards.forEach(card => {
+      const lobbyId = card.dataset.lobbyId;
+      card.classList.toggle('active', !!lobbyId && lobbyId === fg);
+    });
+
+    // Available Lobbies section
+    document.querySelectorAll<HTMLElement>('.join-btn').forEach(btn => {
+      const lobbyId = btn.dataset.lobbyId;
+      btn.style.display = lobbyId && lobbyId === fg ? 'none' : '';
+    });
+    document.querySelectorAll<HTMLElement>('.lobby-card:not(.resume-card)').forEach(card => {
       const lobbyId = card.dataset.lobbyId;
       card.classList.toggle('active', !!lobbyId && lobbyId === fg);
     });
@@ -182,11 +195,14 @@ export class LobbyListScreen {
     // preparing-badge logic.
     const lobbies = await this.gameService.fetchOpenLobbies();
 
-    // Lobbies still in 'open' status belong in "Available Lobbies" — NOT
-    // Active Games. Drop any stale HandCache entry for an open lobby so we
-    // don't double-render the row.
+    // Lobbies still in 'open' (waiting) status belong in "Available Lobbies"
+    // — NOT Active Games. Drop any stale HandCache entry so we don't
+    // double-render. Keep cache for in_progress lobbies — they need it for
+    // the mini-hand preview.
     const openLobbyIds = new Set(lobbies.map(l => l.id));
-    for (const id of openLobbyIds) clearCachedGame(id);
+    for (const l of lobbies) {
+      if (l.status === 'waiting') clearCachedGame(l.id);
+    }
 
     // Active Games section is now cache-primary:
     //   - HandCache provides the base snapshot (scores, phase, turn, hand,
@@ -212,28 +228,12 @@ export class LobbyListScreen {
       // Just update the lobby list without full re-render
       const lobbyListEl = document.querySelector('.lobby-list');
       if (lobbyListEl) {
-        lobbyListEl.innerHTML = lobbies.length === 0
+        const modalVisible = lobbies.filter(l => l.playerCount < 2 || l.isPlayerInLobby);
+        lobbyListEl.innerHTML = modalVisible.length === 0
           ? '<div class="empty-state">No lobbies available. Create one!</div>'
-          : lobbies.map(lobby => this.renderLobby(lobby)).join('');
+          : modalVisible.map(lobby => this.renderLobby(lobby)).join('');
 
-        // Reattach join button listeners
-        document.querySelectorAll('.join-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            const target = e.target as HTMLElement;
-            const lobbyId = target.dataset.lobbyId;
-            const isRejoin = target.dataset.isRejoin === 'true';
-            if (lobbyId) {
-              if (isRejoin) {
-                console.log('[LobbyListScreen] Rejoining lobby (selecting on canvas):', lobbyId);
-                // Same as Resume: stay on the menu, swap the canvas.
-                this.dispatchEvent('navigate', { screen: 'lobby-list' });
-                this.dispatchEvent('select-game', { lobbyId });
-              } else {
-                this.joinLobby(lobbyId);
-              }
-            }
-          });
-        });
+        this.attachJoinButtonListeners();
       }
       return;
     }
@@ -249,6 +249,8 @@ export class LobbyListScreen {
       ...enrichedGames.map(g => g.lobbyName),
     ]);
     const defaultLobbyName = this.nextAvailableLobbyName(`${playerName}'s game`, existingNames);
+
+    const visibleLobbies = lobbies.filter(l => l.playerCount < 2 || l.isPlayerInLobby);
 
     this.container.innerHTML = `
       <div class="lobby-list-screen">
@@ -271,11 +273,11 @@ export class LobbyListScreen {
             </div>
           ` : ''}
 
-          <h2>Available Lobbies (${lobbies.length})</h2>
+          <h2>Available Lobbies (${visibleLobbies.length})</h2>
           <div class="lobby-list">
-            ${lobbies.length === 0
+            ${visibleLobbies.length === 0
               ? '<div class="empty-state">No lobbies available yet.</div>'
-              : lobbies.map(lobby => this.renderLobby(lobby)).join('')
+              : visibleLobbies.map(lobby => this.renderLobby(lobby)).join('')
             }
           </div>
         </div>
@@ -283,6 +285,26 @@ export class LobbyListScreen {
         <footer class="side-footer">
           <button id="create-lobby-btn" class="btn btn-primary tx-guarded">Create New Lobby</button>
         </footer>
+
+        <!-- About Modal -->
+        <div id="about-modal" class="info-modal-overlay" style="display: none;">
+          <div class="info-modal">
+            <button class="modal-close-btn" id="about-close-btn">&times;</button>
+            <h2 class="info-modal-title">Go Fish</h2>
+            <p class="info-modal-desc">
+              A privacy-preserving card game built on the
+              <strong>Midnight</strong> blockchain. Cards are shuffled and dealt
+              using zero-knowledge proofs — no one can peek at your hand, not
+              even the server.
+            </p>
+            <a href="https://github.com/effectstream/mnf-game-issues/issues"
+               target="_blank" rel="noopener noreferrer"
+               class="btn btn-primary info-modal-link">Report Issues</a>
+            <a href="https://github.com/effectstream/go-fish"
+               target="_blank" rel="noopener noreferrer"
+               class="btn btn-secondary info-modal-link">Source Code</a>
+          </div>
+        </div>
 
         <!-- Create Lobby Modal (with overlay) -->
         <div id="create-lobby-modal" class="create-lobby-modal-overlay" style="display: none;">
@@ -386,11 +408,15 @@ export class LobbyListScreen {
             <span class="books">${game.opponentScore}</span>
           </div>
         </div>
-        ${isForeground ? '' : `
+        ${finished ? `
+          <button class="btn ${game.winner === game.playerId ? 'btn-success' : 'btn-danger'} resume-btn" data-lobby-id="${game.lobbyId}">
+            ${game.winner === game.playerId ? 'You Win!' : game.winner === 0 ? 'Draw' : 'You Lost'}
+          </button>
+        ` : (isForeground ? '' : `
           <button class="btn btn-primary resume-btn tx-guarded" data-lobby-id="${game.lobbyId}">
             ${meActive ? 'Play Turn' : 'Resume'}
           </button>
-        `}
+        `)}
       </div>
     `;
   }
@@ -442,6 +468,7 @@ export class LobbyListScreen {
           isMyTurn: state.currentTurn === state.playerId,
           phase: PHASE_STRING_TO_NUMBER[state.phase] ?? cached?.phase ?? 0,
           inFlight: snap.inFlight,
+          winner: state.winner ?? cached?.winner ?? 0,
         });
         continue;
       }
@@ -462,6 +489,7 @@ export class LobbyListScreen {
           isMyTurn: cached?.isMyTurn ?? false,
           phase: cached?.phase ?? 0,
           inFlight: snap?.inFlight ?? null,
+          winner: cached?.winner ?? 0,
         });
         continue;
       }
@@ -478,6 +506,7 @@ export class LobbyListScreen {
           isMyTurn: cached.isMyTurn,
           phase: cached.phase,
           inFlight: cached.inFlight,
+          winner: cached.winner ?? 0,
         });
       }
     }
@@ -546,58 +575,96 @@ export class LobbyListScreen {
 
   private renderLobby(lobby: Lobby): string {
     const isFull = lobby.playerCount >= 2;
-    // Preparing: host's applyMask hasn't landed yet. Show "Preparing…" to
-    // everyone — including anyone the backend thinks is "in the lobby" (the
-    // host themselves, or a wallet-collision peer in the dev environment).
-    // The host stays on the LobbyScreen during prep, so they don't rely on a
-    // Rejoin button here. Letting Rejoin leak through would give P2 (under
-    // wallet collision) a way to skip the preparing gate.
     const isPreparing = lobby.hostMaskApplied === false;
+    const isMember = lobby.isPlayerInLobby === true;
+    const isForeground =
+      GameSessionManager.instance.foregroundLobbyId === lobby.id;
 
-    const statusLabel = isPreparing ? 'preparing' : lobby.status;
-    const statusClass = isPreparing ? 'preparing' : lobby.status;
+    // Check cache/session for game outcome
+    const cached = isMember ? getCachedGame(lobby.id) : null;
+    const session = isMember ? GameSessionManager.instance.get(lobby.id) : undefined;
+    const snap = session?.getSnapshot();
+    const winner = snap?.state?.winner ?? cached?.winner ?? 0;
+    const playerId = snap?.playerId ?? cached?.playerId ?? 0;
+    const phase = snap?.state ? (PHASE_STRING_TO_NUMBER[snap.state.phase] ?? 0) : (cached?.phase ?? 0);
+    const finished = phase === 6;
+
+    const statusLabel = finished ? 'finished' : isPreparing ? 'preparing' : lobby.status;
+    const statusClass = finished ? 'finished' : isPreparing ? 'preparing' : lobby.status;
 
     let buttonLabel: string;
     let buttonDisabled: boolean;
-    if (isPreparing) {
-      buttonLabel = 'Preparing…';
-      buttonDisabled = true;
-    } else if (lobby.isPlayerInLobby) {
+    let buttonAction: string;
+    let buttonClass = 'btn-primary';
+
+    if (isMember && finished) {
+      buttonLabel = winner === playerId ? 'You Win!' : winner === 0 ? 'Draw' : 'You Lost';
+      buttonClass = winner === playerId ? 'btn-success' : 'btn-danger';
+      buttonDisabled = false;
+      buttonAction = 'rejoin-game';
+    } else if (isMember) {
       buttonLabel = 'Rejoin';
       buttonDisabled = false;
-    } else if (isFull) {
-      buttonLabel = 'Full';
+      buttonAction = isFull ? 'rejoin-game' : 'rejoin-lobby';
+    } else if (isPreparing) {
+      buttonLabel = 'Preparing…';
       buttonDisabled = true;
+      buttonAction = 'join';
     } else {
-      buttonLabel = 'Join';
+      buttonLabel = 'Join Game';
       buttonDisabled = false;
+      buttonAction = 'join';
     }
 
+    const miniHand = isMember ? this.miniHandFor(lobby.id) : null;
+    const MINI_HAND_FAN_CAP = 5;
+    const visibleCards = miniHand?.cards.slice(0, MINI_HAND_FAN_CAP) ?? [];
+    const hiddenCount = Math.max(0, (miniHand?.total ?? 0) - visibleCards.length);
+    const hasMiniHand = visibleCards.length > 0 || hiddenCount > 0;
+
     return `
-      <div class="lobby-card" data-lobby-id="${lobby.id}">
+      <div class="lobby-card ${isForeground ? 'active' : ''}" data-lobby-id="${lobby.id}">
         <div class="lobby-header">
           <h3>${lobby.name}</h3>
           <span class="lobby-status ${statusClass}">${statusLabel}</span>
         </div>
         <div class="lobby-info">
-          <div class="info-item">
-            <span class="label">Host:</span>
-            <span class="value">${lobby.hostName}</span>
-          </div>
-          <div class="info-item">
-            <span class="label">Players:</span>
-            <span class="value">${lobby.playerCount} / 2</span>
-          </div>
+          ${isFull && lobby.guestName
+            ? `<div class="info-item">
+                 <span class="value">${lobby.hostName.slice(0, 16)} <span class="label">vs</span> ${lobby.guestName.slice(0, 16)}</span>
+               </div>`
+            : `<div class="info-item">
+                 <span class="label">Host:</span>
+                 <span class="value">${lobby.hostName.slice(0, 16)}</span>
+               </div>
+               <div class="info-item">
+                 <span class="label">Players:</span>
+                 <span class="value">${lobby.playerCount} / 2</span>
+               </div>`
+          }
         </div>
-        <button
-          class="btn btn-primary join-btn tx-guarded"
-          data-lobby-id="${lobby.id}"
-          data-is-rejoin="${lobby.isPlayerInLobby ? 'true' : 'false'}"
-          ${buttonDisabled ? 'disabled' : ''}
-          ${isPreparing ? 'title="Host is still preparing their deck"' : ''}
-        >
-          ${buttonLabel}
-        </button>
+        ${hasMiniHand ? `
+          <div class="mini-hand">
+            ${visibleCards.map(c => `
+              <div class="mini-card ${c.red ? 'red' : ''}">
+                <span class="mc-rank">${c.rank}</span>
+                <span class="mc-suit">${c.suit}</span>
+              </div>
+            `).join('')}
+            ${hiddenCount > 0 ? `<div class="mini-card-more">+${hiddenCount}</div>` : ''}
+          </div>
+        ` : ''}
+        ${isForeground ? '' : `
+          <button
+            class="btn ${buttonClass} join-btn tx-guarded"
+            data-lobby-id="${lobby.id}"
+            data-action="${buttonAction}"
+            ${buttonDisabled ? 'disabled' : ''}
+            ${isPreparing ? 'title="Host is still preparing their deck"' : ''}
+          >
+            ${buttonLabel}
+          </button>
+        `}
       </div>
     `;
   }
@@ -619,15 +686,123 @@ export class LobbyListScreen {
       document.dispatchEvent(new CustomEvent('open-leaderboard', { bubbles: true }));
     });
 
-    // Help icon — placeholder for a future "How to play" modal.
+    // Help modal — appended to document.body so it covers the full viewport
+    let helpModal = document.getElementById('help-modal');
+    if (!helpModal) {
+      helpModal = document.createElement('div');
+      helpModal.id = 'help-modal';
+      helpModal.className = 'info-modal-overlay';
+      helpModal.style.display = 'none';
+      helpModal.innerHTML = `
+        <div class="info-modal info-modal--wide">
+          <button class="modal-close-btn" id="help-close-btn">&times;</button>
+          <h2 class="info-modal-title">How to Play</h2>
+          <div class="help-steps">
+            <div class="help-step">
+              <div class="help-visual">
+                <div class="mini-hand help-hand">
+                  <div class="mini-card red"><span class="mc-rank">A</span><span class="mc-suit">&hearts;</span></div>
+                  <div class="mini-card red"><span class="mc-rank">2</span><span class="mc-suit">&diams;</span></div>
+                  <div class="mini-card"><span class="mc-rank">3</span><span class="mc-suit">&clubs;</span></div>
+                  <div class="mini-card red"><span class="mc-rank">4</span><span class="mc-suit">&hearts;</span></div>
+                  <div class="mini-card"><span class="mc-rank">5</span><span class="mc-suit">&clubs;</span></div>
+                  <div class="mini-card red"><span class="mc-rank">6</span><span class="mc-suit">&diams;</span></div>
+                  <div class="mini-card"><span class="mc-rank">7</span><span class="mc-suit">&clubs;</span></div>
+                </div>
+              </div>
+              <div class="help-text">
+                <strong>The Deck</strong>
+                <span>21 cards &mdash; 7 ranks (A, 2&ndash;7), each in &hearts; &diams; &clubs;</span>
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-visual">
+                <div class="mini-hand help-hand">
+                  <div class="mini-card red"><span class="mc-rank">A</span><span class="mc-suit">&hearts;</span></div>
+                  <div class="mini-card"><span class="mc-rank">3</span><span class="mc-suit">&clubs;</span></div>
+                  <div class="mini-card red"><span class="mc-rank">5</span><span class="mc-suit">&diams;</span></div>
+                  <div class="mini-card"><span class="mc-rank">7</span><span class="mc-suit">&clubs;</span></div>
+                </div>
+              </div>
+              <div class="help-text">
+                <strong>Deal</strong>
+                <span>Each player is dealt 4 cards</span>
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-visual">
+                <div class="help-ask-example">
+                  <div class="mini-card red help-card-highlight"><span class="mc-rank">A</span><span class="mc-suit">&hearts;</span></div>
+                  <span class="help-arrow">&rarr;</span>
+                  <span class="help-speech">Got any Aces?</span>
+                </div>
+              </div>
+              <div class="help-text">
+                <strong>Your Turn</strong>
+                <span>Pick a rank you hold and ask your opponent for it. They must hand over all matching cards.</span>
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-visual">
+                <div class="help-ask-example">
+                  <span class="help-speech">Nope!</span>
+                  <span class="help-arrow">&rarr;</span>
+                  <div class="mini-card help-card-facedown"><span class="mc-suit">?</span></div>
+                </div>
+              </div>
+              <div class="help-text">
+                <strong>Go Fish!</strong>
+                <span>No match? Draw a card from the deck. Your turn ends.</span>
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-visual">
+                <div class="help-book-example">
+                  <div class="mini-card red"><span class="mc-rank">A</span><span class="mc-suit">&hearts;</span></div>
+                  <div class="mini-card red"><span class="mc-rank">A</span><span class="mc-suit">&diams;</span></div>
+                  <div class="mini-card"><span class="mc-rank">A</span><span class="mc-suit">&clubs;</span></div>
+                  <span class="help-book-label">= 1 Book</span>
+                </div>
+              </div>
+              <div class="help-text">
+                <strong>Books</strong>
+                <span>Collect all 3 suits of a rank to score a Book (1 point). Books are scored automatically.</span>
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-visual">
+                <span class="help-trophy">&#x1f3c6;</span>
+              </div>
+              <div class="help-text">
+                <strong>Winning</strong>
+                <span>The player with the most Books when the game ends wins!</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(helpModal);
+      helpModal.querySelector('#help-close-btn')!.addEventListener('click', () => {
+        helpModal!.style.display = 'none';
+      });
+      helpModal.addEventListener('click', (e) => {
+        if (e.target === helpModal) helpModal!.style.display = 'none';
+      });
+    }
     document.getElementById('help-btn')?.addEventListener('click', () => {
-      console.log('[LobbyListScreen] Help button clicked — modal not implemented yet');
+      helpModal!.style.display = 'flex';
     });
 
-    // About / Report icon — placeholder for a future "About & Report an
-    // issue" modal.
+    // About modal
+    const aboutModal = document.getElementById('about-modal');
+    const aboutClose = document.getElementById('about-close-btn');
     document.getElementById('about-btn')?.addEventListener('click', () => {
-      console.log('[LobbyListScreen] About button clicked — modal not implemented yet');
+      if (aboutModal) aboutModal.style.display = 'flex';
+    });
+    aboutClose?.addEventListener('click', () => {
+      if (aboutModal) aboutModal.style.display = 'none';
+    });
+    aboutModal?.addEventListener('click', (e) => {
+      if (e.target === aboutModal) aboutModal.style.display = 'none';
     });
 
     // Resume buttons — jump straight into the game screen
@@ -672,25 +847,27 @@ export class LobbyListScreen {
       });
     });
 
-    // Join buttons
+    this.attachJoinButtonListeners();
+  }
+
+  private attachJoinButtonListeners(): void {
     document.querySelectorAll('.join-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        // Tx-in-flight guard covers BOTH the join-tx path and the rejoin
-        // foreground-swap path for the same reason as .resume-btn above.
         if (!ensureNotBusy()) return;
         const target = e.target as HTMLElement;
         const lobbyId = target.dataset.lobbyId;
-        const isRejoin = target.dataset.isRejoin === 'true';
-        if (lobbyId) {
-          if (isRejoin) {
-            // Already in the lobby — no join tx needed. Stay on the menu
-            // and just swap the canvas to this game (same UX as Resume).
-            console.log('[LobbyListScreen] Rejoining lobby (selecting on canvas):', lobbyId);
-            this.dispatchEvent('navigate', { screen: 'lobby-list' });
-            this.dispatchEvent('select-game', { lobbyId });
-          } else {
-            this.joinLobby(lobbyId);
-          }
+        const action = target.dataset.action;
+        if (!lobbyId) return;
+
+        if (action === 'rejoin-game') {
+          console.log('[LobbyListScreen] Rejoining game (selecting on canvas):', lobbyId);
+          this.dispatchEvent('navigate', { screen: 'lobby-list' });
+          this.dispatchEvent('select-game', { lobbyId });
+        } else if (action === 'rejoin-lobby') {
+          console.log('[LobbyListScreen] Returning to lobby screen:', lobbyId);
+          this.dispatchEvent('navigate', { screen: 'lobby', lobbyId });
+        } else {
+          this.joinLobby(lobbyId);
         }
       });
     });
@@ -830,12 +1007,15 @@ export class LobbyListScreen {
       const success = await this.gameService.joinLobby(lobbyId);
       if (success) {
         soundManager.playSuccess();
-        // Eagerly create the GameSession for the joined lobby so its
-        // background setup (mask → deal → startGame) starts immediately.
-        // Without this, the session would only spin up when the user
-        // clicks the Active Games card, delaying all of dealing.
         const wallet = getWalletAddress() || '';
+
+        // Wait for the Paima node to process the join tx before creating
+        // the GameSession. The EVM tx confirms instantly (Hardhat automine)
+        // but the state machine processes the block asynchronously — if we
+        // create the session immediately, its first poll hits /lobby_state
+        // before the lobby_players insert and gets playerId=0.
         if (wallet) {
+          await this.waitForJoinConfirmation(lobbyId, wallet);
           try {
             GameSessionManager.instance.getOrCreate(lobbyId, wallet);
           } catch (err) {
@@ -884,6 +1064,30 @@ export class LobbyListScreen {
     }
   }
 
+  /**
+   * Poll /lobby_state until our wallet appears in the players list, or
+   * timeout. This bridges the gap between the EVM tx confirming and the
+   * Paima node processing the block + inserting into lobby_players.
+   */
+  private async waitForJoinConfirmation(lobbyId: string, wallet: string, timeoutMs = 15000): Promise<void> {
+    const t0 = Date.now();
+    const walletLower = wallet.toLowerCase();
+    while (Date.now() - t0 < timeoutMs) {
+      const result = await getLobbyState(lobbyId);
+      if (result.success && result.lobby?.players) {
+        const found = (result.lobby.players as any[]).some(
+          (p: any) => p.wallet_address?.toLowerCase() === walletLower,
+        );
+        if (found) {
+          console.log(`[LobbyListScreen] Join confirmed in ${Date.now() - t0}ms`);
+          return;
+        }
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    console.warn(`[LobbyListScreen] waitForJoinConfirmation timed out after ${timeoutMs}ms — proceeding anyway`);
+  }
+
   private dispatchEvent(type: string, detail: any) {
     this.container.dispatchEvent(new CustomEvent(type, { detail, bubbles: true }));
   }
@@ -901,6 +1105,7 @@ interface EnrichedResumable {
   isMyTurn: boolean;
   phase: number;
   inFlight: InFlightState;
+  winner: 0 | 1 | 2;
 }
 
 /** Phase string (from session.state) → numeric phase used by sidebar UI.
