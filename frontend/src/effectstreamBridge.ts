@@ -14,6 +14,7 @@ import {
   type Wallet,
 } from "@paimaexample/wallets";
 import { hardhat } from "viem/chains";
+import { arbitrum } from "viem/chains";
 import { ethers } from "ethers";
 
 // WalletMode enum value for EvmEthers (avoiding isolatedModules issue)
@@ -26,22 +27,37 @@ const PAIMA_L2_CONTRACT_ADDRESS = ENV.PAIMA_L2_CONTRACT_ADDRESS as `0x${string}`
 const EVM_RPC_URL = ENV.EVM_RPC_URL;
 const PAIMA_API_URL = API_BASE_URL;
 
-// Global wallet instance (local wallet - auto-generated)
 let wallet: Wallet | null = null;
 
-// Paima Engine configuration - NOT using batching, wallet pays for gas directly
+function getChainConfig() {
+  const baseChain = ENV.MIDNIGHT_NETWORK_ID === "mainnet" ? arbitrum : hardhat;
+  return { ...baseChain, rpcUrls: { default: { http: [EVM_RPC_URL] } } } as any;
+}
+
 const paimaEngineConfig = new PaimaEngineConfig(
   "go-fish",
   "mainEvmRPC",
   PAIMA_L2_CONTRACT_ADDRESS,
-  { ...hardhat, rpcUrls: { default: { http: [EVM_RPC_URL] } } } as any,
-  undefined,      // use default abi
-  undefined,      // no batcher url
-  false,          // useBatching = false
+  getChainConfig(),
+  undefined,
+  ENV.BATCHER_URL,
+  true,
 );
 
-// Hardhat pre-funded account private keys (Account #0 through #9)
-// These accounts each have 10000 ETH on the local Hardhat chain
+// Persistent local EVM key for batcher mode (signing only, no gas needed)
+const LOCAL_EVM_KEY = "go-fish-local-evm-key";
+
+function getOrCreateLocalEvmKey(): string {
+  let key = localStorage.getItem(LOCAL_EVM_KEY);
+  if (!key) {
+    key = ethers.Wallet.createRandom().privateKey;
+    localStorage.setItem(LOCAL_EVM_KEY, key);
+    console.log("[EffectstreamBridge] Created new local EVM wallet");
+  }
+  return key;
+}
+
+// Hardhat pre-funded accounts (local dev only — used when batcher mode is off)
 const HARDHAT_ACCOUNTS = [
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Account #0
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // Account #1
@@ -86,6 +102,7 @@ function getOrAssignAccountIndex(): number {
  * Picks a new index that differs from the current one and the conflicting addresses.
  */
 export async function switchAccount(avoidAddresses: string[]): Promise<boolean> {
+  if (ENV.BATCHER_MODE_ENABLED) return false;
   const currentIndex = getOrAssignAccountIndex();
   const avoidLower = avoidAddresses.map(a => a.toLowerCase());
 
@@ -112,25 +129,19 @@ export async function switchAccount(avoidAddresses: string[]): Promise<boolean> 
   return false;
 }
 
-/**
- * Get the private key for the assigned Hardhat account
- */
 function getPrivateKey(): string {
+  if (ENV.BATCHER_MODE_ENABLED) {
+    return getOrCreateLocalEvmKey();
+  }
   const index = getOrAssignAccountIndex();
   console.log('[EffectstreamBridge] Using Hardhat account #' + index);
   return HARDHAT_ACCOUNTS[index];
 }
 
-/**
- * Initialize a local wallet using a pre-funded Hardhat account
- * This removes the need for MetaMask - wallet is assigned automatically
- * Uses ethers.js directly without external services like thirdweb
- */
 async function initializeLocalWallet(): Promise<Wallet | null> {
   if (wallet) return wallet;
 
   try {
-    // Get a pre-funded Hardhat account
     const privateKey = getPrivateKey();
 
     // Create ethers wallet with a provider (ethers v5 syntax)
