@@ -397,7 +397,7 @@ async function joinContract(
   // Pre-flight check - verify indexer is accessible
   const indexerOk = await checkIndexerConnectivity();
   if (!indexerOk) {
-    throw new Error("Indexer connectivity check failed - ensure the indexer is running at " + BASE_URL_MIDNIGHT_INDEXER);
+    throw new Error("Indexer connectivity check failed - ensure the indexer is running at " + BASE_URL_MIDNIGHT_INDEXER_API);
   }
 
   // In batcher/dev mode, always deploy a fresh contract
