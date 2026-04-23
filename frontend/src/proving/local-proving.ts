@@ -14,9 +14,9 @@ import {
   NetworkId,
   ZkConfig,
 } from "@paima/midnight-vm-bindings";
+import { ENV } from "../env";
 
-// Network ID constant (matching MidnightOnChainService)
-const MIDNIGHT_NETWORK_ID: JsNetworkId = "undeployed";
+const MIDNIGHT_NETWORK_ID: JsNetworkId = ENV.MIDNIGHT_NETWORK_ID;
 
 export async function proveTxLocally(
   baseUrl: string,
@@ -53,8 +53,8 @@ export async function proveTxLocally(
   let provenTxRaw = await prover.prove_tx(
     rng,
     tx,
-    networkId === "undeployed"
-      ? NetworkId.undeployed()
+    networkId === "undeployed" ? NetworkId.undeployed()
+      : networkId === "mainnet" ? NetworkId.mainnet()
       : NetworkId.testnet(),
     zkConfig,
     pp

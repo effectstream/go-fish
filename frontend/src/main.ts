@@ -7,11 +7,11 @@ import { backgroundNotifier } from './game/BackgroundNotifier';
 import { GameSessionManager } from './game/GameSessionManager';
 import { globalLoader } from './three/ui/GlobalLoader';
 
-// IMPORTANT: Set Midnight network ID at top level before any other SDK imports
-// This must happen before any Midnight SDK modules are used
+// Set Midnight network ID at top level before any other SDK imports
 import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
-setNetworkId("undeployed");
-console.log('[Main] Midnight network ID set to undeployed');
+import { ENV } from './env';
+setNetworkId(ENV.MIDNIGHT_NETWORK_ID);
+console.log(`[Main] Midnight network ID set to ${ENV.MIDNIGHT_NETWORK_ID}`);
 
 /**
  * Main entry point for the Go Fish game frontend

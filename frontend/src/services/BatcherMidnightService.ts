@@ -15,9 +15,9 @@
 
 import { PlayerKeyManager } from './PlayerKeyManager';
 import { API_BASE_URL } from '../apiConfig';
+import { ENV } from '../env';
 
-// Batcher query server URL (direct connection, no proxy).
-const BATCHER_QUERY_URL = import.meta.env.VITE_BATCHER_QUERY_URL || "http://localhost:9997";
+const BATCHER_QUERY_URL = ENV.BATCHER_QUERY_URL;
 
 // ============================================================================
 // Secret Registration

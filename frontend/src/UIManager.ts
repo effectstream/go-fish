@@ -13,8 +13,9 @@ import { LeaderboardPanel } from './screens/LeaderboardPanel';
 import { GoFishGameService } from './services/GoFishGameService';
 import { soundManager } from './three/SoundManager';
 
-/** When true, the old DOM GameScreen is used instead of the Three.js scene. */
-const USE_LEGACY_GAME_UI = import.meta.env.VITE_USE_LEGACY_GAME_UI === 'true';
+import { ENV } from './env';
+
+const USE_LEGACY_GAME_UI = ENV.USE_LEGACY_GAME_UI;
 
 export class UIManager {
   private currentScreen: string = 'wallet';

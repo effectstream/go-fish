@@ -127,7 +127,7 @@ export default defineConfig({
           src: normalizePath(
             path.resolve(
               __dirname,
-              '../packages/shared/contracts/midnight/go-fish-contract.undeployed.json',
+              '../packages/shared/contracts/midnight/go-fish-contract.*.json',
             ),
           ),
           dest: 'contract_address',

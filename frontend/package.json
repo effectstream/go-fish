@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:batcher": "vite --mode batcher",
-    "build": "tsc && vite build",
-    "build:batcher": "tsc && vite build --mode batcher",
+    "dev": "vite --mode undeployed",
+    "dev:undeployed": "vite --mode undeployed",
+    "dev:mainnet": "vite --mode mainnet",
+    "build": "tsc && vite build --mode undeployed",
+    "build:undeployed": "tsc && vite build --mode undeployed",
+    "build:mainnet": "tsc && vite build --mode mainnet",
     "preview": "vite preview",
     "serve": "npx http-server ./dist"
   },

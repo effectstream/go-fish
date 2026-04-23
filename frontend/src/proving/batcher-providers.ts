@@ -33,6 +33,7 @@ import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import type { ProverMessage, ProverResponse } from "./worker-types";
 import type { GoFishProviders } from "../services/MidnightOnChainService";
 import { getLocalCoinPublicKey, getLocalEncryptionPublicKey } from "../services/inBrowserWallet";
+import { ENV } from "../env";
 
 type WebWorkerPromiseCallbacks = {
   resolve: (
@@ -187,7 +188,7 @@ function sleep(ms: number): Promise<void> {
 async function postTxToBatcher(
   txBytes: Uint8Array
 ): Promise<string> {
-  const batcherUrl = `${import.meta.env.VITE_BATCHER_URL}/submitTx`;
+  const batcherUrl = `${ENV.BATCHER_URL}/submitTx`;
 
   console.log(`[BatcherProviders] Submitting transaction to batcher at ${batcherUrl}`);
 
@@ -248,7 +249,7 @@ async function withRetries(
  * disable it (e.g. when testing with the Lace wallet).
  */
 export function isBatcherModeEnabled(): boolean {
-  return import.meta.env.VITE_BATCHER_MODE_ENABLED !== "false";
+  return ENV.BATCHER_MODE_ENABLED;
 }
 
 /**
@@ -259,9 +260,8 @@ export function isBatcherModeEnabled(): boolean {
 export async function initializeBatcherProviders(): Promise<GoFishProviders> {
   console.log("[BatcherProviders] Initializing batcher mode providers (in-browser wallet)...");
 
-  // Set the network ID - required before any SDK operations
-  setNetworkId("undeployed");
-  console.log("[BatcherProviders] Network ID set to undeployed");
+  setNetworkId(ENV.MIDNIGHT_NETWORK_ID);
+  console.log(`[BatcherProviders] Network ID set to ${ENV.MIDNIGHT_NETWORK_ID}`);
 
   // Use in-browser wallet keys — each user gets their own persistent identity
   const coinPublicKey = getLocalCoinPublicKey();
@@ -273,8 +273,8 @@ export async function initializeBatcherProviders(): Promise<GoFishProviders> {
   await webWorkerProofProvider.initializeWorker();
   await webWorkerProofProvider.setupResponseHandler();
 
-  const indexerHttpUrl = import.meta.env.VITE_INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v1/graphql";
-  const indexerWsUrl = import.meta.env.VITE_INDEXER_WS_URL || "ws://127.0.0.1:8088/api/v1/graphql/ws";
+  const indexerHttpUrl = ENV.INDEXER_HTTP_URL;
+  const indexerWsUrl = ENV.INDEXER_WS_URL;
 
   console.log("[BatcherProviders] Using indexer:", indexerHttpUrl);
 

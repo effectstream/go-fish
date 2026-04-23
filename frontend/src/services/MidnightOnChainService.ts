@@ -18,6 +18,7 @@ import { isBatcherModeEnabled } from "../proving/batcher-providers";
 import { getLocalCoinPublicKey, getLocalEncryptionPublicKey } from "./inBrowserWallet";
 import * as BatcherMidnightService from "./BatcherMidnightService";
 import * as GoFishContractService from "./GoFishContractService";
+import { ENV, MIDNIGHT_CONTRACT_FILE } from "../env";
 
 // Import Midnight SDK packages (v4 with ledger-v8)
 import type { ContractAddress } from "@midnight-ntwrk/compact-runtime";
@@ -69,20 +70,11 @@ type GoFishWitnesses = {
 
 type PrivateState = Record<string, never>;
 
-// Configuration - matches local Midnight infrastructure
-// Use environment variables if available, otherwise default to GraphQL proxy on port 8089
-// The proxy translates SDK v2.0.0 queries to indexer v3 format
-const BASE_URL_MIDNIGHT_INDEXER = import.meta.env.VITE_INDEXER_HTTP_URL?.replace(/\/api\/.*$/, '') || "http://127.0.0.1:8089";
-const BASE_WS_MIDNIGHT_INDEXER = import.meta.env.VITE_INDEXER_WS_URL?.replace(/\/api\/.*$/, '') || "ws://127.0.0.1:8089";
-// When VITE_PROOF_SERVER_URL is set, proving is delegated to that HTTP server.
-// When unset (default), proofs run locally in the browser via WASM — the recommended
-// production mode since the Lace wallet does not ship with a built-in proof server.
-const PROOF_SERVER_URL: string | undefined = import.meta.env.VITE_PROOF_SERVER_URL || undefined;
-// Using /api/v1/graphql - the proxy handles translation to v3 if needed
-const BASE_URL_MIDNIGHT_INDEXER_API = import.meta.env.VITE_INDEXER_HTTP_URL || `${BASE_URL_MIDNIGHT_INDEXER}/api/v1/graphql`;
-const BASE_URL_MIDNIGHT_INDEXER_WS = import.meta.env.VITE_INDEXER_WS_URL || `${BASE_WS_MIDNIGHT_INDEXER}/api/v1/graphql/ws`;
+const PROOF_SERVER_URL = ENV.PROOF_SERVER_URL;
+const BASE_URL_MIDNIGHT_INDEXER_API = ENV.INDEXER_HTTP_URL;
+const BASE_URL_MIDNIGHT_INDEXER_WS = ENV.INDEXER_WS_URL;
 
-const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
+const MIDNIGHT_NETWORK_ID: NetworkId = ENV.MIDNIGHT_NETWORK_ID;
 
 console.log(
   PROOF_SERVER_URL
@@ -90,18 +82,8 @@ console.log(
     : "[MidnightOnChain] Proof mode: WASM in-browser (default)"
 );
 
-// Backend API URL — use same-origin (empty string) on localhost so the Vite dev
-// server proxy routes to port 9996; use the api- subdomain on deployed envs.
-// This must match apiConfig.ts so notify_setup reaches the same server that
-// getSetupStatus queries. A hardcoded "http://localhost:9996" breaks when Player 2
-// is on a different machine — their request goes to their own localhost, not the server.
-function getBackendApiUrl(): string {
-  const hostname = window.location.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') return '';
-  const protocol = window.location.protocol;
-  return `${protocol}//api-${hostname}`;
-}
-const BACKEND_API_URL = getBackendApiUrl();
+import { API_BASE_URL } from "../apiConfig";
+const BACKEND_API_URL = API_BASE_URL;
 
 /**
  * Notify the backend about a successful setup action
@@ -176,7 +158,7 @@ async function loadContractAddress(): Promise<{ raw: string; normalized: string 
   // Read from the static deployment file served by vite-plugin-static-copy.
   // No backend API call — /api/midnight/contract_address doesn't exist.
   try {
-    const response = await fetch("/contract_address/go-fish-contract.undeployed.json");
+    const response = await fetch(`/contract_address/${MIDNIGHT_CONTRACT_FILE}`);
     if (response.ok) {
       const data = await response.json();
       if (data.contractAddress) {

@@ -14,6 +14,7 @@ import {
   getLocalWalletAddress,
   getLocalWalletAddressFull,
 } from "./services/inBrowserWallet";
+import { ENV, MIDNIGHT_CONTRACT_FILE } from "./env";
 
 // Custom type for the connected wallet API (combines DAppConnectorWalletAPI with shielded address access)
 // This interface represents the API returned after connecting to the wallet
@@ -35,13 +36,9 @@ let paimaWalletResult: any = null;
 // Initialize the in-browser wallet eagerly so it's always available
 getOrCreateLocalWallet();
 
-// Network ID for Midnight network
-// For local development with the undeployed network, use "undeployed"
-// For testnet, use "testnet" (Lace Midnight Preview wallet)
-const MIDNIGHT_NETWORK_ID: NetworkId = "undeployed";
+const MIDNIGHT_NETWORK_ID: NetworkId = ENV.MIDNIGHT_NETWORK_ID;
 const COMPATIBLE_CONNECTOR_API_VERSION = ">=1.0.0";
 
-// Set the network ID globally before any wallet operations
 setNetworkId(MIDNIGHT_NETWORK_ID);
 
 /**
@@ -49,7 +46,7 @@ setNetworkId(MIDNIGHT_NETWORK_ID);
  */
 const fetchContractAddress = async (): Promise<string | null> => {
   try {
-    const r = await fetch("contract_address/go-fish-contract.undeployed.json");
+    const r = await fetch(`contract_address/${MIDNIGHT_CONTRACT_FILE}`);
     const json = await r.json();
     console.log("[LaceWalletBridge] Contract address:", json.contractAddress);
     return json.contractAddress;

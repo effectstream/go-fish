@@ -42,21 +42,16 @@ import {
 import { PlayerKeyManager } from "./PlayerKeyManager";
 import { getLocalCoinPublicKey, getLocalEncryptionPublicKey } from "./inBrowserWallet";
 import { API_BASE_URL } from "../apiConfig";
+import { ENV, MIDNIGHT_CONTRACT_FILE } from "../env";
 import { globalLoader } from "../three/ui/GlobalLoader";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-// Direct indexer connection — /api/v3/graphql on port 8088.
-// The old default (8089/api/v1) went through a GraphQL proxy that cached
-// responses, causing P1 to see stale state for P2's mask/deal.
-// Matches the e2e reference at e2e/smoke/_helpers.ts.
-const BASE_URL_MIDNIGHT_INDEXER_API =
-  import.meta.env.VITE_INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v3/graphql";
-const BASE_URL_MIDNIGHT_INDEXER_WS =
-  import.meta.env.VITE_INDEXER_WS_URL || "ws://127.0.0.1:8088/api/v3/graphql/ws";
-const BATCHER_URL = import.meta.env.VITE_BATCHER_URL || "http://localhost:3334";
+const BASE_URL_MIDNIGHT_INDEXER_API = ENV.INDEXER_HTTP_URL;
+const BASE_URL_MIDNIGHT_INDEXER_WS = ENV.INDEXER_WS_URL;
+const BATCHER_URL = ENV.BATCHER_URL;
 
 /** Sentinel thrown by the balanceTx hook to abort the SDK pipeline after delegation. */
 const DELEGATED_SENTINEL = "GoFish: delegated to midnight_balancing batcher";
@@ -126,8 +121,8 @@ async function getContractAddress(): Promise<string> {
   // No backend API call — the /api/midnight/contract_address endpoint doesn't
   // exist and the 404 fallback chain was adding ~2s latency per query.
   // Matches the e2e reference which reads from the filesystem directly.
-  const res = await fetch("/contract_address/go-fish-contract.undeployed.json");
-  if (!res.ok) throw new Error("[GoFishContractService] Contract address not found at /contract_address/go-fish-contract.undeployed.json");
+  const res = await fetch(`/contract_address/${MIDNIGHT_CONTRACT_FILE}`);
+  if (!res.ok) throw new Error(`[GoFishContractService] Contract address not found at /contract_address/${MIDNIGHT_CONTRACT_FILE}`);
   const data = await res.json();
   _contractAddress = normalizeAddress(data.contractAddress);
   return _contractAddress;
@@ -414,7 +409,7 @@ function withSecrets<T>(
 // ---------------------------------------------------------------------------
 
 export async function initializeMidnight(): Promise<void> {
-  setNetworkId("undeployed");
+  setNetworkId(ENV.MIDNIGHT_NETWORK_ID);
 }
 
 export async function callInitDeck(): Promise<void> {

@@ -19,15 +19,11 @@ import { ethers } from "ethers";
 // WalletMode enum value for EvmEthers (avoiding isolatedModules issue)
 const WALLET_MODE_EVM_ETHERS = 1;
 
-// Contract addresses from deployment (override with VITE_PAIMA_L2_CONTRACT_ADDRESS env var)
-const PAIMA_L2_CONTRACT_ADDRESS = (import.meta as any).env?.VITE_PAIMA_L2_CONTRACT_ADDRESS || "0x5FbDB2315678afecb367f032d93F642f64180aa3";
-
-// EVM RPC URL (override with VITE_EVM_RPC_URL env var for remote deployments)
-const EVM_RPC_URL = (import.meta as any).env?.VITE_EVM_RPC_URL || "http://localhost:8545";
-
+import { ENV } from "./env";
 import { API_BASE_URL } from "./apiConfig";
 
-// Paima Engine API endpoint
+const PAIMA_L2_CONTRACT_ADDRESS = ENV.PAIMA_L2_CONTRACT_ADDRESS;
+const EVM_RPC_URL = ENV.EVM_RPC_URL;
 const PAIMA_API_URL = API_BASE_URL;
 
 // Global wallet instance (local wallet - auto-generated)
