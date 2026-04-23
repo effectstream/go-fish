@@ -35,7 +35,7 @@ function getChainConfig() {
 }
 
 const paimaEngineConfig = new PaimaEngineConfig(
-  "go-fish",
+  "",
   "mainEvmRPC",
   PAIMA_L2_CONTRACT_ADDRESS,
   getChainConfig(),
