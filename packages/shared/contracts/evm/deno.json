@@ -50,7 +50,7 @@
       ]
     },
     "contract:compile": "deno task build:mod",
-    "deploy:clean": "rm -rf ignition/deployments || true",
+    "deploy:clean": "rm -rf ignition/deployments/chain-31337 || true",
     "deploy:standalone": {
       "command": "(((deno task chain:start) &) && (deno task chain:wait) && (deno task deploy) && deno task chain:stop) || true",
       "dependencies": [

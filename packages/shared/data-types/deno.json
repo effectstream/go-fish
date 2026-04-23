@@ -4,7 +4,7 @@
   "exports": {
     ".": "./src/mod.ts",
     "./config-dev": "./src/config.dev.ts",
-    "./config-testnet": "./src/config.testnet.ts",
+    "./config-mainnet": "./src/config.mainnet.ts",
     "./grammar": "./src/grammar.ts",
     "./types": "./src/types.ts"
   },
