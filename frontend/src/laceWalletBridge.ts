@@ -7,7 +7,7 @@
 
 import { walletLogin, WalletMode } from "@paimaexample/wallets";
 import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
+type DAppConnectorWalletAPI = any;
 import semver from "semver";
 import {
   getOrCreateLocalWallet,

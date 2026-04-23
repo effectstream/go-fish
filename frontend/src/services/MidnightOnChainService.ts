@@ -46,8 +46,9 @@ import type {
   MidnightProviders,
   UnboundTransaction,
 } from "@midnight-ntwrk/midnight-js-types";
-import type { Contract, ImpureCircuitId } from "@midnight-ntwrk/compact-js";
-import type { DAppConnectorWalletAPI } from "@midnight-ntwrk/dapp-connector-api";
+import type { Contract } from "@midnight-ntwrk/compact-js";
+type ImpureCircuitId = string;
+type DAppConnectorWalletAPI = any;
 
 // Custom type for the connected wallet API (combines DAppConnectorWalletAPI with shielded address access)
 interface ConnectedAPI extends DAppConnectorWalletAPI {
@@ -105,7 +106,7 @@ type ContractPrivateStateId = "privateState";
 
 type GoFishContract = Contract<PrivateState, GoFishWitnesses>;
 
-type GoFishCircuits = ImpureCircuitId<GoFishContract>;
+type GoFishCircuits = string;
 
 export type GoFishProviders = MidnightProviders<
   GoFishCircuits,
@@ -223,7 +224,7 @@ function createWalletAndMidnightProvider(
         const serializedTx = toHex((tx as any).serialize());
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
         // Deserialize using ledger-v8 (network ID is set globally)
-        const transaction = Transaction.deserialize(fromHex(received.tx));
+        const transaction = (Transaction as any).deserialize(fromHex(received.tx));
         return transaction as FinalizedTransaction;
       } catch (e: any) {
         // Extract detailed error info from FiberFailure
@@ -251,7 +252,7 @@ function createWalletAndMidnightProvider(
       // Submit transaction directly - the wallet API handles the serialization
       // Cast to any since FinalizedTransaction from ledger-v8 and Transaction from wallet API
       // are structurally compatible but have different nominal types
-      await connectedAPI.submitTransaction(tx as any);
+      await (connectedAPI as any).submitTransaction(tx as any);
       const txIdentifiers = tx.identifiers();
       const txId = txIdentifiers[0];
       console.log("[MidnightOnChain] Submitted transaction:", txId);
@@ -360,7 +361,7 @@ async function deployNewContract(
 
   try {
     const deployed = await Promise.race([
-      deployContract(provs as any, {
+      (deployContract as any)(provs as any, {
         compiledContract: goFishContractInstance,
         privateStateId: "privateState",
         initialPrivateState: {},
@@ -368,7 +369,7 @@ async function deployNewContract(
       timeoutPromise,
     ]);
 
-    console.log(`[MidnightOnChain] Contract deployed at: ${deployed.deployTxData.public.contractAddress}`);
+    console.log(`[MidnightOnChain] Contract deployed at: ${(deployed as any).deployTxData.public.contractAddress}`);
     return deployed as unknown as DeployedGoFishContract;
   } catch (error) {
     console.error("[MidnightOnChain] Contract deployment failed:", error);
@@ -406,16 +407,16 @@ async function joinContract(
   if (batcherModeActive) {
     console.log("[MidnightOnChain] Batcher mode active - deploying fresh contract (chain resets each time in dev)");
     try {
-      const deployedGoFishContract = await deployContract(provs, {
+      const deployedGoFishContract = await (deployContract as any)(provs, {
         compiledContract: goFishContractInstance,
         privateStateId: "privateState",
         initialPrivateState: {},
       });
 
-      const newAddress = deployedGoFishContract.deployTxData.public.contractAddress;
+      const newAddress = (deployedGoFishContract as any).deployTxData.public.contractAddress;
       console.log(`[MidnightOnChain] Contract deployed successfully at address: ${newAddress}`);
 
-      return deployedGoFishContract as DeployedGoFishContract;
+      return deployedGoFishContract as unknown as DeployedGoFishContract;
     } catch (deployError) {
       console.error("[MidnightOnChain] Contract deployment failed:", deployError);
       throw deployError;

@@ -76,7 +76,7 @@ class WebWorkerLocalProofServer implements ProofProvider {
         case "success":
           if (callbacks && data) {
             // Deserialize using ledger-v8 (no network ID needed - set globally)
-            const provenTx = Transaction.deserialize(data);
+            const provenTx = (Transaction as any).deserialize(data);
             callbacks.resolve(provenTx as UnboundTransaction);
             this.requests.delete(requestId!);
           }
@@ -154,7 +154,7 @@ class WebWorkerLocalProofServer implements ProofProvider {
           serializedTx,
           proveTxConfig,
           requestId: this.nextId,
-        } as ProverMessage<GoFishCircuitKeys>);
+        } as any);
 
         ++this.nextId;
       });

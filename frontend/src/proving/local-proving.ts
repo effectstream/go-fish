@@ -31,12 +31,13 @@ export async function proveTxLocally(
   const networkId = MIDNIGHT_NETWORK_ID;
 
   const zkConfig = (() => {
-    if (proveTxConfig) {
+    const cfg = proveTxConfig as any;
+    if (cfg?.zkConfig) {
       return ZkConfig.new(
-        proveTxConfig.zkConfig?.circuitId!,
-        proveTxConfig.zkConfig?.proverKey!,
-        proveTxConfig.zkConfig?.verifierKey!,
-        proveTxConfig.zkConfig?.zkir!
+        cfg.zkConfig.circuitId!,
+        cfg.zkConfig.proverKey!,
+        cfg.zkConfig.verifierKey!,
+        cfg.zkConfig.zkir!
       );
     } else {
       return ZkConfig.empty();

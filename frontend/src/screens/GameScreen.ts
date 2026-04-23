@@ -28,7 +28,7 @@ interface GameStateResponse {
   handSizes: [number, number];
   deckCount: number;
   isGameOver: boolean;
-  myHand: Array<{ x: bigint; y: bigint }>; // Semi-masked cards
+  myHand: Array<{ rank: number; suit: number }>;
   myBooks: string[];
   gameLog: string[];
 }

@@ -194,6 +194,7 @@ export class GoFishGameService {
     opponentScore: number;
     isMyTurn: boolean;
     phase: number;
+    winner?: number;
   }>> {
     const wallet = getWalletAddress();
     if (!wallet) return [];
@@ -219,6 +220,7 @@ export class GoFishGameService {
       opponentScore: number;
       isMyTurn: boolean;
       phase: number;
+      winner?: number;
     }> = [];
     const { API_BASE_URL } = await import('../apiConfig');
 
@@ -318,7 +320,7 @@ export class GoFishGameService {
         isMyTurn: g.isMyTurn,
         phase: g.phase,
         inFlight: existing?.inFlight ?? null,
-        winner: g.winner ?? existing?.winner ?? 0,
+        winner: (g.winner ?? existing?.winner ?? 0) as 0 | 1 | 2,
         updatedAt: Date.now(),
       });
     }

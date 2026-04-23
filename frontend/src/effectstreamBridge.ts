@@ -22,7 +22,7 @@ const WALLET_MODE_EVM_ETHERS = 1;
 import { ENV } from "./env";
 import { API_BASE_URL } from "./apiConfig";
 
-const PAIMA_L2_CONTRACT_ADDRESS = ENV.PAIMA_L2_CONTRACT_ADDRESS;
+const PAIMA_L2_CONTRACT_ADDRESS = ENV.PAIMA_L2_CONTRACT_ADDRESS as `0x${string}`;
 const EVM_RPC_URL = ENV.EVM_RPC_URL;
 const PAIMA_API_URL = API_BASE_URL;
 

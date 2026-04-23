@@ -90,9 +90,9 @@ function getZkConfigProvider(): FetchZkConfigProvider<string> {
 
 function getCompiledContract(): any {
   if (!_compiledContract) {
-    _compiledContract = CompiledContract.withCompiledFileAssets(
-      CompiledContract.withWitnesses(
-        CompiledContract.make("go-fish", GoFishContractClass),
+    _compiledContract = (CompiledContract as any).withCompiledFileAssets(
+      (CompiledContract as any).withWitnesses(
+        (CompiledContract as any).make("go-fish", GoFishContractClass),
         witnesses,
       ),
       window.location.origin,
@@ -572,7 +572,7 @@ export async function queryHasMaskApplied(
             { idx: { cached: false, pushPath: false, path: [
               { tag: 'value' as const, value: gameIdKey },
             ]}},
-            { popeq: { cached: false, result: undefined } },
+            { popeq: { cached: false, result: null } },
           ],
           CostModel.initialCostModel(),
         );
