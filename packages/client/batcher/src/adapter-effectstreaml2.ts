@@ -40,10 +40,12 @@ if (!evmRpcUrl) {
   throw new Error("ARBITRUM_ONE_FULL is unset");
 }
 
+const chain = isMainnet ? chains.arbitrum : chains.hardhat
+
 export const effectstreaml2Adapter = new PaimaL2DefaultAdapter(
   paimaL2Address,
   batcherPrivateKey,
   paimaL2Fee,
   paimaSyncProtocolName,
-  { ...chains.hardhat, rpcUrls: { default: { http: [evmRpcUrl] } } } as typeof chains.hardhat,
+  { ...(chain), rpcUrls: { default: { http: [evmRpcUrl] } } } as typeof chains.hardhat,
 );
