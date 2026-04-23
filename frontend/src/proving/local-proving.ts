@@ -53,8 +53,8 @@ export async function proveTxLocally(
   let provenTxRaw = await prover.prove_tx(
     rng,
     tx,
-    networkId === "undeployed" ? NetworkId.undeployed()
-      : networkId === "mainnet" ? NetworkId.mainnet()
+    networkId === "undeployed"
+      ? NetworkId.undeployed()
       : NetworkId.testnet(),
     zkConfig,
     pp

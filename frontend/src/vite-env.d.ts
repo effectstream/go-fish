@@ -8,13 +8,11 @@ declare module "crypto-browserify" {
   export const randomBytes: any;
   export const pbkdf2Sync: any;
   export const timingSafeEqual: any;
-  [key: string]: any;
 }
 
 declare module "browser-level" {
   export class BrowserLevel<K = string, V = any> {
     constructor(location: string, options?: any);
-    [key: string]: any;
   }
 }
 
