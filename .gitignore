@@ -35,7 +35,7 @@ logs/
 *.log
 
 # Midnight database
-packages/shared/contracts/midnight/midnight-level-db-deploy/*
-packages/client/node/.gitignore
-packages/client/batcher/batcher-data/pending-inputs.jsonl
-.claude/scheduled_tasks.lock
+midnight-level-db-deploy/
+pending-inputs.jsonl
+midnight-level-db-go-fish-initialize/
+midnight-level-db-cleanup/
