@@ -35,9 +35,9 @@ if (!batcherPrivateKey) {
 const paimaL2Fee = 0n;
 const paimaSyncProtocolName = "mainEvmRPC";
 
-const evmRpcUrl = Deno.env.get("EVM_RPC_URL") || (isUndeployed && "http://localhost:8545");
+const evmRpcUrl = Deno.env.get("ARBITRUM_ONE_FULL") || (isUndeployed && "http://localhost:8545");
 if (!evmRpcUrl) {
-  throw new Error("EVM_RPC_URL is unset");
+  throw new Error("ARBITRUM_ONE_FULL is unset");
 }
 
 export const effectstreaml2Adapter = new PaimaL2DefaultAdapter(
