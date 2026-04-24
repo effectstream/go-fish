@@ -12,7 +12,6 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/public/game-styles.css" />
     <style>
       :root {
         /* Width of the side panel when open. 0 on mobile (overlay), 340px on desktop. */
@@ -357,9 +356,7 @@
       }
 
       /* Screen wrapper inside the sidebar. Uses flex so each screen can
-         lay out its own header + scroll area + sticky footer.
-         Override legacy game-styles.css which gives these a 30px padding and
-         white/dark card backgrounds that conflict with the casino theme. */
+         lay out its own header + scroll area + sticky footer. */
       #side-panel .lobby-list-screen,
       #side-panel .lobby-screen,
       #side-panel .results-screen,
@@ -630,8 +627,7 @@
           inset 0 1px 0 rgba(245, 200, 66, 0.12);
       }
 
-      /* Card title uses the entire row; status badge drops below it.
-         Overrides game-styles.css which gives .lobby-header a white bg. */
+      /* Card title uses the entire row; status badge drops below it. */
       #side-panel .lobby-header,
       .lobby-card .lobby-header {
         background: transparent;
