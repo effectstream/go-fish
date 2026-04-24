@@ -614,6 +614,27 @@
       }
       .lobby-card.resume-card::after { content: '♥'; color: rgba(194, 64, 64, 0.07); }
 
+      .resume-dismiss-btn {
+        position: absolute;
+        top: 6px;
+        right: 8px;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        line-height: 1;
+        font-size: 18px;
+        background: transparent;
+        border: none;
+        border-radius: 50%;
+        color: rgba(255, 255, 255, 0.4);
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .resume-dismiss-btn:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.9);
+      }
+
       /* Active/foreground game — thicker gold border + outer glow so the
          user can tell at a glance which card corresponds to whatever is
          currently on the 3D canvas. Only one .lobby-card.active exists at
