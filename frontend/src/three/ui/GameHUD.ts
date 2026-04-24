@@ -126,7 +126,6 @@ export class GameHUD {
     this.turnBar = document.createElement('div');
     this.turnBar.style.cssText = `
       position: absolute; top: 0; left: 0; width: 100%;
-      padding: 10px 20px;
       display: grid;
       grid-template-columns: 1fr auto auto;
       align-items: center;
@@ -164,7 +163,7 @@ export class GameHUD {
     // Game log (under the Score panel, left column)
     this.logPanel = document.createElement('div');
     this.logPanel.style.cssText = `
-      position: absolute; top: 210px; left: 20px; width: 280px; max-height: calc(100vh - 280px);
+      position: absolute; top: 210px; left: 20px; width: 280px; max-height: calc(90vh - 280px);
       overflow-y: auto; background: rgba(0, 0, 0, 0.5);
       backdrop-filter: blur(4px);
       border-radius: 12px; padding: 14px;
@@ -692,6 +691,7 @@ export class GameHUD {
     // multiple games can tell at a glance which game they're looking at.
     const nameSlot = state.lobbyName
       ? `<span class="hud-name-slot" style="
+          padding:10px;
            justify-self: start;
            color: #e0e0e0;
            font-size: 14px;
@@ -702,7 +702,7 @@ export class GameHUD {
            text-overflow: ellipsis;
            white-space: nowrap;
          ">${escapeHtml(state.lobbyName)}</span>`
-      : `<span class="hud-name-slot loading-placeholder" style="justify-self: start; font-size: 14px;">Loading…</span>`;
+      : `<span class="hud-name-slot loading-placeholder" style="padding:10px; justify-self: start; font-size: 14px;">Loading…</span>`;
 
     let turnHtml: string;
 
