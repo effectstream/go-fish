@@ -1060,7 +1060,7 @@ export class GameSession extends EventTarget {
 
         // Clear the waiting banner — opponent has responded
         this.showBanner(null);
-        this.adapter?.forcePoll();
+        await this.adapter?.forcePoll();
       } else {
         this.showBanner(null);
         this.notify('Error', result.errorMessage ?? 'Ask failed', 5000);
