@@ -47,19 +47,53 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       const offset = Number(request.query.offset ?? 0);
       try {
         const result = await dbPool.query<{
-          midnight_address: string;
+          wallet_address: string;
           total_points: string;
           games_played: number;
           games_won: number;
         }>(
-          `SELECT midnight_address, total_points, games_played, games_won
-           FROM go_fish_leaderboard
+          `WITH pubkey_wallet AS (
+             SELECT DISTINCT ON (lb.midnight_address)
+               lb.midnight_address,
+               COALESCE(
+                 (SELECT addr.address FROM effectstream.addresses addr
+                  WHERE addr.account_id =
+                    CASE WHEN lb.midnight_address = mg.host_pubkey
+                         THEN l.host_account_id
+                         ELSE (SELECT lp.account_id FROM lobby_players lp
+                               WHERE lp.lobby_id = mg.evm_id
+                                 AND lp.account_id != l.host_account_id LIMIT 1)
+                    END
+                  LIMIT 1),
+                 (SELECT acct.primary_address FROM effectstream.accounts acct
+                  WHERE acct.id =
+                    CASE WHEN lb.midnight_address = mg.host_pubkey
+                         THEN l.host_account_id
+                         ELSE (SELECT lp.account_id FROM lobby_players lp
+                               WHERE lp.lobby_id = mg.evm_id
+                                 AND lp.account_id != l.host_account_id LIMIT 1)
+                    END)
+               ) as wallet_address
+             FROM go_fish_leaderboard lb
+             JOIN midnight_games mg
+               ON lb.midnight_address IN (mg.host_pubkey, mg.joiner_pubkey)
+             JOIN lobbies l ON l.lobby_id = mg.evm_id
+           )
+           SELECT
+             pw.wallet_address,
+             SUM(lb.total_points)::bigint as total_points,
+             SUM(lb.games_played)::int as games_played,
+             SUM(lb.games_won)::int as games_won
+           FROM go_fish_leaderboard lb
+           JOIN pubkey_wallet pw ON pw.midnight_address = lb.midnight_address
+           WHERE pw.wallet_address IS NOT NULL
+           GROUP BY pw.wallet_address
            ORDER BY total_points DESC
            LIMIT $1 OFFSET $2`,
           [limit, offset]
         );
         return result.rows.map(r => ({
-          midnight_address: r.midnight_address,
+          wallet_address: r.wallet_address,
           total_points: Number(r.total_points),
           games_played: r.games_played,
           games_won: r.games_won,
@@ -475,14 +509,47 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       const totalPlayers = Number(totalsResult.rows[0]?.total_players ?? 0);
       const totalScore = Number(totalsResult.rows[0]?.total_score ?? 0);
 
-      // Fetch paginated entries ordered by score descending
+      // Fetch paginated entries ordered by score descending, resolving wallet addresses
       const entriesResult = await dbPool.query<{
-        midnight_address: string;
+        wallet_address: string;
         total_points: string;
         games_played: number;
       }>(
-        `SELECT midnight_address, total_points, games_played
-         FROM go_fish_leaderboard
+        `WITH pubkey_wallet AS (
+           SELECT DISTINCT ON (lb.midnight_address)
+             lb.midnight_address,
+             COALESCE(
+               (SELECT addr.address FROM effectstream.addresses addr
+                WHERE addr.account_id =
+                  CASE WHEN lb.midnight_address = mg.host_pubkey
+                       THEN l.host_account_id
+                       ELSE (SELECT lp.account_id FROM lobby_players lp
+                             WHERE lp.lobby_id = mg.evm_id
+                               AND lp.account_id != l.host_account_id LIMIT 1)
+                  END
+                LIMIT 1),
+               (SELECT acct.primary_address FROM effectstream.accounts acct
+                WHERE acct.id =
+                  CASE WHEN lb.midnight_address = mg.host_pubkey
+                       THEN l.host_account_id
+                       ELSE (SELECT lp.account_id FROM lobby_players lp
+                             WHERE lp.lobby_id = mg.evm_id
+                               AND lp.account_id != l.host_account_id LIMIT 1)
+                  END)
+             ) as wallet_address
+           FROM go_fish_leaderboard lb
+           JOIN midnight_games mg
+             ON lb.midnight_address IN (mg.host_pubkey, mg.joiner_pubkey)
+           JOIN lobbies l ON l.lobby_id = mg.evm_id
+         )
+         SELECT
+           pw.wallet_address,
+           SUM(lb.total_points)::bigint as total_points,
+           SUM(lb.games_played)::int as games_played
+         FROM go_fish_leaderboard lb
+         JOIN pubkey_wallet pw ON pw.midnight_address = lb.midnight_address
+         WHERE pw.wallet_address IS NOT NULL
+         GROUP BY pw.wallet_address
          ORDER BY total_points DESC
          LIMIT $1 OFFSET $2`,
         [limit, offset]
@@ -490,7 +557,7 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
       const entries = entriesResult.rows.map((row, idx) => ({
         rank: offset + idx + 1,
-        address: row.midnight_address,
+        address: row.wallet_address,
         displayName: null,
         score: Number(row.total_points),
       }));
@@ -532,16 +599,50 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
       return reply.code(503).send({ error: "Database not ready" });
     }
 
-    // Look up this address in the leaderboard
+    // Resolve wallet address → aggregated leaderboard stats via the same
+    // pubkey→wallet CTE used by /api/leaderboard.
     const userResult = await dbPool.query<{
-      midnight_address: string;
+      wallet_address: string;
       total_points: string;
       games_played: number;
       games_won: number;
     }>(
-      `SELECT midnight_address, total_points, games_played, games_won
-       FROM go_fish_leaderboard
-       WHERE midnight_address = $1`,
+      `WITH pubkey_wallet AS (
+         SELECT DISTINCT ON (lb.midnight_address)
+           lb.midnight_address,
+           COALESCE(
+             (SELECT addr.address FROM effectstream.addresses addr
+              WHERE addr.account_id =
+                CASE WHEN lb.midnight_address = mg.host_pubkey
+                     THEN l.host_account_id
+                     ELSE (SELECT lp2.account_id FROM lobby_players lp2
+                           WHERE lp2.lobby_id = mg.evm_id
+                             AND lp2.account_id != l.host_account_id LIMIT 1)
+                END
+              LIMIT 1),
+             (SELECT acct.primary_address FROM effectstream.accounts acct
+              WHERE acct.id =
+                CASE WHEN lb.midnight_address = mg.host_pubkey
+                     THEN l.host_account_id
+                     ELSE (SELECT lp2.account_id FROM lobby_players lp2
+                           WHERE lp2.lobby_id = mg.evm_id
+                             AND lp2.account_id != l.host_account_id LIMIT 1)
+                END)
+           ) as wallet_address
+         FROM go_fish_leaderboard lb
+         JOIN midnight_games mg
+           ON lb.midnight_address IN (mg.host_pubkey, mg.joiner_pubkey)
+         JOIN lobbies l ON l.lobby_id = mg.evm_id
+       )
+       SELECT
+         pw.wallet_address,
+         SUM(lb.total_points)::bigint as total_points,
+         SUM(lb.games_played)::int as games_played,
+         SUM(lb.games_won)::int as games_won
+       FROM go_fish_leaderboard lb
+       JOIN pubkey_wallet pw ON pw.midnight_address = lb.midnight_address
+       WHERE pw.wallet_address = $1
+       GROUP BY pw.wallet_address`,
       [address]
     );
 
@@ -551,9 +652,8 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
 
     const user = userResult.rows[0];
 
-    // Identity: Go Fish has no Session→Main delegation yet; delegatedFrom is empty.
     const identity = {
-      address: user.midnight_address,
+      address: user.wallet_address,
       delegatedFrom: [] as string[],
       displayName: null as string | null,
     };
@@ -583,11 +683,41 @@ export const apiRouter: StartConfigApiRouter = async (server: FastifyInstance, d
     for (const channelId of requestedChannels) {
       if (channelId !== "leaderboard") continue; // skip unknown channels
 
-      // Compute dynamic rank
+      // Compute dynamic rank among wallet-aggregated scores
       const rankResult = await dbPool.query<{ rank: string }>(
-        `SELECT COUNT(*) + 1 AS rank
-         FROM go_fish_leaderboard
-         WHERE total_points > $1`,
+        `WITH wallet_scores AS (
+           SELECT pw.wallet_address, SUM(lb.total_points)::bigint as total_points
+           FROM go_fish_leaderboard lb
+           JOIN (
+             SELECT DISTINCT ON (lb2.midnight_address)
+               lb2.midnight_address,
+               COALESCE(
+                 (SELECT addr.address FROM effectstream.addresses addr
+                  WHERE addr.account_id =
+                    CASE WHEN lb2.midnight_address = mg.host_pubkey
+                         THEN l.host_account_id
+                         ELSE (SELECT lp2.account_id FROM lobby_players lp2
+                               WHERE lp2.lobby_id = mg.evm_id
+                                 AND lp2.account_id != l.host_account_id LIMIT 1)
+                    END
+                  LIMIT 1),
+                 (SELECT acct.primary_address FROM effectstream.accounts acct
+                  WHERE acct.id =
+                    CASE WHEN lb2.midnight_address = mg.host_pubkey
+                         THEN l.host_account_id
+                         ELSE (SELECT lp2.account_id FROM lobby_players lp2
+                               WHERE lp2.lobby_id = mg.evm_id
+                                 AND lp2.account_id != l.host_account_id LIMIT 1)
+                    END)
+               ) as wallet_address
+             FROM go_fish_leaderboard lb2
+             JOIN midnight_games mg ON lb2.midnight_address IN (mg.host_pubkey, mg.joiner_pubkey)
+             JOIN lobbies l ON l.lobby_id = mg.evm_id
+           ) pw ON pw.midnight_address = lb.midnight_address
+           WHERE pw.wallet_address IS NOT NULL
+           GROUP BY pw.wallet_address
+         )
+         SELECT COUNT(*) + 1 AS rank FROM wallet_scores WHERE total_points > $1`,
         [user.total_points]
       );
       const rank = Number(rankResult.rows[0]?.rank ?? 1);

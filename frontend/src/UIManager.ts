@@ -184,6 +184,11 @@ export class UIManager {
    *  top-right trophy icon. The LeaderboardPanel itself is owned here. */
   private setupLeaderboardButton(): void {
     document.addEventListener('open-leaderboard', () => {
+      const gameService = GoFishGameService.getInstance();
+      this.leaderboardPanel.setCurrentUser(
+        gameService.getPlayerId() || null,
+        gameService.getPlayerName() || null,
+      );
       this.leaderboardPanel.toggle();
     });
   }

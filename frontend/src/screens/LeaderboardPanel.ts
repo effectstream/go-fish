@@ -10,7 +10,7 @@ import { API_BASE_URL } from '../apiConfig';
 import { soundManager } from '../three/SoundManager';
 
 interface LeaderboardEntry {
-  midnight_address: string;
+  wallet_address: string;
   total_points: number;
   games_played: number;
   games_won: number;
@@ -21,11 +21,20 @@ export class LeaderboardPanel {
   private tableBody: HTMLElement;
   private refreshInterval: number | null = null;
   private visible = false;
+  private currentWallet: string | null = null;
+  private currentPlayerName: string | null = null;
 
-  constructor() {
+  constructor(walletAddress?: string | null, playerName?: string | null) {
+    this.currentWallet = walletAddress ?? null;
+    this.currentPlayerName = playerName ?? null;
     this.overlay = this.createOverlay();
     document.body.appendChild(this.overlay);
     this.tableBody = this.overlay.querySelector('.leaderboard-tbody')!;
+  }
+
+  setCurrentUser(walletAddress: string | null, playerName: string | null): void {
+    this.currentWallet = walletAddress;
+    this.currentPlayerName = playerName;
   }
 
   private createOverlay(): HTMLElement {
@@ -136,15 +145,23 @@ export class LeaderboardPanel {
     }
     emptyEl.style.display = 'none';
     this.tableBody.innerHTML = entries.map((entry, i) => {
-      const addr = entry.midnight_address;
+      const addr = entry.wallet_address;
+      const isMe = this.currentWallet != null
+        && addr.toLowerCase() === this.currentWallet.toLowerCase();
       const shortAddr = addr.length > 20
         ? `${addr.slice(0, 10)}…${addr.slice(-6)}`
         : addr;
-      const rowBg = i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.03)';
+      const displayAddr = isMe && this.currentPlayerName
+        ? `${shortAddr} (${this.currentPlayerName})`
+        : shortAddr;
+      const rowBg = isMe
+        ? 'rgba(255, 215, 0, 0.15)'
+        : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.03)';
+      const borderLeft = isMe ? 'border-left: 3px solid #ffd700;' : '';
       return `
-        <tr style="background:${rowBg};">
+        <tr style="background:${rowBg}; ${borderLeft}">
           <td style="padding:6px 8px; color:#aaa;">${i + 1}</td>
-          <td style="padding:6px 8px; font-family:monospace; font-size:0.85em;" title="${addr}">${shortAddr}</td>
+          <td style="padding:6px 8px; font-family:monospace; font-size:0.85em;" title="${addr}">${displayAddr}</td>
           <td style="padding:6px 8px; text-align:right; color:#ffd700; font-weight:bold;">${entry.total_points}</td>
           <td style="padding:6px 8px; text-align:right;">${entry.games_won}</td>
           <td style="padding:6px 8px; text-align:right; color:#aaa;">${entry.games_played}</td>
