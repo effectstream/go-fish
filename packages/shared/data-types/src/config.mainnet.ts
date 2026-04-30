@@ -80,6 +80,7 @@ export const config = new ConfigBuilder()
           // This gives sync processes time to complete between operations
           pollingInterval: 1000,
           confirmationDepth: 1,
+          stepSize: 30,
         })
       )
       .addParallel(

@@ -15,7 +15,7 @@
   "imports": {
     "ethers": "npm:ethers@5.7.2",
     "rxjs": "npm:rxjs@7.8.1",
-    "@paimaexample/concise": "jsr:@paimaexample/concise@0.10.24",
+    "@paimaexample/concise": "jsr:@paimaexample/concise@0.11.1",
     "@go-fish/data-types": "../packages/shared/data-types/src/mod.ts",
     "@midnight-ntwrk/compact-runtime": "npm:@midnight-ntwrk/compact-runtime@0.15.0",
     "@midnight-ntwrk/midnight-js-contracts": "npm:@midnight-ntwrk/midnight-js-contracts@4.0.2",

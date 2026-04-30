@@ -9,12 +9,12 @@
     "dev": "deno run -A --unstable-detect-cjs src/main.ts"
   },
   "imports": {
-    "@paimaexample/batcher": "jsr:@paimaexample/batcher@0.10.25",
-    "@paimaexample/utils": "jsr:@paimaexample/utils@0.10.24",
-    "@paimaexample/concise": "jsr:@paimaexample/concise@0.10.24",
-    "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.10.24",
-    "@paimaexample/crypto": "jsr:@paimaexample/crypto@0.10.24",
-    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.10.24",
+    "@paimaexample/batcher": "jsr:@paimaexample/batcher@0.11.1",
+    "@paimaexample/utils": "jsr:@paimaexample/utils@0.11.1",
+    "@paimaexample/concise": "jsr:@paimaexample/concise@0.11.1",
+    "@paimaexample/coroutine": "jsr:@paimaexample/coroutine@0.11.1",
+    "@paimaexample/crypto": "jsr:@paimaexample/crypto@0.11.1",
+    "@paimaexample/midnight-contracts": "jsr:@paimaexample/midnight-contracts@0.11.1",
     "effection": "npm:effection@^3.5.0",
     "@std/path": "jsr:@std/path@^1.1.3",
     "@std/fs": "jsr:@std/fs@^1.0.19",
