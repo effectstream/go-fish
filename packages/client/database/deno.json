@@ -6,10 +6,10 @@
     "pgtyped:update": "npx pgtyped -c pgtyped.config.json"
   },
   "imports": {
-    "@paimaexample/config": "jsr:@paimaexample/config@0.11.1",
-    "@paimaexample/runtime": "jsr:@paimaexample/runtime@0.11.1",
-    "@paimaexample/sm": "jsr:@paimaexample/sm@0.11.1",
-    "@paimaexample/db": "jsr:@paimaexample/db@0.11.1",
+    "@paimaexample/config": "jsr:@paimaexample/config@0.11.3",
+    "@paimaexample/runtime": "jsr:@paimaexample/runtime@0.11.3",
+    "@paimaexample/sm": "jsr:@paimaexample/sm@0.11.3",
+    "@paimaexample/db": "jsr:@paimaexample/db@0.11.3",
     "@pgtyped/runtime": "npm:@pgtyped/runtime@2.4.2",
     "pg": "npm:pg@^8.14.0",
     "effection": "npm:effection@3.5.0"
