@@ -45,7 +45,7 @@
     "@midnight-ntwrk/zswap": "^4.0.0",
     "@paima/midnight-vm-bindings": "^0.3.1",
     "@paima/midnight-wasm-prover": "^0.1.0-alpha7",
-    "@paimaexample/wallets": "^0.10.24",
+    "@paimaexample/wallets": "^0.11.3",
     "@types/three": "^0.183.1",
     "ethers": "^5.8.0",
     "fp-ts": "^2.16.11",
