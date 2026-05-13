@@ -55,6 +55,9 @@ const queryWitnesses: any = {
   get_sorted_deck_witness: (_context: any, _input: any) => {
     throw new Error('Backend should not generate proofs');
   },
+  admin_secret_key: (_context: any) => {
+    throw new Error('Backend does not hold admin_secret_key — owner-only circuits must be called from the admin client');
+  },
 };
 
 // Singleton contract instance for queries (using any for flexibility)
