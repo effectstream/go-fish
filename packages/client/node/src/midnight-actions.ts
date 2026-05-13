@@ -303,6 +303,10 @@ const actionWitnesses: any = {
     }
     return [context.privateState, mappedPoints.map((x) => ({ x: x.x, y: x.y }))];
   },
+
+  admin_secret_key: (_context: any) => {
+    throw new Error('Backend does not hold admin_secret_key — owner-only circuits must be called from the admin client');
+  },
 };
 
 /**
