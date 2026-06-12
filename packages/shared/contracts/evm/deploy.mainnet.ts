@@ -1,6 +1,6 @@
 import { createHardhatRuntimeEnvironment } from "hardhat/hre";
 import * as config from "./hardhat.config.ts";
-import GoFishModule from "./ignition/modules/GoFishLobby.ts";
+import effectstreaml2Module from "./ignition/modules/effectstreaml2-module.ts";
 import type { buildModule } from "@nomicfoundation/ignition-core";
 
 const __dirname: any = import.meta.dirname;
@@ -11,13 +11,12 @@ type Deployment = {
   parameters?: Record<string, Record<string, any>>;
 };
 
-// Deploy both PaimaL2Contract and GoFishLobby
 const myDeployments: Deployment[] = [
   {
-    module: GoFishModule,
+    module: effectstreaml2Module,
     network: "arbitrum",
     parameters: {
-      GoFishModule: {
+      effectstreaml2Module: {
         owner: "0x6070845922feDe184ea3A4Cbe926776418101735",
         fee: 0, // Free-to-play
       },
@@ -26,7 +25,7 @@ const myDeployments: Deployment[] = [
 ] as const;
 
 /**
- * Deploy the contracts to the network.
+ * Deploy the EffectstreamL2 contract to the network.
  */
 export async function deploy(): Promise<void> {
   const hre = await createHardhatRuntimeEnvironment(config.default, __dirname);
@@ -38,9 +37,7 @@ export async function deploy(): Promise<void> {
       deployment.parameters ? { parameters: deployment.parameters } : undefined,
     );
     messages.push(
-      `${deployment.module.id.substring(0, 16).padEnd(16)} @ ${
-        deployment.network.substring(0, 16).padEnd(16)
-      } deployed to ${result.paimaL2Contract.address} (PaimaL2)`
+      `${deployment.module.id} @ ${deployment.network} deployed to ${result.contract.address}`,
     );
   }
   console.log("Deployed contracts:\n", messages.join("\n"));

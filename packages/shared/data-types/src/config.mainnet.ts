@@ -22,6 +22,13 @@ if (midnightNetworkConfig.id !== "mainnet") {
   throw new Error("Invalid midnightNetworkConfig.id");
 }
 
+// Route EVM reads through the local evm-gateway cache (e.g. http://localhost:3940)
+// instead of arbitrum's default public RPC. Matches the other migrated games.
+const EVM_RPC_URL = process.env.ARBITRUM_ONE_RPC as string;
+if (!EVM_RPC_URL) {
+  throw new Error("ARBITRUM_ONE_RPC is not set");
+}
+
 const effectstreamL2Address = contractAddressesEvmMain()[chainNameId][
   "effectstreaml2Module#effectstreaml2"
 ] as `0x${string}`;
@@ -42,6 +49,11 @@ export const config = new ConfigBuilder()
       .addViemNetwork({
         ...arbitrum,
         name: "evmMain",
+        rpcUrls: {
+          default: {
+            http: [EVM_RPC_URL],
+          },
+        },
       })
       .addNetwork({
         name: "midnight",

@@ -100,6 +100,14 @@ export default defineConfig({
         'util',
         'events',
       ],
+      // Use memfs for fs so server-only modules pulled into the bundle
+      // (e.g. @effectstream/midnight-contracts get-wallet-info, reached via
+      // @effectstream/wallets) resolve named fs exports instead of hitting
+      // node-stdlib-browser's empty mock. Matches sibling games (block-kart).
+      overrides: {
+        fs: 'memfs',
+        'node:fs': 'memfs',
+      },
       globals: {
         Buffer: true,
         global: true,

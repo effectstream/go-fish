@@ -235,6 +235,20 @@ const actionWitnesses: any = {
     return [context.privateState, modInverse(x, JUBJUB_SCALAR_FIELD_ORDER)];
   },
 
+  wit_split_card_index: (context: any, cardIndex: bigint) => {
+    // Split a 0–20 card index into [suit, rank] where index = suit*7 + rank.
+    // Must return bigints — compact-runtime marshals Uint<N> as bigint;
+    // returning plain numbers throws a type error. Mirrors the frontend
+    // midnightBridge witness; the contract verifies via reconstruction.
+    if (cardIndex < 0n || cardIndex > 20n) {
+      throw new Error(
+        `[MidnightActions] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`,
+      );
+    }
+    const n = Number(cardIndex);
+    return [context.privateState, [BigInt(Math.floor(n / 7)), BigInt(n % 7)]];
+  },
+
   player_secret_key: (context: any, gameId: Uint8Array, player: bigint) => {
     // ⚠️ INSECURE: Backend should NOT have access to player secrets!
     // Following example.test.ts pattern but this is for TESTING ONLY
