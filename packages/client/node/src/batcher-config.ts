@@ -1,12 +1,14 @@
+import { readFileSync } from "node:fs";
+
 function detectBatcherMode(): boolean {
-  const envValue = Deno.env.get("USE_BATCHER_MODE");
+  const envValue = process.env.USE_BATCHER_MODE;
   if (envValue === "true") {
     console.log("[BatcherConfig] Batcher mode enabled via USE_BATCHER_MODE env");
     return true;
   }
   try {
     const configPath = new URL("../runtime-config.json", import.meta.url);
-    const configText = Deno.readTextFileSync(configPath);
+    const configText = readFileSync(configPath, "utf-8");
     const config = JSON.parse(configText);
     if (config.useBatcherMode === true) {
       console.log("[BatcherConfig] Batcher mode enabled via runtime-config.json");

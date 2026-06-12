@@ -2,7 +2,7 @@
  * Seed Leaderboard — populates go_fish_leaderboard with test data.
  *
  * Usage (run from packages/client/node):
- *   deno run -A scripts/seed-leaderboard.ts
+ *   bun run scripts/seed-leaderboard.ts
  *
  * Environment variables:
  *   DB_URL  — postgres connection string (default: postgres://localhost:5432/go-fish)
@@ -13,7 +13,7 @@
  *   --count=N   number of fake players to insert (default: 10)
  *
  * Example:
- *   deno run -A scripts/seed-leaderboard.ts --clear --count=20
+ *   bun run scripts/seed-leaderboard.ts --clear --count=20
  */
 
 import { Pool } from "pg";
@@ -21,7 +21,7 @@ import { Pool } from "pg";
 // ---------------------------------------------------------------------------
 // Parse CLI flags
 // ---------------------------------------------------------------------------
-const args = Deno.args;
+const args = process.argv.slice(2);
 const shouldClear = args.includes("--clear");
 const countArg = args.find(a => a.startsWith("--count="));
 const count = countArg ? Math.max(1, parseInt(countArg.split("=")[1], 10)) : 10;
@@ -30,8 +30,8 @@ const count = countArg ? Math.max(1, parseInt(countArg.split("=")[1], 10)) : 10;
 // Database connection
 // ---------------------------------------------------------------------------
 const DB_URL =
-  Deno.env.get("DB_URL") ||
-  Deno.env.get("DATABASE_URL") ||
+  process.env.DB_URL ||
+  process.env.DATABASE_URL ||
   "postgres://localhost:5432/go-fish";
 
 const pool = new Pool({ connectionString: DB_URL });
@@ -91,7 +91,7 @@ async function main() {
         "[seed-leaderboard] ERROR: go_fish_leaderboard table does not exist.\n" +
         "  Run the node server once so the migration applies, then retry."
       );
-      Deno.exit(1);
+      process.exit(1);
     }
 
     if (shouldClear) {
@@ -144,5 +144,5 @@ async function main() {
 
 main().catch((err) => {
   console.error("[seed-leaderboard] Fatal error:", err.message ?? err);
-  Deno.exit(1);
+  process.exit(1);
 });

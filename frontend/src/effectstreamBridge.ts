@@ -8,11 +8,11 @@
  */
 
 import {
-  PaimaEngineConfig,
+  EffectstreamConfig,
   sendTransaction,
   walletLogin,
   type Wallet,
-} from "@paimaexample/wallets";
+} from "@effectstream/wallets";
 import { hardhat } from "viem/chains";
 import { arbitrum } from "viem/chains";
 import { ethers } from "ethers";
@@ -34,8 +34,10 @@ function getChainConfig() {
   return { ...baseChain, rpcUrls: { default: { http: [EVM_RPC_URL] } } } as any;
 }
 
-const paimaEngineConfig = new PaimaEngineConfig(
-  "",
+const SECURITY_NAMESPACE = "evm-midnight-node";
+
+const engineConfig = new EffectstreamConfig(
+  SECURITY_NAMESPACE,
   "mainEvmRPC",
   PAIMA_L2_CONTRACT_ADDRESS,
   getChainConfig(),
@@ -265,7 +267,7 @@ export async function createLobby(
 
     // Grammar expects: createdLobby|playerName|lobbyName
     const params = ["createdLobby", playerName, lobbyName];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
+    const result = await sendTransaction(currentWallet, params, engineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to create lobby" };
@@ -319,7 +321,7 @@ export async function joinLobby(
   try {
     // Grammar expects: joinedLobby|playerName|lobbyID
     const params = ["joinedLobby", playerName, lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
+    const result = await sendTransaction(currentWallet, params, engineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to join lobby" };
@@ -355,7 +357,7 @@ export async function closeLobby(
   try {
     // Grammar expects: closedLobby|lobbyID
     const params = ["closedLobby", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
+    const result = await sendTransaction(currentWallet, params, engineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to close lobby" };
@@ -389,7 +391,7 @@ export async function submitHostReady(
   try {
     // Grammar expects: hostReady|lobbyID
     const params = ["hostReady", lobbyId];
-    const result = await sendTransaction(currentWallet, params, paimaEngineConfig, "no-wait");
+    const result = await sendTransaction(currentWallet, params, engineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to submit hostReady" };
@@ -500,7 +502,7 @@ export async function submitGameAction(
 
   try {
     const txParams = ["gameAction", lobbyId, actionType, ...params];
-    const result = await sendTransaction(currentWallet, txParams, paimaEngineConfig, "no-wait");
+    const result = await sendTransaction(currentWallet, txParams, engineConfig, "no-wait");
 
     if (!result.success) {
       return { success: false, errorMessage: "Failed to submit action" };

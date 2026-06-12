@@ -14,17 +14,17 @@
  *   - Batcher running (default :3336 — matches the repo config, not the
  *     upstream default of 3334)
  *
- * Run: deno task --filter @go-fish/e2e smoke:lobby
+ * Run: bun run --filter @go-fish/e2e smoke:lobby
  */
 
-import { assertEquals, assertExists } from "jsr:@std/assert";
+import { test, expect } from "bun:test";
 import { ethers } from "ethers";
-import { generateStmInput } from "@paimaexample/concise";
+import { generateStmInput } from "@effectstream/concise";
 import { grammar } from "@go-fish/data-types";
 
-const BATCHER_URL = Deno.env.get("BATCHER_URL") ?? "http://localhost:3336";
-const API_URL = Deno.env.get("API_URL") ?? "http://localhost:9996";
-const EVM_RPC_URL = Deno.env.get("EVM_RPC_URL") ?? "http://localhost:8545";
+const BATCHER_URL = process.env.BATCHER_URL ?? "http://localhost:3336";
+const API_URL = process.env.API_URL ?? "http://localhost:9996";
+const EVM_RPC_URL = process.env.EVM_RPC_URL ?? "http://localhost:8545";
 
 // Hardhat test account #1 (account #0 is typically the deployer)
 const HARDHAT_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
@@ -59,7 +59,7 @@ async function postLobby(wallet: ethers.Wallet, conciseData: unknown[]): Promise
 
   // IMPORTANT: leave `target` out of the signed message and the POST body.
   //
-  // Why: paima-engine 0.10.24 `extractBatches` (jsr:@paimaexample/concise)
+  // Why: paima-engine 0.10.24 `extractBatches` (@effectstream/concise)
   // does NOT persist the target field into the on-chain subunit. When the
   // Paima node later reconstructs the signed message for verification it
   // passes target=undefined → "". The batcher's own verifier uses
@@ -129,11 +129,7 @@ async function pollUntil<T>(
   throw new Error(`Timeout: ${label}`);
 }
 
-Deno.test({
-  name: "lobby: createdLobby via batcher effectstreaml2 target",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("lobby: createdLobby via batcher effectstreaml2 target", async () => {
     const provider = new ethers.providers.JsonRpcProvider(EVM_RPC_URL);
     const wallet = new ethers.Wallet(HARDHAT_KEY, provider);
     console.log(`  wallet address = ${wallet.address}`);
@@ -159,7 +155,7 @@ Deno.test({
     console.log(`  batcher responded: ${res.status}`);
     const bodyText = await res.text();
     console.log(`  body: ${bodyText.slice(0, 200)}`);
-    assertEquals(res.ok, true, `batcher rejected: ${bodyText}`);
+    expect(res.ok).toBe(true);
 
     // Poll Paima REST until the new lobby appears
     const newLobby = await pollUntil(
@@ -173,7 +169,6 @@ Deno.test({
       30_000,
       2_000,
     );
-    assertExists(newLobby, "new lobby should exist");
+    expect(newLobby).toBeDefined();
     console.log(`  ✓ lobby created via batcher: id=${newLobby.lobby_id} name=${newLobby.lobby_name ?? newLobby.name}`);
-  },
-});
+}, { timeout: 600_000 });

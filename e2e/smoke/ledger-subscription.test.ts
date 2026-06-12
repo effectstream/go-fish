@@ -11,9 +11,9 @@
  *   - Midnight node
  *   - Go Fish contract deployed at the address in go-fish-contract.undeployed.json
  *
- * Start with: deno task -f @go-fish/node midnight:setup
+ * Start with: bun run --filter @go-fish/node midnight:setup
  *
- * Run: deno task --filter @go-fish/e2e smoke:ledger
+ * Run: bun run --filter @go-fish/e2e smoke:ledger
  *
  * Note on ledger decoding: the compiled ledger() function for go-fish returns
  * {} because the contract doesn't declare typed ledger blocks — state lives in
@@ -25,8 +25,9 @@
  * This smoke test only proves the pipe is open — field decoding comes in Step 9.
  */
 
-import { assertExists } from "jsr:@std/assert";
-import { resolve } from "jsr:@std/path";
+import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { firstValueFrom, take, timeout } from "rxjs";
@@ -34,46 +35,37 @@ import { firstValueFrom, take, timeout } from "rxjs";
 // Match packages/shared/contracts/midnight/midnight-env.ts — /api/v1 triggers
 // an infinite-redirect bug in this indexer build.
 const INDEXER_HTTP_URL =
-  Deno.env.get("INDEXER_HTTP_URL") ?? "http://127.0.0.1:8088/api/v3/graphql";
+  process.env.INDEXER_HTTP_URL ?? "http://127.0.0.1:8088/api/v3/graphql";
 const INDEXER_WS_URL =
-  Deno.env.get("INDEXER_WS_URL") ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
+  process.env.INDEXER_WS_URL ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
 
-const REPO_ROOT = Deno.env.get("GO_FISH_REPO_ROOT") ?? Deno.cwd().replace(/\/e2e\/?$/, "");
+const REPO_ROOT = process.env.GO_FISH_REPO_ROOT ?? process.cwd().replace(/\/e2e\/?$/, "");
 const CONTRACT_ADDRESS_FILE = resolve(
   REPO_ROOT,
   "packages/shared/contracts/midnight/go-fish-contract.undeployed.json",
 );
 
 function loadContractAddress(): string {
-  const raw = Deno.readTextFileSync(CONTRACT_ADDRESS_FILE);
+  const raw = readFileSync(CONTRACT_ADDRESS_FILE, "utf-8");
   const parsed = JSON.parse(raw);
   return parsed.contractAddress.replace(/^0x/, "");
 }
 
-Deno.test({
-  name: "indexer: queryContractState returns current state",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("indexer: queryContractState returns current state", async () => {
     setNetworkId("undeployed");
     const provider = indexerPublicDataProvider(INDEXER_HTTP_URL, INDEXER_WS_URL);
     const addr = loadContractAddress();
     console.log(`  contract address = ${addr}`);
 
     const state = await provider.queryContractState(addr as any);
-    assertExists(state, "queryContractState returned null");
+    expect(state).toBeDefined();
     console.log(`  state exists: ${typeof state}, keys=${Object.keys(state).join(",")}`);
     if ("data" in state) {
       console.log(`  state.data type: ${typeof state.data}`);
     }
-  },
-});
+}, { timeout: 600_000 });
 
-Deno.test({
-  name: "indexer: contractStateObservable emits at least once",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("indexer: contractStateObservable emits at least once", async () => {
     setNetworkId("undeployed");
     const provider = indexerPublicDataProvider(INDEXER_HTTP_URL, INDEXER_WS_URL);
     const addr = loadContractAddress();
@@ -88,8 +80,7 @@ Deno.test({
       ),
     );
 
-    assertExists(firstState, "observable did not emit");
+    expect(firstState).toBeDefined();
     console.log(`  received emission: ${typeof firstState}`);
     console.log(`  emission keys: ${Object.keys(firstState as any).join(",")}`);
-  },
-});
+}, { timeout: 600_000 });

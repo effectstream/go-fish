@@ -3,7 +3,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { StartConfigApiRouter } from "@paimaexample/runtime";
+import type { StartConfigApiRouter } from "@effectstream/runtime";
 import type { Pool } from "pg";
 import {
   getGameState as getMidnightGameState,

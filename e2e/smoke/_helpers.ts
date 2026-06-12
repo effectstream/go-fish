@@ -8,9 +8,10 @@
  * risk breaking green tests. Future smokes import from here.
  */
 
-import { resolve } from "jsr:@std/path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { ethers } from "ethers";
-import { generateStmInput } from "@paimaexample/concise";
+import { generateStmInput } from "@effectstream/concise";
 import { grammar } from "@go-fish/data-types";
 import {
   toHex,
@@ -37,15 +38,15 @@ import { makeTestWitnesses, WitnessState } from "./test-witnesses.ts";
 // ---------------------------------------------------------------------------
 
 export const REPO_ROOT =
-  Deno.env.get("GO_FISH_REPO_ROOT") ?? Deno.cwd().replace(/\/e2e\/?$/, "");
-export const BATCHER_URL = Deno.env.get("BATCHER_URL") ?? "http://localhost:3336";
-export const PROOF_URL = Deno.env.get("PROOF_URL") ?? "http://127.0.0.1:6300";
+  process.env.GO_FISH_REPO_ROOT ?? process.cwd().replace(/\/e2e\/?$/, "");
+export const BATCHER_URL = process.env.BATCHER_URL ?? "http://localhost:3336";
+export const PROOF_URL = process.env.PROOF_URL ?? "http://127.0.0.1:6300";
 export const INDEXER_HTTP_URL =
-  Deno.env.get("INDEXER_HTTP_URL") ?? "http://127.0.0.1:8088/api/v3/graphql";
+  process.env.INDEXER_HTTP_URL ?? "http://127.0.0.1:8088/api/v3/graphql";
 export const INDEXER_WS_URL =
-  Deno.env.get("INDEXER_WS_URL") ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
-export const PAIMA_API_URL = Deno.env.get("API_URL") ?? "http://localhost:9996";
-export const EVM_RPC_URL = Deno.env.get("EVM_RPC_URL") ?? "http://localhost:8545";
+  process.env.INDEXER_WS_URL ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
+export const PAIMA_API_URL = process.env.API_URL ?? "http://localhost:9996";
+export const EVM_RPC_URL = process.env.EVM_RPC_URL ?? "http://localhost:8545";
 
 export const CONTRACT_ADDRESS_FILE = resolve(
   REPO_ROOT,
@@ -71,7 +72,7 @@ export const JUBJUB_R =
  * `TEST_ADMIN_SECRET` env var if you need to impersonate a different admin.
  */
 export const TEST_ADMIN_SECRET: bigint = (() => {
-  const raw = Deno.env.get("TEST_ADMIN_SECRET");
+  const raw = process.env.TEST_ADMIN_SECRET;
   if (raw && /^0x[0-9a-fA-F]+$/.test(raw)) return BigInt(raw);
   // Default: a readable constant in the Jubjub scalar field.
   return 0x5e1c33e17a1e600d5eed9a1c01f135cf5e1e7a5e1f1e5e1e5e1e5e1e5e1e5e1en;
@@ -125,7 +126,7 @@ export function cardName(idx: number): string {
 // ---------------------------------------------------------------------------
 
 export function loadContractAddress(): string {
-  return JSON.parse(Deno.readTextFileSync(CONTRACT_ADDRESS_FILE))
+  return JSON.parse(readFileSync(CONTRACT_ADDRESS_FILE, "utf-8"))
     .contractAddress.replace(/^0x/, "");
 }
 
@@ -179,18 +180,15 @@ export function lobbyIdToGameId(lobbyId: string): Uint8Array {
 // Lobby POST — batcher /send-input with effectstreaml2 target (signed)
 // ---------------------------------------------------------------------------
 
+export const SECURITY_NAMESPACE = "evm-midnight-node";
+
 /**
- * Port of paima-engine's `createMessageForBatcher` (jsr:@paimaexample/concise
- * — `batcher.ts`). The batcher and the Paima node both rebuild this exact
- * string and verify the signature against it.
+ * Port of effectstream's `createMessageForBatcher` (`@effectstream/concise`).
+ * The batcher and the node both rebuild this exact string and verify the
+ * signature against it.
  *
- * IMPORTANT — both `namespace` and `target` must be omitted (treated as "")
- * for the message to match what the Paima node reconstructs:
- *   - The batcher config sets `namespace: ""` (config.ts:13)
- *   - The Paima node calls `createMessageForBatcher(null, ...)` (null → "")
- *   - `extractBatches` does NOT persist the `target` field into the on-chain
- *     subunit, so the Paima node reconstructs with `target=undefined → ""`
- * Routing still works because the batcher uses `defaultTarget` (effectstreaml2).
+ * IMPORTANT — `namespace` must match `evm-midnight-node` on batcher, frontend,
+ * and node. `target` is omitted (treated as "") so routing uses defaultTarget.
  */
 export function createMessageForBatcher(
   namespace: string | null,
@@ -220,7 +218,7 @@ export async function postLobby(
   const timestamp = Date.now().toString();
   const inputStr = JSON.stringify(conciseData);
   const message = createMessageForBatcher(
-    "", // namespace empty (matches batcher + Paima)
+    SECURITY_NAMESPACE,
     timestamp,
     wallet.address,
     ADDRESS_TYPE_EVM,
@@ -638,7 +636,7 @@ export async function createSmokeSession(
  * booksP1/P2 + initialBooksScoredP1/P2), shifting slot indices — the
  * compiled `_init_static_deck_0` now reads at `[0n, 2n]` (see
  * managed/contract/index.js:2523 `queryLedgerState` ops). Keep this path in
- * sync with that function after every `deno task compact`.
+ * sync with that function after every `bun run --filter @go-fish/midnight-contract compact`.
  */
 async function queryStaticDeckInitialized(
   publicDataProvider: any,

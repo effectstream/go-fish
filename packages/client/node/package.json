@@ -1,0 +1,47 @@
+{
+  "name": "@go-fish/node",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/main.dev.ts"
+  },
+  "scripts": {
+    "check": "bun x tsc --noEmit -p tsconfig.check.json",
+    "node:start:dev": "bun --inspect run src/main.dev.ts",
+    "node:start:mainnet": "bun run src/main.mainnet.ts",
+    "dev": "EFFECTSTREAM_ENV=dev EFFECTSTREAM_API_PORT=9996 NODE_ENV=development USE_DB_STARTHEIGHT=true bun run scripts/start.dev.ts",
+    "mainnet": "EFFECTSTREAM_ENV=mainnet NODE_ENV=development bun run scripts/start.mainnet.ts",
+    "midnight:setup": "EFFECTSTREAM_ENV=dev bun run scripts/setup-midnight.ts",
+    "leaderboard:seed": "bun run scripts/seed-leaderboard.ts",
+    "leaderboard:seed:clear": "bun run scripts/seed-leaderboard.ts --clear",
+    "test": "bun test --concurrency 1 src/api.test.ts",
+    "test:watch": "bun test --watch --concurrency 1 src/api.test.ts"
+  },
+  "dependencies": {
+    "@effectstream/concise": "0.100.21",
+    "@effectstream/config": "0.100.21",
+    "@effectstream/coroutine": "0.100.21",
+    "@effectstream/db": "0.100.21",
+    "@effectstream/log": "0.100.21",
+    "@effectstream/midnight-contracts": "0.100.21",
+    "@effectstream/orchestrator": "0.100.21",
+    "@effectstream/runtime": "0.100.21",
+    "@effectstream/sm": "0.100.21",
+    "@effectstream/utils": "0.100.21",
+    "@go-fish/data-types": "workspace:*",
+    "@go-fish/database": "workspace:*",
+    "@go-fish/evm-contracts": "workspace:*",
+    "@go-fish/midnight-contracts": "workspace:*",
+    "@go-fish/midnight-contract": "workspace:*",
+    "@midnight-ntwrk/compact-runtime": "0.15.0",
+    "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v3@3.0.0",
+    "@sinclair/typebox": "^0.34.30",
+    "effection": "^3.5.0",
+    "fastify": "^5.4.0",
+    "pg": "^8.14.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.11"
+  }
+}

@@ -18,11 +18,12 @@
  * PREREQS: full stack running, staticDeckInitialized == true, all three
  * smokes (ledger, lobby, init-deck, apply-mask) passing.
  *
- * Run: deno task --filter @go-fish/e2e smoke:setup
+ * Run: bun run --filter @go-fish/e2e smoke:setup
  */
 
-import { assertEquals } from "jsr:@std/assert";
-import { resolve } from "jsr:@std/path";
+import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   toHex,
   QueryContext,
@@ -49,13 +50,13 @@ import { createInMemoryPrivateStateProvider } from "../../frontend/src/services/
 // Config
 // ---------------------------------------------------------------------------
 
-const REPO_ROOT = Deno.env.get("GO_FISH_REPO_ROOT") ?? Deno.cwd().replace(/\/e2e\/?$/, "");
-const BATCHER_URL = Deno.env.get("BATCHER_URL") ?? "http://localhost:3336";
-const PROOF_URL = Deno.env.get("PROOF_URL") ?? "http://127.0.0.1:6300";
+const REPO_ROOT = process.env.GO_FISH_REPO_ROOT ?? process.cwd().replace(/\/e2e\/?$/, "");
+const BATCHER_URL = process.env.BATCHER_URL ?? "http://localhost:3336";
+const PROOF_URL = process.env.PROOF_URL ?? "http://127.0.0.1:6300";
 const INDEXER_HTTP_URL =
-  Deno.env.get("INDEXER_HTTP_URL") ?? "http://127.0.0.1:8088/api/v3/graphql";
+  process.env.INDEXER_HTTP_URL ?? "http://127.0.0.1:8088/api/v3/graphql";
 const INDEXER_WS_URL =
-  Deno.env.get("INDEXER_WS_URL") ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
+  process.env.INDEXER_WS_URL ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
 
 const CONTRACT_ADDRESS_FILE = resolve(
   REPO_ROOT,
@@ -78,7 +79,7 @@ const PHASE_TURN_START = 1;
 // ---------------------------------------------------------------------------
 
 function loadContractAddress(): string {
-  return JSON.parse(Deno.readTextFileSync(CONTRACT_ADDRESS_FILE)).contractAddress.replace(/^0x/, "");
+  return JSON.parse(readFileSync(CONTRACT_ADDRESS_FILE, "utf-8")).contractAddress.replace(/^0x/, "");
 }
 
 function generatePlayerSecret(): bigint {
@@ -278,11 +279,7 @@ async function waitFor<T>(
 // The test
 // ---------------------------------------------------------------------------
 
-Deno.test({
-  name: "setup: applyMask×2 + dealCards×2 → phase=TurnStart, hands=4/4",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("setup: applyMask×2 + dealCards×2 → phase=TurnStart, hands=4/4", async () => {
     setNetworkId("undeployed");
 
     const contractAddress = loadContractAddress();
@@ -433,17 +430,16 @@ Deno.test({
       const h1 = Number((handSizes as any)[0]);
       const h2 = Number((handSizes as any)[1]);
       console.log(`\n  final hand sizes: P1=${h1}, P2=${h2}`);
-      assertEquals(h1, 4, "P1 should have 4 cards");
-      assertEquals(h2, 4, "P2 should have 4 cards");
+      expect(h1).toBe(4);
+      expect(h2).toBe(4);
 
       const finalPhase = Number(await read<number | bigint>("getGamePhase", gameId));
       console.log(`  final phase: ${finalPhase}`);
-      assertEquals(finalPhase, PHASE_TURN_START);
+      expect(finalPhase).toBe(PHASE_TURN_START);
 
       console.log(`\n  ✓ setup complete — game ${gameIdHex.slice(0, 18)}... ready for play`);
     } finally {
       clearPlayerSecrets(gameIdHex, 1);
       clearPlayerSecrets(gameIdHex, 2);
     }
-  },
-});
+}, { timeout: 600_000 });

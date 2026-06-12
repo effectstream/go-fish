@@ -84,7 +84,7 @@ dealCards
 
 ## Detection Method
 
-After compiling with `deno task compact`, check each generated ZKIR file for the combination
+After compiling with `bun run --filter @go-fish/midnight-contract compact`, check each generated ZKIR file for the combination
 of `ec_mul` and non-null guarded `public_input` ops:
 
 ```bash
@@ -161,7 +161,7 @@ call `ec_mul` once outside any branch.
 > **Every `ec_mul` in every compiled ZKIR must have `public_input { guard: null }` feeding
 > its `a_x` and `a_y` inputs — never a guarded `public_input { guard: N }` for any `N`.**
 
-Run the detection script above after every `deno task compact` to verify this invariant holds.
+Run the detection script above after every `bun run --filter @go-fish/midnight-contract compact` to verify this invariant holds.
 If any circuit shows both `ec_mul` and non-null guarded `public_input`, find the `if/else`
 containing the `ec_mul` call chain and apply the ternary-select fix.
 

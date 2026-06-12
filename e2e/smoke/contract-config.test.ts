@@ -11,14 +11,15 @@
  * No external services required. Must be run from the repo root (or set
  * GO_FISH_REPO_ROOT).
  *
- * Run: deno task --filter @go-fish/e2e smoke:config
+ * Run: bun run --filter @go-fish/e2e smoke:config
  */
 
-import { assertEquals, assertExists } from "jsr:@std/assert";
-import { resolve } from "jsr:@std/path";
+import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
 
-const REPO_ROOT = Deno.env.get("GO_FISH_REPO_ROOT") ?? Deno.cwd().replace(/\/e2e\/?$/, "");
+const REPO_ROOT = process.env.GO_FISH_REPO_ROOT ?? process.cwd().replace(/\/e2e\/?$/, "");
 
 const CONTRACT_ADDRESS_FILE = resolve(
   REPO_ROOT,
@@ -67,7 +68,7 @@ const CIRCUITS = [
 ] as const;
 
 function loadContractAddress(): string {
-  const raw = Deno.readTextFileSync(CONTRACT_ADDRESS_FILE);
+  const raw = readFileSync(CONTRACT_ADDRESS_FILE, "utf-8");
   const parsed = JSON.parse(raw);
   if (typeof parsed.contractAddress !== "string") {
     throw new Error(`contractAddress missing from ${CONTRACT_ADDRESS_FILE}`);
@@ -76,16 +77,16 @@ function loadContractAddress(): string {
   return parsed.contractAddress.replace(/^0x/, "");
 }
 
-Deno.test("contract address loads from .undeployed.json", () => {
+test("contract address loads from .undeployed.json", () => {
   const addr = loadContractAddress();
-  assertEquals(addr.length, 64, `expected 64 hex chars, got ${addr.length}`);
+  expect(addr.length).toBe(64);
   if (!/^[0-9a-f]{64}$/i.test(addr)) {
     throw new Error(`not valid hex: ${addr}`);
   }
   console.log(`  contractAddress = ${addr}`);
 });
 
-Deno.test("NodeZkConfigProvider loads prover/verifier/zkir for all circuits", async () => {
+test("NodeZkConfigProvider loads prover/verifier/zkir for all circuits", async () => {
   const provider = new NodeZkConfigProvider<typeof CIRCUITS[number]>(ZK_CONFIG_PATH);
   console.log(`  ZK config path = ${ZK_CONFIG_PATH}`);
 
@@ -95,9 +96,9 @@ Deno.test("NodeZkConfigProvider loads prover/verifier/zkir for all circuits", as
       provider.getVerifierKey(circuit),
       provider.getZKIR(circuit),
     ]);
-    assertExists(proverKey, `${circuit} prover key`);
-    assertExists(verifierKey, `${circuit} verifier key`);
-    assertExists(zkir, `${circuit} ZKIR`);
+    expect(proverKey).toBeDefined();
+    expect(verifierKey).toBeDefined();
+    expect(zkir).toBeDefined();
     console.log(`  ${circuit.padEnd(20)} prover=${proverKey.length}B verifier=${verifierKey.length}B zkir=${zkir.length}B`);
   }
 });

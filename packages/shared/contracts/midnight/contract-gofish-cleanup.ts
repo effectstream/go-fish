@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run -A --unstable-detect-cjs
+#!/usr/bin/env bun
 /**
  * Clean up a finished Go Fish game.
  *
@@ -14,7 +14,7 @@
  *   MIDNIGHT_CLEAN_SEED="<seed>" \
  *   MIDNIGHT_STORAGE_PASSWORD="D3vP@ssw0rd!xK9m" \
  *   BATCHER_URL="http://localhost:3336" \
- *   deno run -A --unstable-detect-cjs contract-gofish-cleanup.ts <game_id>
+ *   bun run contract-gofish-cleanup.ts <game_id>
  *
  * Arguments:
  *   game_id  The ASCII game/lobby ID (e.g. "lobby_15206_01234567")
@@ -23,7 +23,9 @@
  */
 
 import { Buffer } from "node:buffer";
-import * as path from "@std/path";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
@@ -41,7 +43,7 @@ import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-pri
 import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 
-import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
+import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import { buildWalletFacade } from "./faucet.ts";
 import {
   Contract,
@@ -54,18 +56,18 @@ import {
 // Constants
 // ============================================================================
 
-const BATCHER_URL = Deno.env.get("BATCHER_URL") || "http://localhost:3336";
+const BATCHER_URL = process.env.BATCHER_URL || "http://localhost:3336";
 const DELEGATED_TX_SENTINEL = "delegated-to-batcher";
 
 // ============================================================================
 // Parse arguments
 // ============================================================================
 
-const gameIdArg = Deno.args[0];
+const gameIdArg = process.argv[2];
 if (!gameIdArg) {
   console.error("Usage: contract-gofish-cleanup.ts <game_id>");
   console.error("  game_id: The ASCII game/lobby ID (e.g. lobby_15206_01234567)");
-  Deno.exit(1);
+  process.exit(1);
 }
 
 function lobbyIdToGameId(lobbyId: string): Uint8Array {
@@ -86,7 +88,7 @@ console.log(`Game ID to clean up: "${gameIdArg}"`);
 const JUBJUB_SCALAR_FIELD_ORDER = 6554484396890773809930967563523245729705921265872317281365359162392183254199n;
 
 function getAdminSecret(): bigint {
-  const raw = Deno.env.get("MIDNIGHT_ADMIN_SECRET") ?? "MIDNIGHT_ADMIN_SECRET";
+  const raw = process.env.MIDNIGHT_ADMIN_SECRET ?? "MIDNIGHT_ADMIN_SECRET";
   let val: bigint;
   if (/^[0-9a-fA-F]{64}$/.test(raw)) {
     val = BigInt("0x" + raw);
@@ -109,10 +111,10 @@ function getAdminSecret(): bigint {
 // ============================================================================
 
 function loadContractAddress(): string {
-  const here = path.dirname(path.fromFileUrl(import.meta.url));
+  const here = path.dirname(fileURLToPath(import.meta.url));
   const networkId = midnightNetworkConfig.id;
   const filePath = path.join(here, `go-fish-contract.${networkId}.json`);
-  const data = JSON.parse(Deno.readTextFileSync(filePath));
+  const data = JSON.parse(readFileSync(filePath, "utf-8"));
   if (!data.contractAddress) {
     throw new Error(`No contractAddress found in ${filePath}`);
   }
@@ -152,7 +154,7 @@ try {
   console.log("Proof server: OK");
 } catch {
   console.error(`Proof server not running at ${NETWORK.proofServer}`);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 // Check batcher
@@ -162,17 +164,17 @@ try {
   console.log(`Batcher: OK (${BATCHER_URL})`);
 } catch {
   console.error(`Batcher not running at ${BATCHER_URL}`);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 // Build wallet (keys only — batcher handles balancing/dust)
 console.log("\n--- Building wallet (keys only, batcher handles balancing) ---");
-const walletSeed = Deno.env.get("MIDNIGHT_CLEAN_SEED") || midnightNetworkConfig.walletSeed;
+const walletSeed = process.env.MIDNIGHT_CLEAN_SEED || midnightNetworkConfig.walletSeed;
 const walletResult = await buildWalletFacade(NETWORK as any, walletSeed, networkId);
 console.log(`Unshielded address: ${walletResult.unshieldedAddress}`);
 
 // Set up providers
-const here = path.dirname(path.fromFileUrl(import.meta.url));
+const here = path.dirname(fileURLToPath(import.meta.url));
 const managedDir = path.resolve(path.join(here, "go-fish-contract/src/managed"));
 const zkConfigProvider = new NodeZkConfigProvider(managedDir);
 
@@ -291,7 +293,7 @@ const providers: MidnightProviders = {
     midnightDbName: "midnight-level-db-cleanup",
     privateStateStoreName: "go-fish-private-state-cleanup",
     signingKeyStoreName: "go-fish-signing-keys-cleanup",
-    privateStoragePasswordProvider: async () => Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") ?? "D3vP@ssw0rd!xK9m",
+    privateStoragePasswordProvider: async () => process.env.MIDNIGHT_STORAGE_PASSWORD ?? "D3vP@ssw0rd!xK9m",
     accountId: Buffer.from(walletResult.zswapSecretKeys.coinPublicKey).toString("hex"),
   }),
   publicDataProvider,
@@ -326,10 +328,10 @@ try {
   console.log(`cleanupGame("${gameIdArg}") succeeded — game ledger entries removed.`);
 } catch (err) {
   console.error("cleanupGame() failed:", err instanceof Error ? err.message : err);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 // Cleanup
 await walletResult.wallet.stop();
 console.log("Done.");
-Deno.exit(0);
+process.exit(0);

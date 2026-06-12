@@ -539,7 +539,7 @@ export async function initializeOnChainService(): Promise<boolean> {
     const addressResult = await loadContractAddress();
     if (!addressResult) {
       console.warn("[MidnightOnChain] No contract address found");
-      console.warn("[MidnightOnChain] Deploy the contract first: deno task midnight:deploy");
+      console.warn("[MidnightOnChain] Deploy the contract first: bun run midnight:deploy");
       isInitialized = true;
       return true;
     }

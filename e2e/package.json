@@ -1,0 +1,31 @@
+{
+  "name": "@go-fish/e2e",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "bun test game-round.test.ts",
+    "smoke:imports": "bun test smoke/midnight-imports.test.ts",
+    "smoke:config": "bun test smoke/contract-config.test.ts",
+    "smoke:ledger": "bun test smoke/ledger-subscription.test.ts",
+    "smoke:lobby": "bun test smoke/lobby-batcher.test.ts",
+    "smoke:init-deck": "bun test smoke/init-deck-circuit.test.ts",
+    "smoke:apply-mask": "bun test smoke/apply-mask.test.ts",
+    "smoke:setup": "bun test smoke/setup-sequence.test.ts",
+    "smoke:one-turn": "bun test smoke/one-turn.test.ts"
+  },
+  "dependencies": {
+    "@effectstream/concise": "0.100.21",
+    "@go-fish/data-types": "workspace:*",
+    "@go-fish/midnight-contract": "workspace:*",
+    "@midnight-ntwrk/compact-js": "2.5.0",
+    "@midnight-ntwrk/compact-runtime": "0.15.0",
+    "@midnight-ntwrk/midnight-js-contracts": "4.0.2",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.0.2",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.0.2",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.2",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "4.0.2",
+    "@midnight-ntwrk/midnight-js-types": "4.0.2",
+    "ethers": "5.7.2",
+    "rxjs": "7.8.1"
+  }
+}

@@ -4,7 +4,7 @@
  * Usage:
  *   cd e2e
  *   LOBBY_ID=lobby_4111_70997970 \
- *     deno run -A --no-check --unstable-raw-imports smoke/inspect-lobby.ts
+ *     bun run smoke/inspect-lobby.ts
  *
  * Optional — pass a player's secrets blob (the JSON the browser stores
  * under window.localStorage["go-fish-player-secrets"]) to also read that
@@ -12,7 +12,7 @@
  *
  *   LOBBY_ID=lobby_4111_70997970 \
  *   PLAYER_SECRETS='{"version":1,"games":{...}}' \
- *     deno run -A --no-check --unstable-raw-imports smoke/inspect-lobby.ts
+ *     bun run smoke/inspect-lobby.ts
  *
  * Reads:
  *   - hasInitialBooksScored(gameId, 1) and (gameId, 2)
@@ -33,7 +33,7 @@ import {
   RANKS,
 } from "./_helpers.ts";
 
-const LOBBY_ID = Deno.env.get("LOBBY_ID") ?? "lobby_4111_70997970";
+const LOBBY_ID = process.env.LOBBY_ID ?? "lobby_4111_70997970";
 
 const PHASE_NAMES: Record<number, string> = {
   [PHASE.Setup]: "Setup",
@@ -118,7 +118,7 @@ for (const pid of [1n, 2n] as const) {
 }
 
 // ─── Per-card hand reads (requires player secret) ───────────────────────
-const secretsRaw = Deno.env.get("PLAYER_SECRETS");
+const secretsRaw = process.env.PLAYER_SECRETS;
 if (!secretsRaw) {
   console.log(`\n── doesPlayerHaveSpecificCard ──`);
   console.log(
@@ -220,7 +220,7 @@ if (!secretsRaw) {
 }
 
 console.log(`\n══ done ══`);
-Deno.exit(0);
+process.exit(0);
 
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/^0x/, "");

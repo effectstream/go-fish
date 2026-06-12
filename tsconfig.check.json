@@ -1,0 +1,34 @@
+{
+  "extends": "./packages/client/node/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@effectstream/concise": ["./packages/client/node/types/effectstream/concise.d.ts"],
+      "@effectstream/config": ["./packages/client/node/types/effectstream/config.d.ts"],
+      "@effectstream/coroutine": ["./packages/client/node/types/effectstream/coroutine.d.ts"],
+      "@effectstream/db": ["./packages/client/node/types/effectstream/db.d.ts"],
+      "@effectstream/db/version": ["./packages/client/node/types/effectstream/db-version.d.ts"],
+      "@effectstream/runtime": ["./packages/client/node/types/effectstream/runtime.d.ts"],
+      "@effectstream/sm": ["./packages/client/node/types/effectstream/sm.d.ts"],
+      "@effectstream/sm/builtin": ["./packages/client/node/types/effectstream/sm-builtin.d.ts"],
+      "@effectstream/sm/grammar": ["./packages/client/node/types/effectstream/sm-grammar.d.ts"],
+      "@effectstream/utils": ["./packages/client/node/types/effectstream/utils.d.ts"],
+      "@effectstream/midnight-contracts/read-contract": ["./packages/client/node/types/effectstream/midnight-read-contract.d.ts"],
+      "@effectstream/midnight-contracts/midnight-env": ["./packages/client/node/types/effectstream/midnight-env.d.ts"],
+      "@go-fish/data-types/config-dev": ["./packages/shared/data-types/src/config.dev.ts"],
+      "@go-fish/data-types/config-mainnet": ["./packages/shared/data-types/src/config.mainnet.ts"],
+      "@go-fish/data-types/grammar": ["./packages/shared/data-types/src/grammar.ts"],
+      "@go-fish/data-types/types": ["./packages/shared/data-types/src/types.ts"],
+      "@go-fish/database": ["./packages/client/database/src/mod.ts"],
+      "@go-fish/evm-contracts": ["./packages/shared/contracts/evm/mod.ts"],
+      "@go-fish/midnight-contract/contract": ["./packages/shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js"],
+      "@midnight-ntwrk/compact-runtime": ["./packages/client/node/types/midnight/compact-runtime.d.ts"]
+    }
+  },
+  "include": [
+    "packages/client/node/src/main.dev.ts",
+    "packages/client/node/src/main.mainnet.ts",
+    "packages/client/node/types/**/*.d.ts",
+    "packages/shared/contracts/evm/build-stub.d.ts"
+  ]
+}

@@ -16,10 +16,10 @@
  *
  * PREREQS: same as setup test.
  *
- * Run: deno task --filter @go-fish/e2e smoke:one-turn
+ * Run: bun run --filter @go-fish/e2e smoke:one-turn
  */
 
-import { assertEquals } from "jsr:@std/assert";
+import { test, expect } from "bun:test";
 import {
   callDelegated,
   cardName,
@@ -34,11 +34,7 @@ import {
   waitFor,
 } from "./_helpers.ts";
 
-Deno.test({
-  name: "turn: askForCard → respondToAsk → (optional) afterGoFish",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("turn: askForCard → respondToAsk → (optional) afterGoFish", async () => {
     const session = await createSmokeSession("smoke-one-turn");
     const { contract, walletProvider, read } = session;
 
@@ -53,12 +49,12 @@ Deno.test({
       console.log(`  P1 hand: ${p1HandBefore.map(cardName).join(" ")}`);
       console.log(`  P2 hand: ${p2HandBefore.map(cardName).join(" ")}`);
 
-      assertEquals(p1HandBefore.length, 4, "P1 should have 4 cards");
-      assertEquals(p2HandBefore.length, 4, "P2 should have 4 cards");
+      expect(p1HandBefore.length).toBe(4);
+      expect(p2HandBefore.length).toBe(4);
 
       const currentTurnBefore = Number(await read<number | bigint>("getCurrentTurn", gameId));
       console.log(`  currentTurn before ask: ${currentTurnBefore}`);
-      assertEquals(currentTurnBefore, 1, "first turn should be P1");
+      expect(currentTurnBefore).toBe(1);
 
       // ─── P1 asks for the first rank in their hand ──────────────────
       const askRank = handRanks(p1HandBefore)[0]!;
@@ -86,7 +82,7 @@ Deno.test({
       );
       const turnAfterAsk = Number(await read<number | bigint>("getCurrentTurn", gameId));
       console.log(`  currentTurn after ask: ${turnAfterAsk} (unchanged from asker)`);
-      assertEquals(turnAfterAsk, 1);
+      expect(turnAfterAsk).toBe(1);
 
       // ─── P2 responds ───────────────────────────────────────────────
       console.log("\n── P2 responds to ask ──");
@@ -154,9 +150,8 @@ Deno.test({
 
       const finalPhase = Number(await read<number | bigint>("getGamePhase", gameId));
       console.log(`\n  ✓ turn complete, phase=${finalPhase} (TurnStart)`);
-      assertEquals(finalPhase, PHASE.TurnStart);
+      expect(finalPhase).toBe(PHASE.TurnStart);
     } finally {
       await clearAllSecrets(gameIdHex);
     }
-  },
-});
+}, { timeout: 600_000 });

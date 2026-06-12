@@ -4,22 +4,23 @@
  * for a known lobbyId. Bypasses all middleware (Apollo, indexerPublicDataProvider,
  * WS cache, etc.) to verify the raw data path works.
  *
- * Run: deno run -A --no-check --unstable-raw-imports e2e/smoke/raw-state-check.ts <lobbyId>
+ * Run: bun run e2e/smoke/raw-state-check.ts <lobbyId>
  */
 
+import { readFileSync } from "node:fs";
 import { ContractState, QueryContext, CostModel, sampleContractAddress, createConstructorContext } from "@midnight-ntwrk/compact-runtime";
 import { Contract as GoFishContract } from "@go-fish/midnight-contract/contract";
 import { witnesses } from "@go-fish/midnight-contract";
 
 const INDEXER_URL = "http://127.0.0.1:8088/api/v3/graphql";
 const CONTRACT_ADDRESS = JSON.parse(
-  Deno.readTextFileSync("packages/shared/contracts/midnight/go-fish-contract.undeployed.json")
+  readFileSync("packages/shared/contracts/midnight/go-fish-contract.undeployed.json", "utf-8")
 ).contractAddress;
 
-const lobbyId = Deno.args[0];
+const lobbyId = process.argv[2];
 if (!lobbyId) {
-  console.error("Usage: deno run -A --no-check --unstable-raw-imports e2e/smoke/raw-state-check.ts <lobbyId>");
-  Deno.exit(1);
+  console.error("Usage: bun run e2e/smoke/raw-state-check.ts <lobbyId>");
+  process.exit(1);
 }
 
 function lobbyIdToGameId(lobbyId: string): Uint8Array {
@@ -57,7 +58,7 @@ async function main() {
   const stateHex = data.data?.contractAction?.state;
   if (!stateHex) {
     console.error("No state returned by indexer");
-    Deno.exit(1);
+    process.exit(1);
   }
   console.log(`State: ${stateHex.length / 2} bytes`);
 

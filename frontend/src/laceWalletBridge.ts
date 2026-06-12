@@ -2,10 +2,10 @@
  * Lace Wallet Bridge - Handles Midnight Lace wallet connection
  *
  * This module connects to the Lace Midnight wallet browser extension.
- * It tries @paimaexample/wallets first, then falls back to direct window.midnight access.
+ * It tries @effectstream/wallets first, then falls back to direct window.midnight access.
  */
 
-import { walletLogin, WalletMode } from "@paimaexample/wallets";
+import { walletLogin, WalletMode } from "@effectstream/wallets";
 import { setNetworkId, type NetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 type DAppConnectorWalletAPI = any;
 import semver from "semver";
@@ -93,7 +93,7 @@ async function connectDirectToMidnight(): Promise<ConnectedAPI> {
 }
 
 /**
- * Login with Lace wallet - tries @paimaexample/wallets first, then direct connection
+ * Login with Lace wallet - tries @effectstream/wallets first, then direct connection
  */
 export async function laceWalletLogin(): Promise<{
   success: boolean;
@@ -103,7 +103,7 @@ export async function laceWalletLogin(): Promise<{
   try {
     console.log(`[LaceWalletBridge] Logging in with network ID: ${MIDNIGHT_NETWORK_ID}`);
 
-    // First try @paimaexample/wallets
+    // First try @effectstream/wallets
     try {
       const result = await walletLogin({
         // @ts-ignore - WalletMode.Midnight = 2
@@ -112,11 +112,11 @@ export async function laceWalletLogin(): Promise<{
       });
 
       if (result.success) {
-        console.log("[LaceWalletBridge] Connected via @paimaexample/wallets");
+        console.log("[LaceWalletBridge] Connected via @effectstream/wallets");
         paimaWalletResult = result.result;
         connectedAPI = paimaWalletResult.provider.getConnection().api as ConnectedAPI;
       } else {
-        console.log("[LaceWalletBridge] @paimaexample/wallets failed, trying direct connection...");
+        console.log("[LaceWalletBridge] @effectstream/wallets failed, trying direct connection...");
         throw new Error("Paima wallet failed");
       }
     } catch (paimaError) {

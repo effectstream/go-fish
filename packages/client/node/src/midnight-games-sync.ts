@@ -4,7 +4,7 @@
  * `midnight_id` (both forms come from the same Bytes<32> key).
  */
 
-import { World } from "@paimaexample/coroutine";
+import { World } from "@effectstream/coroutine";
 import {
   insertMidnightGame,
   setMidnightGameHostPubkey,

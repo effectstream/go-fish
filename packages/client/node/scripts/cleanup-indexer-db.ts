@@ -7,6 +7,7 @@
  * "ledger state for key B not found" errors.
  */
 
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,75 +15,61 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const goFishRoot = path.resolve(__dirname, "../../../../");
 
+async function removeIfDirectory(dataPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(dataPath);
+    if (stat.isDirectory()) {
+      console.log(`[cleanup-indexer-db] Found indexer data at: ${dataPath}`);
+      await fs.rm(dataPath, { recursive: true });
+      console.log(`[cleanup-indexer-db] Removed: ${dataPath}`);
+      return true;
+    }
+  } catch {
+    // Path doesn't exist, continue
+  }
+  return false;
+}
+
 async function main() {
   console.log("[cleanup-indexer-db] Cleaning up stale indexer database...");
   console.log(`[cleanup-indexer-db] Go-fish root: ${goFishRoot}`);
-  console.log(`[cleanup-indexer-db] Current working directory: ${Deno.cwd()}`);
+  console.log(`[cleanup-indexer-db] Current working directory: ${process.cwd()}`);
 
-  // The indexer stores its database in the npm package's data directory
-  // Use absolute paths based on the go-fish project root
   const possiblePaths = [
-    // Local node_modules (used by deno with nodeModulesDir) - absolute path
-    path.join(goFishRoot, "node_modules/.deno/@paimaexample+npm-midnight-indexer@0.7.0/node_modules/@paimaexample/npm-midnight-indexer/indexer-standalone/data"),
-    // Alternative local paths - absolute
-    path.join(goFishRoot, "node_modules/@paimaexample/npm-midnight-indexer/indexer-standalone/data"),
-    // Deno cached npm package location
+    path.join(goFishRoot, "node_modules/@effectstream/npm-midnight-indexer/indexer-standalone/data"),
     path.join(
-      Deno.env.get("HOME") || "",
-      ".cache/deno/npm/registry.npmjs.org/@paimaexample/npm-midnight-indexer"
+      goFishRoot,
+      "packages/shared/contracts/midnight/node_modules/@effectstream/npm-midnight-indexer/indexer-standalone/data",
     ),
   ];
 
   let cleaned = false;
 
-  for (const basePath of possiblePaths) {
-    const dataPath = basePath.includes("data") && !basePath.includes("registry")
-      ? basePath
-      : path.join(basePath, "indexer-standalone/data");
-
+  for (const dataPath of possiblePaths) {
     console.log(`[cleanup-indexer-db] Checking: ${dataPath}`);
-
-    try {
-      const stat = await Deno.stat(dataPath);
-      if (stat.isDirectory) {
-        console.log(`[cleanup-indexer-db] Found indexer data at: ${dataPath}`);
-        await Deno.remove(dataPath, { recursive: true });
-        console.log(`[cleanup-indexer-db] Removed: ${dataPath}`);
-        cleaned = true;
-        break; // Stop after first successful cleanup
-      }
-    } catch {
-      // Path doesn't exist, continue
+    if (await removeIfDirectory(dataPath)) {
+      cleaned = true;
+      break;
     }
   }
 
-  // Also try to find via directory scan if not cleaned yet
   if (!cleaned) {
-    const denoModulesPath = path.join(goFishRoot, "node_modules/.deno");
-    console.log(`[cleanup-indexer-db] Scanning: ${denoModulesPath}`);
+    const nodeModulesRoot = path.join(goFishRoot, "node_modules");
+    console.log(`[cleanup-indexer-db] Scanning: ${nodeModulesRoot}`);
     try {
-      for await (const entry of Deno.readDir(denoModulesPath)) {
-        if (entry.name.startsWith("@paimaexample+npm-midnight-indexer")) {
-          const dataPath = path.join(
-            denoModulesPath,
-            entry.name,
-            "node_modules/@paimaexample/npm-midnight-indexer/indexer-standalone/data"
-          );
-          try {
-            const stat = await Deno.stat(dataPath);
-            if (stat.isDirectory) {
-              await Deno.remove(dataPath, { recursive: true });
-              console.log(`[cleanup-indexer-db] Removed: ${dataPath}`);
-              cleaned = true;
-              break;
-            }
-          } catch {
-            // Ignore if doesn't exist
-          }
+      for (const entry of await fs.readdir(nodeModulesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name !== "@effectstream") continue;
+        const dataPath = path.join(
+          nodeModulesRoot,
+          "@effectstream/npm-midnight-indexer/indexer-standalone/data",
+        );
+        if (await removeIfDirectory(dataPath)) {
+          cleaned = true;
+          break;
         }
       }
     } catch (e) {
-      console.log(`[cleanup-indexer-db] Could not scan deno modules: ${e}`);
+      console.log(`[cleanup-indexer-db] Could not scan node_modules: ${e}`);
     }
   }
 

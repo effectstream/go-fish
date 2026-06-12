@@ -10,13 +10,13 @@ Run the complete development environment with orchestrator:
 
 ```bash
 # First time setup
-deno install --allow-scripts
+bun install
 
 # Build EVM contracts
-deno task build:evm
+bun run build:evm
 
 # Start all services (backend + frontend + blockchain)
-deno task dev
+bun run dev
 ```
 
 This will launch:
@@ -31,10 +31,10 @@ For development with Midnight blockchain integration, you can run the infrastruc
 
 ```bash
 # Terminal 1: Start Midnight infrastructure (node, indexer, proof server, contract deployment)
-EFFECTSTREAM_STDOUT=true deno task -f @go-fish/node midnight:setup
+EFFECTSTREAM_STDOUT=true bun run --filter @go-fish/node midnight:setup
 
 # Terminal 2: Start the dev server with batcher mode (after infra is ready)
-USE_TYPESCRIPT_CONTRACT=false EFFECTSTREAM_STDOUT=true USE_BATCHER_MODE=true SKIP_MIDNIGHT_INFRA=true deno task dev
+USE_TYPESCRIPT_CONTRACT=false EFFECTSTREAM_STDOUT=true USE_BATCHER_MODE=true SKIP_MIDNIGHT_INFRA=true bun run dev
 ```
 
 The `SKIP_MIDNIGHT_INFRA=true` flag tells the dev server to skip launching Midnight infrastructure since it's already running from the first command.
@@ -44,9 +44,7 @@ The `SKIP_MIDNIGHT_INFRA=true` flag tells the dev server to skip launching Midni
 For quick frontend-only development:
 
 ```bash
-cd packages/frontend
-npm install
-npm run dev
+bun run frontend:dev
 ```
 
 Visit **http://localhost:3000**
@@ -103,25 +101,27 @@ Go Fish is a classic card matching game:
 
 ```bash
 # Frontend Development
-cd packages/frontend
-npm install
-npm run dev              # Start dev server
-npm run build            # Production build
-npm run preview          # Preview build
+bun run frontend:dev       # Start dev server
+bun run frontend:build     # Production build
 
 # Backend
-deno task dev            # Start Paima node
-deno task testnet        # Start in testnet mode
+bun run dev                # Start full stack via orchestrator
+bun run mainnet            # Start in mainnet mode
+
+# Testing
+bun run test               # Node API unit tests
+bun run test:e2e           # E2E game-round test
 
 # Smart Contracts (EVM)
 cd packages/shared/contracts/evm
-npx hardhat compile      # Compile Solidity contracts
-npx hardhat test         # Run contract tests
-npx hardhat deploy       # Deploy to local network
+bun run build              # Compile contracts
+npx hardhat test           # Run contract tests
 
 # Root Level
-deno task frontend:dev   # Start frontend from root
-deno task frontend:build # Build frontend from root
+bun run build:evm          # Compile EVM contracts
+bun run build:midnight     # Compile Midnight contracts
+bun run frontend:dev       # Start frontend from root
+bun run frontend:build     # Build frontend from root
 ```
 
 ## Environment Variables
@@ -155,7 +155,7 @@ These are set in a `.env` file in `packages/frontend/` or passed inline when run
 
 ```bash
 # Start with existing Hardhat instance
-SKIP_EVM_LAUNCH=true USE_TYPESCRIPT_CONTRACT=true EFFECTSTREAM_STDOUT=true deno task dev
+SKIP_EVM_LAUNCH=true USE_TYPESCRIPT_CONTRACT=true EFFECTSTREAM_STDOUT=true bun run dev
 ```
 
 ## Database Schema
@@ -195,7 +195,7 @@ See [packages/shared/data-types/src/grammar.ts](packages/shared/data-types/src/g
 
 ## Technology Stack
 
-- **Backend**: Deno, TypeScript, Paima Engine
+- **Backend**: Bun, TypeScript, Paima Engine
 - **Frontend**: Vite, TypeScript, Three.js, postprocessing, gsap
 - **Blockchain (EVM)**: Hardhat, Solidity (lobbies & stats)
 - **Blockchain (Midnight)**: Midnight contracts (game logic - stub)
