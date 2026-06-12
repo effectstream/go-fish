@@ -21,11 +21,12 @@
  *   - Hardhat + Paima node + batcher (:3336) running
  *   - Contract deployed (go-fish-contract.undeployed.json up to date)
  *
- * Run: deno task --filter @go-fish/e2e smoke:init-deck
+ * Run: bun run --filter @go-fish/e2e smoke:init-deck
  */
 
-import { assertEquals } from "jsr:@std/assert";
-import { resolve } from "jsr:@std/path";
+import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   toHex,
   CompactTypeBoolean,
@@ -48,13 +49,13 @@ import { createInMemoryPrivateStateProvider } from "../../frontend/src/services/
 // Config
 // ---------------------------------------------------------------------------
 
-const REPO_ROOT = Deno.env.get("GO_FISH_REPO_ROOT") ?? Deno.cwd().replace(/\/e2e\/?$/, "");
-const BATCHER_URL = Deno.env.get("BATCHER_URL") ?? "http://localhost:3336";
-const PROOF_URL = Deno.env.get("PROOF_URL") ?? "http://127.0.0.1:6300";
+const REPO_ROOT = process.env.GO_FISH_REPO_ROOT ?? process.cwd().replace(/\/e2e\/?$/, "");
+const BATCHER_URL = process.env.BATCHER_URL ?? "http://localhost:3336";
+const PROOF_URL = process.env.PROOF_URL ?? "http://127.0.0.1:6300";
 const INDEXER_HTTP_URL =
-  Deno.env.get("INDEXER_HTTP_URL") ?? "http://127.0.0.1:8088/api/v3/graphql";
+  process.env.INDEXER_HTTP_URL ?? "http://127.0.0.1:8088/api/v3/graphql";
 const INDEXER_WS_URL =
-  Deno.env.get("INDEXER_WS_URL") ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
+  process.env.INDEXER_WS_URL ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
 
 const CONTRACT_ADDRESS_FILE = resolve(
   REPO_ROOT,
@@ -68,7 +69,7 @@ const ZK_CONFIG_PATH = resolve(
 const DELEGATED_SENTINEL = "GoFish: delegated to midnight_balancing batcher";
 
 function loadContractAddress(): string {
-  const parsed = JSON.parse(Deno.readTextFileSync(CONTRACT_ADDRESS_FILE));
+  const parsed = JSON.parse(readFileSync(CONTRACT_ADDRESS_FILE, "utf-8"));
   return parsed.contractAddress.replace(/^0x/, "");
 }
 
@@ -106,7 +107,7 @@ async function queryStaticDeckInitialized(
     // Contract V3: ledger layout restructure moved staticDeckInitialized.
     // Current compiled path = [0n, 2n] (see managed/contract/index.js
     // `_init_static_deck_0` queryLedgerState ops at ~line 2524). Keep in
-    // sync with that accessor after every `deno task compact`.
+    // sync with that accessor after every `bun run --filter @go-fish/midnight-contract compact`.
     const keyType = new CompactTypeUnsignedInteger(255n, 1);
     const keyOuter = { value: keyType.toValue(0n), alignment: keyType.alignment() };
     const keyInner = { value: keyType.toValue(2n), alignment: keyType.alignment() };
@@ -238,11 +239,7 @@ async function callDelegated(
 // The test
 // ---------------------------------------------------------------------------
 
-Deno.test({
-  name: "circuit: init_deck via real prover + batcher",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("circuit: init_deck via real prover + batcher", async () => {
     // Case-sensitive: must be lowercase "undeployed" — the Midnight node
     // compares IDs literally and rejects txs proven with the wrong casing.
     setNetworkId("undeployed");
@@ -333,5 +330,4 @@ Deno.test({
       console.log(`  [poll] flag=${flag} (${Math.round((deadline - Date.now()) / 1000)}s left)`);
     }
     throw new Error("Timed out waiting for staticDeckInitialized to flip to true");
-  },
-});
+}, { timeout: 600_000 });

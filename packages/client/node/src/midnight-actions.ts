@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 /**
  * Midnight Actions - Backend utilities for executing Midnight contract actions
  * This runs on the Paima node and provides write access to the contract
@@ -172,7 +174,7 @@ const SECRETS_FILE = './data/player-secrets.json';
 
 function loadPersistedSecrets(): void {
   try {
-    const text = Deno.readTextFileSync(SECRETS_FILE);
+    const text = readFileSync(SECRETS_FILE, "utf-8");
     const data = JSON.parse(text) as { secrets?: Record<string, string>; seeds?: Record<string, string> };
     for (const [key, value] of Object.entries(data.secrets ?? {})) {
       persistentSecrets.set(key, BigInt('0x' + value));
@@ -190,7 +192,7 @@ function loadPersistedSecrets(): void {
 
 function persistSecrets(): void {
   try {
-    Deno.mkdirSync('./data', { recursive: true });
+    mkdirSync("./data", { recursive: true });
     const secrets: Record<string, string> = {};
     const seeds: Record<string, string> = {};
     for (const [k, v] of persistentSecrets.entries()) {
@@ -199,7 +201,7 @@ function persistSecrets(): void {
     for (const [k, v] of persistentShuffleSeeds.entries()) {
       seeds[k] = Array.from(v).map(b => b.toString(16).padStart(2, '0')).join('');
     }
-    Deno.writeTextFileSync(SECRETS_FILE, JSON.stringify({ secrets, seeds }, null, 2));
+    writeFileSync(SECRETS_FILE, JSON.stringify({ secrets, seeds }, null, 2));
   } catch (err) {
     console.warn('[MidnightActions] Failed to persist secrets:', err);
   }

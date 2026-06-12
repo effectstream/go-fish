@@ -2,7 +2,7 @@
  * Database module - exports all database queries and types
  */
 
-import type { DBMigrations } from "@paimaexample/runtime";
+import type { DBMigrations } from "@effectstream/runtime";
 
 // Export pgtyped query functions
 export * from './lobby-queries.queries.ts';

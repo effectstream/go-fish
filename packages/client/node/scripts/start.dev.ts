@@ -1,7 +1,7 @@
-import { OrchestratorConfig, start } from "@paimaexample/orchestrator";
-import { ComponentNames } from "@paimaexample/log";
+import { OrchestratorConfig, start } from "@effectstream/orchestrator";
+import { ComponentNames } from "@effectstream/log";
 import { Value } from "@sinclair/typebox/value";
-import { launchEvm } from "@paimaexample/orchestrator/start-evm";
+import { launchEvm } from "@effectstream/orchestrator/start-evm";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +20,7 @@ const midnightProcesses = [
     name: "midnight-node",
     args: [
       "run", "-A", "--unstable-detect-cjs",
-      "npm:@paimaexample/npm-midnight-node@0.9.0",
+      "npm:@effectstream/npm-midnight-node@0.9.0",
       "--dev", "--rpc-port", "9944",
       "--state-pruning", "archive",
       "--blocks-pruning", "archive",
@@ -59,7 +59,7 @@ const midnightProcesses = [
     name: "midnight-indexer",
     args: [
       "run", "-A", "--unstable-detect-cjs",
-      "npm:@paimaexample/npm-midnight-indexer@0.9.0",
+      "npm:@effectstream/npm-midnight-indexer@0.9.0",
       "--standalone",
       "--binary",  // Use binary instead of Docker to avoid interactive prompt
     ],
@@ -82,7 +82,7 @@ const midnightProcesses = [
     name: "midnight-proof-server",
     args: [
       "run", "-A", "--unstable-detect-cjs",
-      "npm:@paimaexample/npm-midnight-proof-server@0.9.0"
+      "npm:@effectstream/npm-midnight-proof-server@0.9.0"
     ],
     env: {
       LEDGER_NETWORK_ID: "Undeployed",
@@ -157,7 +157,7 @@ const customProcesses = [
   /** EXPLORER-BLOCK */
   // {
   //   name: "explorer",
-  //   args: ["run", "-A", "--unstable-detect-cjs", "@paimaexample/explorer"],
+  //   args: ["run", "-A", "--unstable-detect-cjs", "@effectstream/explorer"],
   //   waitToExit: false,
   //   type: "system-dependency",
   //   link: "http://localhost:10590",
@@ -168,7 +168,7 @@ const customProcesses = [
   /** BATCHER-BLOCK */
   {
     name: "batcher",
-    args: ["task", "-f", "@go-fish/batcher", "start"],
+    args: ["run", "--filter", "@go-fish/batcher", "start"],
     waitToExit: false,
     type: "system-dependency",
     link: "http://localhost:3336",
@@ -186,7 +186,7 @@ const customProcesses = [
 
 const config = Value.Parse(OrchestratorConfig, {
   // Launch system processes
-  packageName: "jsr:@paimaexample",
+  packageName: "@effectstream",
   processes: {
     [ComponentNames.TMUX]: true,
     [ComponentNames.TUI]: true,
@@ -203,7 +203,7 @@ const config = Value.Parse(OrchestratorConfig, {
   ],
 });
 
-if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
+if (process.env.EFFECTSTREAM_STDOUT) {
   config.logs = "stdout";
   config.processes[ComponentNames.TMUX] = false;
   config.processes[ComponentNames.TUI] = false;

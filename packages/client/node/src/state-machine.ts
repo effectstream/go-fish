@@ -7,18 +7,18 @@
  *   closedLobby   — host cancels an open lobby while still alone
  */
 
-import { PaimaSTM } from "@paimaexample/sm";
+import { Stm } from "@effectstream/sm";
 import { grammar } from "@go-fish/data-types/grammar";
-import type { StartConfigGameStateTransitions } from "@paimaexample/runtime";
-import { World } from "@paimaexample/coroutine";
+import type { StartConfigGameStateTransitions } from "@effectstream/runtime";
+import { World } from "@effectstream/coroutine";
 import {
   getAddressByAddress,
   newAddressWithId,
   newAccount,
   updateAddressAccount,
   newScheduledTimestampData,
-} from "@paimaexample/db";
-import { AddressType } from "@paimaexample/utils";
+} from "@effectstream/db";
+import { AddressType } from "@effectstream/utils";
 import {
   createLobby,
   joinLobby,
@@ -30,11 +30,11 @@ import {
   setHostMaskApplied,
   finishLobby,
 } from "@go-fish/database";
-import * as path from "@std/path";
+import * as path from "node:path";
 import { computeLedgerDiff, logLedgerDiff } from "./ledger-diff.ts";
 import { projectMidnightGamesFromDiff } from "./midnight-games-sync.ts";
 
-const stm = new PaimaSTM<typeof grammar, any>(grammar);
+const stm = new Stm<typeof grammar, any>(grammar);
 
 // Go Fish is always a 2-player game.
 const MAX_PLAYERS = 2;
@@ -333,7 +333,7 @@ stm.addStateTransition("event_midnight", function* (data) {
 /**
  * Handle cleanupGame — scheduled system action that removes all on-chain
  * Midnight contract state for a finished (or stale) game.
- * Spawns an isolated Deno subprocess that proves the cleanupGame circuit
+ * Spawns an isolated Bun subprocess that proves the cleanupGame circuit
  * and delegates balancing/submission to the batcher (same pattern as pvp-v2).
  */
 stm.addStateTransition("cleanupGame", function* (data) {
@@ -351,24 +351,23 @@ stm.addStateTransition("cleanupGame", function* (data) {
         "..", "..", "..", "shared", "contracts", "midnight",
         "contract-gofish-cleanup.ts",
       );
-      const command = new Deno.Command("deno", {
-        args: ["run", "-A", "--unstable-detect-cjs", scriptPath, gameId],
+      const child = Bun.spawn(["bun", "run", scriptPath, gameId], {
         env: {
-          MIDNIGHT_ADMIN_SECRET: Deno.env.get("MIDNIGHT_ADMIN_SECRET") || "",
-          MIDNIGHT_CLEAN_SEED: Deno.env.get("MIDNIGHT_CLEAN_SEED") || "",
-          MIDNIGHT_NETWORK_ID: Deno.env.get("MIDNIGHT_NETWORK_ID") || "",
-          MIDNIGHT_STORAGE_PASSWORD: Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") || "",
-          BATCHER_URL: Deno.env.get("BATCHER_URL") || "",
+          ...process.env,
+          MIDNIGHT_ADMIN_SECRET: process.env.MIDNIGHT_ADMIN_SECRET || "",
+          MIDNIGHT_CLEAN_SEED: process.env.MIDNIGHT_CLEAN_SEED || "",
+          MIDNIGHT_NETWORK_ID: process.env.MIDNIGHT_NETWORK_ID || "",
+          MIDNIGHT_STORAGE_PASSWORD: process.env.MIDNIGHT_STORAGE_PASSWORD || "",
+          BATCHER_URL: process.env.BATCHER_URL || "",
         },
         stdout: "inherit",
         stderr: "inherit",
       });
-      const child = command.spawn();
-      child.status.then((status) => {
-        if (status.success) {
+      child.exited.then((code) => {
+        if (code === 0) {
           console.log(`✅ [cleanupGame] cleanup script succeeded for gameId=${gameId}`);
         } else {
-          console.error(`❌ [cleanupGame] cleanup script exited with code ${status.code} for gameId=${gameId}`);
+          console.error(`❌ [cleanupGame] cleanup script exited with code ${code} for gameId=${gameId}`);
         }
       }).catch((err) => {
         console.error(`❌ [cleanupGame] cleanup script status error for gameId=${gameId}:`, err);

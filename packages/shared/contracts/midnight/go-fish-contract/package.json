@@ -1,0 +1,18 @@
+{
+  "name": "@go-fish/midnight-contract",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/_index.ts",
+    "./contract": "./src/managed/contract/index.js",
+    "./witnesses": "./src/witnesses.ts"
+  },
+  "scripts": {
+    "compact": "rm -rf src/managed/contract src/managed/compiler src/managed/keys src/managed/zkir && compact compile +0.30.0 src/game.compact src/managed",
+    "contract:compile": "bun run compact"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "0.15.0",
+    "@midnight-ntwrk/onchain-runtime": "npm:@midnight-ntwrk/onchain-runtime-v3@3.0.0"
+  }
+}

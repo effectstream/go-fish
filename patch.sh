@@ -78,22 +78,38 @@ with open('$file', 'w') as f:
 # Apply Common Hardhat Patches
 shopt -s nullglob # Expands to nothing if no match is found
 
-echo "Applying common Hardhat patches for versions 3.0.0-3.0.9..."
+echo "Applying common Hardhat patches for versions 3.0.0-3.9.x..."
 
-# Patch hardhat compiler.js
-for dir in ./node_modules/.deno/hardhat@3.[0-1]*.[0-9]*/ ; do
-    file_to_patch="${dir}node_modules/hardhat/dist/src/internal/builtin-plugins/solidity/build-system/compiler/compiler.js"
+patch_hardhat_compiler() {
+    local file_to_patch="$1"
     echo "Commenting out await stdoutFileHandle.close() in ${file_to_patch}..."
     comment_line "$file_to_patch" 48 "await stdoutFileHandle.close();"
-done
+}
 
-# Patch hardhat-utils fs.js 
-for dir in ./node_modules/.deno/@nomicfoundation+hardhat-utils@3.[0-1]*.[0-9]*/ ; do
-    file_to_patch="${dir}node_modules/@nomicfoundation/hardhat-utils/dist/src/fs.js"
+patch_hardhat_utils_fs() {
+    local file_to_patch="$1"
     echo "Commenting out first await fileHandle?.close() in ${file_to_patch}..."
     comment_line "$file_to_patch" 209 "await fileHandle?.close();"
     echo "Commenting out second await fileHandle?.close() in ${file_to_patch}..."
     comment_line "$file_to_patch" 275 "await fileHandle?.close();"
+}
+
+# Bun hoisted layout (node_modules/.bun)
+for dir in ./node_modules/.bun/hardhat@3.[0-9]*/node_modules/hardhat/ ; do
+    patch_hardhat_compiler "${dir}dist/src/internal/builtin-plugins/solidity/build-system/compiler/compiler.js"
+done
+
+for dir in ./node_modules/.bun/@nomicfoundation+hardhat-utils@3.[0-9]*/node_modules/@nomicfoundation/hardhat-utils/ ; do
+    patch_hardhat_utils_fs "${dir}dist/src/fs.js"
+done
+
+# Standard npm hoisted layout
+for dir in ./node_modules/hardhat/ ; do
+    patch_hardhat_compiler "${dir}dist/src/internal/builtin-plugins/solidity/build-system/compiler/compiler.js"
+done
+
+for dir in ./node_modules/@nomicfoundation/hardhat-utils/ ; do
+    patch_hardhat_utils_fs "${dir}dist/src/fs.js"
 done
 
 shopt -u nullglob # Revert to default
@@ -102,7 +118,11 @@ echo "✅ All patches applied successfully"
 
 # Apply Specific Patches
 echo "Replacing fetch-blob streams.cjs content..."
-replace_complex_content "./node_modules/.deno/fetch-blob@3.2.0/node_modules/fetch-blob/streams.cjs" "  // `node:stream/web` got introduced in v16.5.0 as experimental
+
+patch_fetch_blob() {
+    local streams_file="$1"
+    local from_file="$2"
+    replace_complex_content "$streams_file" "  // \`node:stream/web\` got introduced in v16.5.0 as experimental
   // and it's preferred over the polyfilled version. So we also
   // suppress the warning that gets emitted by NodeJS for using it.
   try {
@@ -121,8 +141,7 @@ replace_complex_content "./node_modules/.deno/fetch-blob@3.2.0/node_modules/fetc
     Object.assign(globalThis, require('web-streams-polyfill/dist/ponyfill.es2018.js'))
   }" "  Object.assign(globalThis, require('web-streams-polyfill/dist/ponyfill.es2018.js'))"
 
-echo "Replacing fetch-blob from.js imports..."
-replace_complex_content "./node_modules/.deno/fetch-blob@3.2.0/node_modules/fetch-blob/from.js" "import { statSync, createReadStream, promises as fs } from 'node:fs'
+    replace_complex_content "$from_file" "import { statSync, createReadStream, promises as fs } from 'node:fs'
 import { basename } from 'node:path'
 import DOMException from 'node-domexception'
 
@@ -138,6 +157,13 @@ import Blob from './index.js'
 
 import { promises as stat } from 'node:fs'
 "
+}
+
+for dir in ./node_modules/.bun/fetch-blob@3.2.0/node_modules/fetch-blob/ ./node_modules/fetch-blob/ ; do
+    if [[ -d "$dir" ]]; then
+        patch_fetch_blob "${dir}streams.cjs" "${dir}from.js"
+    fi
+done
 
 echo "✅ All patches applied successfully"
         

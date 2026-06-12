@@ -5,7 +5,7 @@
  * Run this once before starting the dev server in batcher mode.
  *
  * Usage:
- *   deno task midnight:setup    # Start infrastructure and deploy contract
+ *   bun run midnight:setup    # Start infrastructure and deploy contract
  *
  * The Midnight infrastructure will keep running after deployment completes.
  * Use Ctrl+C to stop when you're done developing.
@@ -15,8 +15,8 @@
  * connect to the existing contract without redeploying.
  */
 
-import { OrchestratorConfig, start } from "@paimaexample/orchestrator";
-import { ComponentNames } from "@paimaexample/log";
+import { OrchestratorConfig, start } from "@effectstream/orchestrator";
+import { ComponentNames } from "@effectstream/log";
 import { Value } from "@sinclair/typebox/value";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ console.log("   This will start the node, indexer, proof server, and deploy the 
 console.log("   Contract deployment takes ~6 minutes.\n");
 
 const config = Value.Parse(OrchestratorConfig, {
-  packageName: "jsr:@paimaexample",
+  packageName: "@effectstream",
   processes: {
     [ComponentNames.TMUX]: true,
     [ComponentNames.TUI]: true,
@@ -42,7 +42,7 @@ const config = Value.Parse(OrchestratorConfig, {
       name: "midnight-node",
       args: [
         "run", "-A", "--unstable-detect-cjs",
-        "npm:@paimaexample/npm-midnight-node@0.9.0",
+        "npm:@effectstream/npm-midnight-node@0.9.0",
         "--dev", "--rpc-port", "9944",
         "--state-pruning", "archive",
         "--blocks-pruning", "archive",
@@ -74,7 +74,7 @@ const config = Value.Parse(OrchestratorConfig, {
       name: "midnight-indexer",
       args: [
         "run", "-A", "--unstable-detect-cjs",
-        "npm:@paimaexample/npm-midnight-indexer@0.9.0",
+        "npm:@effectstream/npm-midnight-indexer@0.9.0",
         "--standalone",
         "--binary",
       ],
@@ -95,7 +95,7 @@ const config = Value.Parse(OrchestratorConfig, {
       name: "midnight-proof-server",
       args: [
         "run", "-A", "--unstable-detect-cjs",
-        "npm:@paimaexample/npm-midnight-proof-server@0.9.0"
+        "npm:@effectstream/npm-midnight-proof-server@0.9.0"
       ],
       env: {
         LEDGER_NETWORK_ID: "Undeployed",
@@ -127,7 +127,7 @@ const config = Value.Parse(OrchestratorConfig, {
     {
       name: "keep-alive",
       command: "sh",
-      args: ["-c", "echo '✅ Midnight infrastructure ready! Contract deployed.' && echo '   Keep this running and start SKIP_MIDNIGHT_INFRA=true USE_BATCHER_MODE=true deno task dev in another terminal.' && echo '   Press Ctrl+C to stop.' && while true; do sleep 86400; done"],
+      args: ["-c", "echo '✅ Midnight infrastructure ready! Contract deployed.' && echo '   Keep this running and start SKIP_MIDNIGHT_INFRA=true USE_BATCHER_MODE=true bun run dev in another terminal.' && echo '   Press Ctrl+C to stop.' && while true; do sleep 86400; done"],
       waitToExit: true,  // Keep the orchestrator alive
       type: "system-dependency",
       dependsOn: ["midnight-contract-deploy"],
@@ -135,7 +135,7 @@ const config = Value.Parse(OrchestratorConfig, {
   ],
 });
 
-if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
+if (process.env.EFFECTSTREAM_STDOUT) {
   config.logs = "stdout";
   config.processes[ComponentNames.TMUX] = false;
   config.processes[ComponentNames.TUI] = false;

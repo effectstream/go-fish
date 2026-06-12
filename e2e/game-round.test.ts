@@ -52,9 +52,10 @@
  *   - Midnight node + indexer (:8088) + proof server (:6300)
  *   - go-fish contract deployed (address in go-fish-contract.undeployed.json)
  *
- * Run: deno task test:e2e
+ * Run: bun run test:e2e
  */
 
+import { test } from "bun:test";
 import { ethers } from "ethers";
 import {
   clearAllSecrets,
@@ -70,11 +71,7 @@ import {
   runLobbyFlow,
 } from "./smoke/_helpers.ts";
 
-Deno.test({
-  name: "e2e: full Go Fish game via batcher (lobby + Midnight)",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("e2e: full Go Fish game via batcher (lobby + Midnight)", async () => {
     // Two EVM wallets sign lobby transactions for the batcher.
     const provider = new ethers.providers.JsonRpcProvider(EVM_RPC_URL);
     const p1Wallet = new ethers.Wallet(HARDHAT_KEYS[1], provider);
@@ -130,11 +127,10 @@ Deno.test({
       // owner path (callerPlayerId=0n), which requires the session's
       // TEST_ADMIN_SECRET to match the stored contract owner — set
       // automatically by runFullSetup's ensureOwnerInitialized step.
-      if (Deno.env.get("RUN_CLEANUP") === "1") {
+      if (process.env.RUN_CLEANUP === "1") {
         await runCleanupGame(session, gameId, 0n);
       }
     } finally {
       clearAllSecrets(session, setup.gameIdHex);
     }
-  },
-});
+}, { timeout: 600_000 });

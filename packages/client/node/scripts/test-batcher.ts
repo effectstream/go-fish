@@ -1,10 +1,10 @@
-#!/usr/bin/env -S deno run --allow-net --allow-env
+#!/usr/bin/env bun
 /**
  * CLI test script: Sends circuit calls to the batcher and runs
  * through the full game setup flow (init_deck → applyMask × 2 → dealCards × 2).
  *
  * Usage:
- *   deno run --allow-net --allow-env packages/client/node/scripts/test-batcher.ts
+ *   bun run packages/client/node/scripts/test-batcher.ts
  *
  * Prerequisites:
  *   - Midnight infra running (node, indexer, proof server)
@@ -17,8 +17,8 @@
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const BATCHER_URL = Deno.env.get("BATCHER_URL") || "http://localhost:3336";
-const INDEXER_URL = Deno.env.get("INDEXER_URL") || "http://localhost:8088/api/v3/graphql";
+const BATCHER_URL = process.env.BATCHER_URL || "http://localhost:3336";
+const INDEXER_URL = process.env.INDEXER_URL || "http://localhost:8088/api/v3/graphql";
 const TARGET = "go-fish";
 const ADDRESS_TYPE_EVM = 0;
 const CONFIRMATION_LEVEL = "wait-receipt";
@@ -212,7 +212,7 @@ async function main() {
       console.log("  (deck already initialized — continuing)");
     } else {
       console.log("\n  ABORT: init_deck failed. Is the batcher running?");
-      Deno.exit(1);
+      process.exit(1);
     }
   }
 
@@ -230,7 +230,7 @@ async function main() {
   logResult("applyMask P1", mask1, t);
   if (!mask1.success) {
     console.log("\n  ABORT: applyMask P1 failed");
-    Deno.exit(1);
+    process.exit(1);
   }
 
   block = await getIndexerBlock();
@@ -248,7 +248,7 @@ async function main() {
   logResult("applyMask P2", mask2, t);
   if (!mask2.success) {
     console.log("\n  ABORT: applyMask P2 failed");
-    Deno.exit(1);
+    process.exit(1);
   }
 
   block = await getIndexerBlock();
@@ -276,7 +276,7 @@ async function main() {
     block = await getIndexerBlock();
     console.log(`  Indexer block at failure: ${block}`);
     console.log(`  Error: ${deal1.error}`);
-    Deno.exit(1);
+    process.exit(1);
   }
 
   block = await getIndexerBlock();
@@ -301,7 +301,7 @@ async function main() {
     console.log(`  Final indexer block: ${block}`);
   } else {
     console.log(`\n  dealCards P2 FAILED: ${deal2.error}`);
-    Deno.exit(1);
+    process.exit(1);
   }
 
   // ── Done ────────────────────────────────────────────────────────────────
@@ -311,5 +311,5 @@ async function main() {
 
 main().catch(err => {
   console.error("Fatal error:", err);
-  Deno.exit(1);
+  process.exit(1);
 });

@@ -23,9 +23,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# Deno
-deno.lock
-
 # Database
 *.db
 *.sqlite

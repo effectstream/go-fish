@@ -22,11 +22,12 @@
  *   - staticDeckInitialized flag is true (otherwise applyMask's internal
  *     assertions may fail)
  *
- * Run: deno task --filter @go-fish/e2e smoke:apply-mask
+ * Run: bun run --filter @go-fish/e2e smoke:apply-mask
  */
 
-import { assertEquals } from "jsr:@std/assert";
-import { resolve } from "jsr:@std/path";
+import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   toHex,
   CompactTypeBoolean,
@@ -53,13 +54,13 @@ import { createInMemoryPrivateStateProvider } from "../../frontend/src/services/
 // Config
 // ---------------------------------------------------------------------------
 
-const REPO_ROOT = Deno.env.get("GO_FISH_REPO_ROOT") ?? Deno.cwd().replace(/\/e2e\/?$/, "");
-const BATCHER_URL = Deno.env.get("BATCHER_URL") ?? "http://localhost:3336";
-const PROOF_URL = Deno.env.get("PROOF_URL") ?? "http://127.0.0.1:6300";
+const REPO_ROOT = process.env.GO_FISH_REPO_ROOT ?? process.cwd().replace(/\/e2e\/?$/, "");
+const BATCHER_URL = process.env.BATCHER_URL ?? "http://localhost:3336";
+const PROOF_URL = process.env.PROOF_URL ?? "http://127.0.0.1:6300";
 const INDEXER_HTTP_URL =
-  Deno.env.get("INDEXER_HTTP_URL") ?? "http://127.0.0.1:8088/api/v3/graphql";
+  process.env.INDEXER_HTTP_URL ?? "http://127.0.0.1:8088/api/v3/graphql";
 const INDEXER_WS_URL =
-  Deno.env.get("INDEXER_WS_URL") ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
+  process.env.INDEXER_WS_URL ?? "ws://127.0.0.1:8088/api/v3/graphql/ws";
 
 const CONTRACT_ADDRESS_FILE = resolve(
   REPO_ROOT,
@@ -80,7 +81,7 @@ const JUBJUB_R = 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72
 // ---------------------------------------------------------------------------
 
 function loadContractAddress(): string {
-  const parsed = JSON.parse(Deno.readTextFileSync(CONTRACT_ADDRESS_FILE));
+  const parsed = JSON.parse(readFileSync(CONTRACT_ADDRESS_FILE, "utf-8"));
   return parsed.contractAddress.replace(/^0x/, "");
 }
 
@@ -280,11 +281,7 @@ async function queryHasMaskApplied(
 // The test
 // ---------------------------------------------------------------------------
 
-Deno.test({
-  name: "circuit: applyMask(gameId, 1) with setPlayerSecrets",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
+test("circuit: applyMask(gameId, 1) with setPlayerSecrets", async () => {
     setNetworkId("undeployed");
 
     const contractAddress = loadContractAddress();
@@ -331,7 +328,7 @@ Deno.test({
     // Precondition: hasMaskApplied(gameId, 1) should be false for a fresh gameId.
     const before = await queryHasMaskApplied(publicDataProvider, contractAddress, gameId, 1);
     console.log(`  hasMaskApplied(p1) before: ${before}`);
-    assertEquals(before, false, "expected mask not yet applied for fresh gameId");
+    expect(before).toBe(false);
 
     // Load player secrets into the shared witness module. The witness
     // functions (player_secret_key, shuffle_seed) consult dynamicSecrets
@@ -366,5 +363,4 @@ Deno.test({
       console.log(`  [poll] flag=${flag} (${Math.round((deadline - Date.now()) / 1000)}s left)`);
     }
     throw new Error("Timed out waiting for hasMaskApplied(p1) to flip to true");
-  },
-});
+}, { timeout: 600_000 });

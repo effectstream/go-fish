@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run -A --unstable-detect-cjs
+#!/usr/bin/env bun
 /**
  * Initialize the Go Fish contract owner.
  *
@@ -11,11 +11,13 @@
  * Usage:
  *   MIDNIGHT_STORAGE_PASSWORD="D3vP@ssw0rd!xK9m" \
  *   MIDNIGHT_ADMIN_SECRET="<hex-or-string>" \
- *   deno run -A --unstable-detect-cjs contract-initialize.ts
+ *   bun run contract-initialize.ts
  */
 
 import { Buffer } from "node:buffer";
-import * as path from "@std/path";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
@@ -33,7 +35,7 @@ import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-pri
 import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
 import type { NetworkId } from "@midnight-ntwrk/wallet-sdk-abstractions";
 
-import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
+import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import {
   buildWalletFacade,
   syncAndWaitForFunds,
@@ -64,7 +66,7 @@ function createTtl(): Date {
 const JUBJUB_SCALAR_FIELD_ORDER = 6554484396890773809930967563523245729705921265872317281365359162392183254199n;
 
 function getAdminSecret(): bigint {
-  const raw = Deno.env.get("MIDNIGHT_ADMIN_SECRET") ?? "MIDNIGHT_ADMIN_SECRET";
+  const raw = process.env.MIDNIGHT_ADMIN_SECRET ?? "MIDNIGHT_ADMIN_SECRET";
   let val: bigint;
   if (/^[0-9a-fA-F]{64}$/.test(raw)) {
     val = BigInt("0x" + raw);
@@ -88,10 +90,10 @@ function getAdminSecret(): bigint {
 // ============================================================================
 
 function loadContractAddress(): string {
-  const here = path.dirname(path.fromFileUrl(import.meta.url));
+  const here = path.dirname(fileURLToPath(import.meta.url));
   const networkId = midnightNetworkConfig.id;
   const filePath = path.join(here, `go-fish-contract.${networkId}.json`);
-  const data = JSON.parse(Deno.readTextFileSync(filePath));
+  const data = JSON.parse(readFileSync(filePath, "utf-8"));
   if (!data.contractAddress) {
     throw new Error(`No contractAddress found in ${filePath}`);
   }
@@ -131,7 +133,7 @@ try {
   console.log("Proof server: OK");
 } catch {
   console.error(`Proof server not running at ${NETWORK.proofServer}`);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 // Build wallet
@@ -163,7 +165,7 @@ if (balances.dustBalance === 0n && balances.unshieldedBalance > 0n) {
 }
 
 // Set up providers
-const here = path.dirname(path.fromFileUrl(import.meta.url));
+const here = path.dirname(fileURLToPath(import.meta.url));
 const managedDir = path.resolve(path.join(here, "go-fish-contract/src/managed"));
 const zkConfigProvider = new NodeZkConfigProvider(managedDir);
 
@@ -195,7 +197,7 @@ const providers: MidnightProviders = {
     midnightDbName: "midnight-level-db-deploy",
     privateStateStoreName: "go-fish-private-state-deploy",
     signingKeyStoreName: "go-fish-signing-keys-deploy",
-    privateStoragePasswordProvider: async () => Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") ?? "D3vP@ssw0rd!xK9m",
+    privateStoragePasswordProvider: async () => process.env.MIDNIGHT_STORAGE_PASSWORD ?? "D3vP@ssw0rd!xK9m",
     accountId: Buffer.from(walletResult.zswapSecretKeys.coinPublicKey).toString("hex"),
   }),
   publicDataProvider: indexerPublicDataProvider(NETWORK.indexer, NETWORK.indexerWS),
@@ -255,7 +257,7 @@ try {
       cause = cause.cause;
       depth++;
     }
-    Deno.exit(1);
+    process.exit(1);
   }
 }
 
@@ -274,10 +276,10 @@ try {
     cause = cause.cause;
     depth++;
   }
-  Deno.exit(1);
+  process.exit(1);
 }
 
 // Cleanup
 await walletResult.wallet.stop();
 console.log("Done.");
-Deno.exit(0);
+process.exit(0);

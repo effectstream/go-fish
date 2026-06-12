@@ -6,13 +6,13 @@
  *   (default) - Use deployed Midnight contract (production)
  */
 
-import { init, start } from "@paimaexample/runtime";
+import { init, start } from "@effectstream/runtime";
 import { main, suspend } from "effection";
 import { config } from "@go-fish/data-types/config-mainnet";
 import {
   toSyncProtocolWithNetwork,
   withEffectstreamStaticConfig,
-} from "@paimaexample/config";
+} from "@effectstream/config";
 import { migrationTable } from "@go-fish/database";
 import { gameStateTransitions } from "./state-machine.ts";
 import { apiRouter } from "./api.ts";
@@ -21,7 +21,7 @@ import { initializeQueryContract } from "./midnight-query.ts";
 import { initializeActionContract } from "./midnight-actions.ts";
 
 // Check if we should use the TypeScript-compiled contract (for local testing)
-const USE_TYPESCRIPT_CONTRACT = Deno.env.get("USE_TYPESCRIPT_CONTRACT") === "true";
+const USE_TYPESCRIPT_CONTRACT = process.env.USE_TYPESCRIPT_CONTRACT === "true";
 
 main(function* () {
   yield* init();
@@ -57,7 +57,7 @@ main(function* () {
       .then(() => console.log("✓ Midnight indexer connection ready"))
       .catch((error) => {
         console.error("⚠ Failed to connect to Midnight indexer:", error);
-        console.error("  Ensure indexer is running: deno task midnight:indexer");
+        console.error("  Ensure indexer is running: bun run midnight:indexer");
       });
 
     // NOTE: For now, we also initialize the action contract in production mode

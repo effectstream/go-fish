@@ -1,5 +1,5 @@
-import { OrchestratorConfig, start } from "@paimaexample/orchestrator";
-import { ComponentNames } from "@paimaexample/log";
+import { OrchestratorConfig, start } from "@effectstream/orchestrator";
+import { ComponentNames } from "@effectstream/log";
 import { Value } from "@sinclair/typebox/value";
 
 const customProcesses = [
@@ -41,7 +41,7 @@ const customProcesses = [
 
 const config = Value.Parse(OrchestratorConfig, {
   // Launch system processes
-  packageName: "jsr:@paimaexample",
+  packageName: "@effectstream",
   processes: {
     [ComponentNames.TMUX]: true,
     [ComponentNames.TUI]: true,
@@ -55,7 +55,7 @@ const config = Value.Parse(OrchestratorConfig, {
     // For testnet, Midnight contracts should be deployed
     {
       name: "midnight-runtime",
-      args: ["run", "-A", "--unstable-detect-cjs", "@paimaexample/runtime"],
+      args: ["run", "-A", "--unstable-detect-cjs", "@effectstream/runtime"],
       waitToExit: false,
       type: "system-dependency",
       dependsOn: [],
@@ -65,7 +65,7 @@ const config = Value.Parse(OrchestratorConfig, {
   ],
 });
 
-if (Deno.env.get("EFFECTSTREAM_STDOUT")) {
+if (process.env.EFFECTSTREAM_STDOUT) {
   config.logs = "stdout";
   config.processes[ComponentNames.TMUX] = false;
   config.processes[ComponentNames.TUI] = false;

@@ -6,7 +6,11 @@ import { viteStaticCopy } from 'vite-plugin-static-copy';
 import glsl from 'vite-plugin-glsl';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
+
+const require = createRequire(import.meta.url);
+const wsBrowserPath = path.join(path.dirname(require.resolve('ws/package.json')), 'browser.js');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -192,27 +196,17 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       'object-inspect',
-      'side-channel',
-      'call-bind',
-      'get-intrinsic',
-      'has-symbols',
-      'has-proto',
-      'function-bind',
+      'effect',
       'fp-ts',
       'fp-ts/function',
       'rxjs',
       'isomorphic-ws',
-      'inherits',
-      'debug',
-      'ms',
-      'readable-stream',
-      'string_decoder',
-      'util-deprecate',
-      'core-util-is',
     ],
     exclude: [
+      '@effectstream/midnight-contracts',
       '@paima/midnight-wasm-prover',
       '@midnight-ntwrk/onchain-runtime',
+      '@midnight-ntwrk/onchain-runtime-v3',
       '@midnight-ntwrk/compact-runtime',
       '@midnight-ntwrk/compact-js',
       '@midnight-ntwrk/ledger',
@@ -230,22 +224,31 @@ export default defineConfig({
     },
   },
   resolve: {
+    dedupe: [
+      "effect",
+      "@effect/platform",
+      "@midnight-ntwrk/compact-js",
+      "@midnight-ntwrk/ledger-v8",
+      "@midnight-ntwrk/onchain-runtime-v3",
+      "@midnight-ntwrk/onchain-runtime",
+      "@midnight-ntwrk/compact-runtime",
+      "@midnight-ntwrk/midnight-js-contracts",
+    ],
     alias: {
       crypto: cryptoShimPath,
       'node:crypto': cryptoShimPath,
       level: levelShimPath,
-      'isomorphic-ws': 'ws',
-      '@midnight-ntwrk/onchain-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v2'),
-      '@midnight-ntwrk/onchain-runtime-v2': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v2'),
+      'isomorphic-ws': wsBrowserPath,
+      'npm:viem': 'viem',
+      'npm:viem/accounts': 'viem/accounts',
+      'npm:viem@2.37.3': 'viem',
+      'npm:viem@2.37.3/accounts': 'viem/accounts',
+      'npm:@sinclair/typebox@^0.34.41': '@sinclair/typebox',
+      'npm:@sinclair/typebox@0.34.41': '@sinclair/typebox',
+      'npm:@sinclair/typebox@^0.34.30': '@sinclair/typebox',
+      '@midnight-ntwrk/onchain-runtime': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v3'),
+      '@midnight-ntwrk/onchain-runtime-v3': path.resolve(__dirname, 'node_modules/@midnight-ntwrk/onchain-runtime-v3'),
     },
-    dedupe: [
-      '@midnight-ntwrk/compact-js',
-      '@midnight-ntwrk/ledger-v8',
-      '@midnight-ntwrk/onchain-runtime-v3',
-      '@midnight-ntwrk/onchain-runtime',
-      '@midnight-ntwrk/compact-runtime',
-      '@midnight-ntwrk/midnight-js-contracts',
-    ],
   },
   assetsInclude: ['**/*.wasm'],
   worker: {

@@ -1,3 +1,7 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
 /**
  * Midnight On-Chain Integration Service
  *
@@ -10,11 +14,11 @@
  */
 
 // Indexer URL for GraphQL queries (informational only — game state is queried via the batcher)
-const INDEXER_URL = Deno.env.get("INDEXER_HTTP_URL") || "http://127.0.0.1:8088/api/v3/graphql";
+const INDEXER_URL = process.env.INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v3/graphql";
 
 // Batcher query server URL — runs alongside the batcher on a separate port.
 // This is the authoritative source for real on-chain game state.
-const BATCHER_QUERY_URL = Deno.env.get("BATCHER_QUERY_URL") || "http://127.0.0.1:9997";
+const BATCHER_QUERY_URL = process.env.BATCHER_QUERY_URL || "http://127.0.0.1:9997";
 
 let contractAddress: string | null = null;
 let isInitialized = false;
@@ -75,7 +79,7 @@ const SETUP_STATE_FILE = "./data/setup-state.json";
 
 function loadPersistedSetupState(): void {
   try {
-    const text = Deno.readTextFileSync(SETUP_STATE_FILE);
+    const text = readFileSync(SETUP_STATE_FILE, "utf-8");
     const data = JSON.parse(text) as Record<string, GameSetupState>;
     for (const [key, value] of Object.entries(data)) {
       setupStateMap.set(key, value);
@@ -88,12 +92,12 @@ function loadPersistedSetupState(): void {
 
 function persistSetupState(): void {
   try {
-    Deno.mkdirSync("./data", { recursive: true });
+    mkdirSync("./data", { recursive: true });
     const data: Record<string, GameSetupState> = {};
     for (const [key, value] of setupStateMap.entries()) {
       data[key] = value;
     }
-    Deno.writeTextFileSync(SETUP_STATE_FILE, JSON.stringify(data, null, 2));
+    writeFileSync(SETUP_STATE_FILE, JSON.stringify(data, null, 2));
   } catch (err) {
     console.warn("[MidnightOnChain] Failed to persist setup state:", err);
   }
@@ -111,7 +115,7 @@ async function loadContractAddress(): Promise<string | null> {
       "../../../shared/contracts/midnight/go-fish-contract.undeployed.json",
       import.meta.url
     );
-    const deploymentText = await Deno.readTextFile(deploymentPath);
+    const deploymentText = await readFile(fileURLToPath(deploymentPath), "utf-8");
     const deployment = JSON.parse(deploymentText);
     return deployment.contractAddress || null;
   } catch (error) {
@@ -135,7 +139,7 @@ export async function initializeOnChainService(): Promise<void> {
     contractAddress = await loadContractAddress();
     if (!contractAddress) {
       console.warn("[MidnightOnChain] No contract address found - using local state tracking only");
-      console.warn("[MidnightOnChain] Deploy the contract first: deno task midnight:setup");
+      console.warn("[MidnightOnChain] Deploy the contract first: bun run midnight:setup");
     } else {
       console.log(`[MidnightOnChain] Contract address: ${contractAddress}`);
     }

@@ -7,74 +7,78 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Go Fish card game built on **Paima Engine (Effectstream)** with a hybrid blockchain architecture:
 - **EVM (Solidity/Hardhat)**: Lobbies, matchmaking, player stats
 - **Midnight (Compact language)**: Private game logic, card shuffling/dealing with ZK proofs
-- **Paima Node (Deno)**: State machine processing blockchain events, REST API
+- **Paima Node (Bun)**: State machine processing blockchain events, REST API
 - **Frontend**: Three.js 3D game scene with HTML overlay screens (Vite + TypeScript)
 
 ## Build & Run Commands
 
 ```bash
 # First time setup
-deno install --allow-scripts
+bun install
 
 # Build EVM contracts (required before first run)
-deno task build:evm
+bun run build:evm
 
 # Full stack dev (launches frontend:3000, API:9996, EVM:8545, explorer:10590)
-deno task dev
+bun run dev
 
 # Dev with batcher mode (no Lace wallet needed)
-deno task dev:batcher
+bun run dev:batcher
 
 # Dev with TypeScript contract (no Midnight infrastructure needed)
-deno task dev:typescript
+bun run dev:typescript
 
 # Frontend only
-deno task frontend:dev
+bun run frontend:dev
 
 # Build Midnight contracts
-deno task build:midnight
+bun run build:midnight
 ```
 
 ### Testing
 
 ```bash
-# Run node tests (Deno test runner, api.test.ts)
-deno task test
+# Run node tests (bun:test, api.test.ts)
+bun run test
 
 # Watch mode
-deno task --filter @go-fish/node test:watch
+bun run --filter @go-fish/node test:watch
 
 # Run a single test file directly
-deno test -A --no-check --unstable-raw-imports packages/client/node/src/api.test.ts
+bun test packages/client/node/src/api.test.ts
 
 # Midnight contract tests
-cd packages/shared/contracts/midnight && deno task test
+cd packages/shared/contracts/midnight && bun run test
 
 # EVM contract tests
 cd packages/shared/contracts/evm && npx hardhat test
+
+# E2E smoke tests
+bun run --filter @go-fish/e2e smoke:imports
+bun run test:e2e
 ```
 
 ### EVM Contract Build Details
 
 ```bash
 # Full compile (forge + hardhat + deploy + artifact generation)
-deno task --filter @go-fish/evm-contracts contract:compile
+bun run --filter @go-fish/evm-contracts contract:compile
 
 # Individual steps
 cd packages/shared/contracts/evm
-deno task build:forge      # Forge only
-deno task build:hardhat    # Hardhat only
-deno task deploy:standalone  # Start chain, deploy, stop
+bun run build:forge      # Forge only
+bun run build:hardhat    # Hardhat only
+bun run deploy:standalone  # Start chain, deploy, stop
 ```
 
 ### Midnight Infrastructure (for full Midnight dev)
 
 ```bash
 # Terminal 1: Start all Midnight services
-EFFECTSTREAM_STDOUT=true deno task -f @go-fish/node midnight:setup
+EFFECTSTREAM_STDOUT=true bun run --filter @go-fish/node midnight:setup
 
 # Terminal 2: Dev server connecting to running infra
-USE_TYPESCRIPT_CONTRACT=false EFFECTSTREAM_STDOUT=true USE_BATCHER_MODE=true SKIP_MIDNIGHT_INFRA=true deno task dev
+USE_TYPESCRIPT_CONTRACT=false EFFECTSTREAM_STDOUT=true USE_BATCHER_MODE=true SKIP_MIDNIGHT_INFRA=true bun run dev
 ```
 
 ## Architecture
@@ -129,11 +133,7 @@ Paima concise grammar commands (defined in `data-types/src/grammar.ts`):
 
 **Fix pattern:** Fetch all secrets unconditionally, use ternary (`? :`) to select the right value (compiles to safe `cond_select`), then call `ec_mul` once unconditionally.
 
-**Verify after compiling:** Run the detection script in `ZKIR-EC-MUL-GUARD-BUG.md` after every `deno task compact` to ensure no circuit has both `ec_mul` and guarded `public_input` ops.
-
-## Lint Config
-
-Deno lint with these rules excluded: `no-this-alias`, `require-yield`, `no-explicit-any`, `ban-types`, `no-unused-vars`, `no-slow-types`.
+**Verify after compiling:** Run the detection script in `ZKIR-EC-MUL-GUARD-BUG.md` after every `bun run --filter @go-fish/midnight-contract compact` to ensure no circuit has both `ec_mul` and guarded `public_input` ops.
 
 ## Compact Point Comparison
 
