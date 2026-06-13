@@ -165,6 +165,26 @@ for dir in ./node_modules/.bun/fetch-blob@3.2.0/node_modules/fetch-blob/ ./node_
     fi
 done
 
+# Patch @seriousme/opifex socket close() — the in-process MQTT engine.
+# `this.writer.close()` returns a Promise that rejects when the underlying
+# WritableStream is already closed/errored ("Cannot close a writable stream that
+# is closed or errored"). opifex wraps it in a *synchronous* try/catch intending
+# to swallow close errors, but a sync try/catch can't catch the async rejection.
+# Under bun that floats up as an unhandledRejection, which @effectstream/log's
+# process handler turns into process.exit(1) — crash-looping the node on every
+# MQTT client teardown. Swallow the async rejection too.
+patch_opifex_socket() {
+    local file="$1"
+    if [[ -f "$file" ]] && grep -q "this.writer.close();" "$file"; then
+        sed -i.bak "s|this.writer.close();|this.writer.close().catch(() => {});|" "$file"
+        echo "✅ Patched opifex socket close() in $file"
+    fi
+}
+
+for dir in ./node_modules/.bun/@seriousme+opifex@*/node_modules/@seriousme/opifex/ ./node_modules/@seriousme/opifex/ ; do
+    patch_opifex_socket "${dir}dist/socket/socket.js"
+done
+
 echo "✅ All patches applied successfully"
         
         
