@@ -189,6 +189,32 @@ for dir in ./node_modules/.bun/@seriousme+opifex@*/node_modules/@seriousme/opife
     patch_opifex_socket "${dir}dist/socket/socket.js"
 done
 
+# Patch @midnight-ntwrk/wallet-sdk-address-format 3.x for the frontend bundle.
+# v3.1.0 declares `export class ShieldedAddress { static [Bech32mSymbol] = ShieldedAddress.codec }`
+# (and likewise UnshieldedAddress / DustAddress). vite-plugin-top-level-await hoists every
+# top-level binding to a `let` and rewrites the class *declaration* into an *anonymous* class
+# expression (`ShieldedAddress = class { ... }`). The static field then resolves `ShieldedAddress`
+# to the outer `let`, which is still `undefined` while the class is being evaluated, throwing
+# "Cannot read properties of undefined (reading 'codec')" at app startup.
+# Fix: make them named class *expressions* (`export const X = class X { ... }`) so the inner class
+# name survives the hoist and the self-reference resolves to the class itself.
+patch_midnight_address_format() {
+    local file="$1"
+    [[ -f "$file" ]] || return
+    if grep -q "export class ShieldedAddress {" "$file"; then
+        sed -i.bak \
+            -e "s|export class ShieldedAddress {|export const ShieldedAddress = class ShieldedAddress {|" \
+            -e "s|export class UnshieldedAddress {|export const UnshieldedAddress = class UnshieldedAddress {|" \
+            -e "s|export class DustAddress {|export const DustAddress = class DustAddress {|" \
+            "$file"
+        echo "✅ Patched wallet-sdk-address-format self-referencing classes in $file"
+    fi
+}
+
+for dir in ./node_modules/.bun/@midnight-ntwrk+wallet-sdk-address-format@3.*/node_modules/@midnight-ntwrk/wallet-sdk-address-format/ ./node_modules/@midnight-ntwrk/wallet-sdk-address-format/ ; do
+    patch_midnight_address_format "${dir}dist/index.js"
+done
+
 echo "✅ All patches applied successfully"
         
         
