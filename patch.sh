@@ -165,19 +165,23 @@ for dir in ./node_modules/.bun/fetch-blob@3.2.0/node_modules/fetch-blob/ ./node_
     fi
 done
 
-# Patch @seriousme/opifex socket close() — the in-process MQTT engine.
-# `this.writer.close()` returns a Promise that rejects when the underlying
-# WritableStream is already closed/errored ("Cannot close a writable stream that
-# is closed or errored"). opifex wraps it in a *synchronous* try/catch intending
-# to swallow close errors, but a sync try/catch can't catch the async rejection.
-# Under bun that floats up as an unhandledRejection, which @effectstream/log's
-# process handler turns into process.exit(1) — crash-looping the node on every
-# MQTT client teardown. Swallow the async rejection too.
+# Patch @seriousme/opifex socket close() and write() — the in-process MQTT engine.
+# Both `this.writer.close()` and `this.writer.write(data)` return Promises that can
+# reject when the underlying WritableStream is already closed/errored. opifex wraps
+# close() in a synchronous try/catch that can't catch async rejections, and write()
+# isn't caught at all. Under Bun both float up as unhandledRejections, which
+# @effectstream/log's process handler turns into process.exit(1) — crash-looping the
+# node on every MQTT client teardown. Swallow both async rejections.
 patch_opifex_socket() {
     local file="$1"
-    if [[ -f "$file" ]] && grep -q "this.writer.close();" "$file"; then
+    [[ -f "$file" ]] || return
+    if grep -q "this.writer.close();" "$file"; then
         sed -i.bak "s|this.writer.close();|this.writer.close().catch(() => {});|" "$file"
         echo "✅ Patched opifex socket close() in $file"
+    fi
+    if grep -q "this.writer.write(data);" "$file"; then
+        sed -i.bak "s|this.writer.write(data);|this.writer.write(data).catch(() => {});|" "$file"
+        echo "✅ Patched opifex socket write() in $file"
     fi
 }
 
