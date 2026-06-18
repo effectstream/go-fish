@@ -1071,6 +1071,7 @@ export class GameSession extends EventTarget {
       this.notify('Error', 'Failed to ask for card', 5000);
     } finally {
       this.askInProgress = false;
+      this.expectedMinHandSize = 0;
       this.recomputeInFlight();
     }
   }
