@@ -11,12 +11,12 @@
     "./types": "./src/types.ts"
   },
   "dependencies": {
-    "@effectstream/concise": "0.100.26",
-    "@effectstream/config": "0.100.26",
-    "@effectstream/db": "0.100.26",
-    "@effectstream/midnight-contracts": "0.100.26",
-    "@effectstream/sm": "0.100.26",
-    "@effectstream/utils": "0.100.26",
+    "@effectstream/concise": "0.100.27",
+    "@effectstream/config": "0.100.27",
+    "@effectstream/db": "0.100.27",
+    "@effectstream/midnight-contracts": "0.100.27",
+    "@effectstream/sm": "0.100.27",
+    "@effectstream/utils": "0.100.27",
     "@go-fish/evm-contracts": "workspace:*",
     "@go-fish/midnight-contract": "workspace:*",
     "@go-fish/midnight-contracts": "workspace:*",
