@@ -14,7 +14,7 @@
     "smoke:one-turn": "bun test smoke/one-turn.test.ts"
   },
   "dependencies": {
-    "@effectstream/concise": "0.100.27",
+    "@effectstream/concise": "0.100.28",
     "@go-fish/data-types": "workspace:*",
     "@go-fish/midnight-contract": "workspace:*",
     "@midnight-ntwrk/compact-js": "2.5.0",
