@@ -10,12 +10,12 @@
     "dev": "bun run src/main.ts"
   },
   "dependencies": {
-    "@effectstream/batcher-sdk": "0.100.26",
-    "@effectstream/concise": "0.100.26",
-    "@effectstream/coroutine": "0.100.26",
-    "@effectstream/crypto": "0.100.26",
-    "@effectstream/midnight-contracts": "0.100.26",
-    "@effectstream/utils": "0.100.26",
+    "@effectstream/batcher-sdk": "0.100.28",
+    "@effectstream/concise": "0.100.28",
+    "@effectstream/coroutine": "0.100.28",
+    "@effectstream/crypto": "0.100.28",
+    "@effectstream/midnight-contracts": "0.100.28",
+    "@effectstream/utils": "0.100.28",
     "@go-fish/data-types": "workspace:*",
     "@go-fish/evm-contracts": "workspace:*",
     "@go-fish/midnight-contract": "workspace:*",
