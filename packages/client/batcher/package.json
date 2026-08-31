@@ -1,0 +1,36 @@
+{
+  "name": "@go-fish/batcher",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun run src/main.ts"
+  },
+  "dependencies": {
+    "@effectstream/batcher-sdk": "0.101.1",
+    "@effectstream/concise": "0.101.1",
+    "@effectstream/coroutine": "0.101.1",
+    "@effectstream/crypto": "0.101.1",
+    "@effectstream/midnight-contracts": "0.101.1",
+    "@effectstream/utils": "0.101.1",
+    "@go-fish/data-types": "workspace:*",
+    "@go-fish/evm-contracts": "workspace:*",
+    "@go-fish/midnight-contract": "workspace:*",
+    "@midnight-ntwrk/compact-js": "2.5.0",
+    "@midnight-ntwrk/compact-runtime": "0.15.0",
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
+    "@midnight-ntwrk/midnight-js-contracts": "4.0.2",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.0.2",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.2",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "4.0.2",
+    "@midnight-ntwrk/midnight-js-utils": "4.0.2",
+    "@midnight-ntwrk/wallet-sdk-dust-wallet": "3.0.0",
+    "@midnight-ntwrk/wallet-sdk-facade": "3.0.0",
+    "effection": "^3.5.0",
+    "fastify": "^5.4.0",
+    "viem": "2.37.3"
+  }
+}

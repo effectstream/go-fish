@@ -1,4 +1,10 @@
-import * as log from "@std/log";
+import * as log from "./log.ts";
+import {
+  readFile,
+  writeFile,
+  rm,
+} from "node:fs/promises";
+import { statSync, readdirSync } from "node:fs";
 import {
   getNetworkId,
   setNetworkId,
@@ -21,9 +27,9 @@ import {
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
-import * as path from "@std/path";
+import * as path from "node:path";
 import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
-import { midnightNetworkConfig } from "@paimaexample/midnight-contracts/midnight-env";
+import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import { parseCoinPublicKeyToHex } from "@midnight-ntwrk/midnight-js-utils";
 import {
   sampleSigningKey,
@@ -140,16 +146,17 @@ function createTtl(): Date {
   return new Date(Date.now() + TTL_DURATION_MS);
 }
 
+const DEFAULT_STORAGE_PASSWORD = "D3vP@ssw0rd!xK9m";
+
 function checkEnvVariables(): void {
-  if (!Deno.env.get("MIDNIGHT_STORAGE_PASSWORD")) {
-    // Set a default password for local development
-    Deno.env.set("MIDNIGHT_STORAGE_PASSWORD", "D3vP@ssw0rd!xK9m");
+  if (!process.env.MIDNIGHT_STORAGE_PASSWORD) {
+    process.env.MIDNIGHT_STORAGE_PASSWORD = DEFAULT_STORAGE_PASSWORD;
     log.info("MIDNIGHT_STORAGE_PASSWORD not set, using default for local dev");
   }
 }
 
 function ensureDustFeeConfig(): void {
-  const margin = Deno.env.get("MIDNIGHT_DUST_FEE_BLOCKS_MARGIN");
+  const margin = process.env.MIDNIGHT_DUST_FEE_BLOCKS_MARGIN;
   if (margin !== undefined) {
     const parsed = Number(margin);
     if (!Number.isFinite(parsed) || parsed < 0) {
@@ -163,7 +170,7 @@ function ensureDustFeeConfig(): void {
     }
   }
 
-  const overhead = Deno.env.get("MIDNIGHT_DUST_FEE_OVERHEAD");
+  const overhead = process.env.MIDNIGHT_DUST_FEE_OVERHEAD;
   if (overhead !== undefined) {
     try {
       const parsed = BigInt(overhead);
@@ -190,7 +197,7 @@ function safeStringifyProgress(value: unknown): string {
 }
 
 const resolveSkipInsertRemainingVks = (): boolean =>
-  Deno.env.get("MIDNIGHT_DEPLOY_SKIP_INSERT_REMAINING_VKS")?.toLowerCase() ===
+  process.env.MIDNIGHT_DEPLOY_SKIP_INSERT_REMAINING_VKS?.toLowerCase() ===
     "true";
 
 const messageFromError = (value: unknown): string | undefined => {
@@ -233,50 +240,80 @@ async function buildWalletAndWaitForFunds(
   seed: string,
   networkId: NetworkId.NetworkId,
 ): Promise<WalletResult> {
-  log.info("Building wallet using modular SDK");
-  const result = await buildWalletFacade(networkUrls, seed, networkId);
+  const maxRetries = 5;
+  const baseDelayMs = 3000;
 
-  const initialState = await getInitialShieldedState(result.wallet.shielded);
-  const address = initialState.address.coinPublicKeyString();
-  log.info(`Wallet seed: ${seed}`);
-  log.info(`Wallet address: ${address}`);
-  log.info(`Dust address: ${result.dustAddress}`);
-
-  let balance = initialState.balances[shieldedToken().tag] ?? 0n;
-  log.info("initialState " + safeStringifyProgress(initialState));
-  const syncTimeoutMs = resolveWalletSyncTimeoutMs();
-  if (balance === 0n) {
-    const skipWait =
-      Deno.env.get("MIDNIGHT_SKIP_WAIT_FOR_FUNDS")?.toLowerCase() === "true";
-    log.info("Wallet shielded balance: 0");
-    log.info(
-      `Waiting to receive tokens... (timeout ${syncTimeoutMs}ms${
-        skipWait ? ", skip on timeout enabled" : ""
-      })`,
-    );
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    log.info(`Building wallet using modular SDK (attempt ${attempt}/${maxRetries})`);
+    let result: WalletResult | null = null;
     try {
-      const { shieldedBalance, unshieldedBalance } = await syncAndWaitForFunds(
-        result.wallet,
-      );
-      balance = shieldedBalance;
-      if (unshieldedBalance > 0n) {
-        log.info(`Unshielded balance available: ${unshieldedBalance}`);
-      }
-    } catch (e) {
-      if (skipWait) {
-        log.warn(
-          `Skipping wait for shielded funds after timeout: ${
-            (e as Error).message
-          }`,
+      result = await buildWalletFacade(networkUrls, seed, networkId);
+
+      const initialState = await getInitialShieldedState(result.wallet.shielded);
+      const address = initialState.address.coinPublicKeyString();
+      log.info(`Wallet seed: ${seed}`);
+      log.info(`Wallet address: ${address}`);
+      log.info(`Dust address: ${result.dustAddress}`);
+
+      let balance = initialState.balances[shieldedToken().tag] ?? 0n;
+      log.info("initialState " + safeStringifyProgress(initialState));
+      const syncTimeoutMs = resolveWalletSyncTimeoutMs();
+      if (balance === 0n) {
+        const skipWait =
+          process.env.MIDNIGHT_SKIP_WAIT_FOR_FUNDS?.toLowerCase() === "true";
+        log.info("Wallet shielded balance: 0");
+        log.info(
+          `Waiting to receive tokens... (timeout ${syncTimeoutMs}ms${
+            skipWait ? ", skip on timeout enabled" : ""
+          })`,
         );
-      } else {
-        throw e;
+        try {
+          const { shieldedBalance, unshieldedBalance } = await syncAndWaitForFunds(
+            result.wallet,
+          );
+          balance = shieldedBalance;
+          if (unshieldedBalance > 0n) {
+            log.info(`Unshielded balance available: ${unshieldedBalance}`);
+          }
+        } catch (e) {
+          if (skipWait) {
+            log.warn(
+              `Skipping wait for shielded funds after timeout: ${
+                (e as Error).message
+              }`,
+            );
+          } else {
+            throw e;
+          }
+        }
       }
+      log.info(`Wallet balance: ${balance}`);
+
+      return result;
+    } catch (e) {
+      const tag = (e as any)?._tag;
+      const msg = e instanceof Error ? e.message : String(e);
+      const isWalletSyncError = tag === "Wallet.Sync" || msg.includes("Wallet.Sync");
+      const isConnectionError = msg.includes("ErrorEvent") ||
+        msg.includes("WebSocket") || msg.includes("ECONNREFUSED") ||
+        msg.includes("[object ErrorEvent]");
+
+      if ((isWalletSyncError || isConnectionError) && attempt < maxRetries) {
+        // Clean up the failed wallet before retrying
+        if (result) {
+          try { await result.wallet.stop(); } catch { /* ignore cleanup errors */ }
+        }
+        const delayMs = baseDelayMs * attempt;
+        log.warn(
+          `Wallet sync failed (attempt ${attempt}/${maxRetries}), retrying in ${delayMs}ms: ${String(e)}`,
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      throw e;
     }
   }
-  log.info(`Wallet balance: ${balance}`);
-
-  return result;
+  throw new Error("buildWalletAndWaitForFunds: unreachable");
 }
 
 async function ensureDustBalance(walletResult: WalletResult): Promise<void> {
@@ -392,7 +429,7 @@ function configureProviders(
       midnightDbName: "midnight-level-db-deploy", // Use separate DB for deployment to avoid lock conflicts
       privateStateStoreName,
       signingKeyStoreName,
-      privateStoragePasswordProvider: () => Promise.resolve(Deno.env.get("MIDNIGHT_STORAGE_PASSWORD") ?? "D3vP@ssw0rd!xK9m"),
+      privateStoragePasswordProvider: () => Promise.resolve(process.env.MIDNIGHT_STORAGE_PASSWORD ?? DEFAULT_STORAGE_PASSWORD),
       accountId: unshieldedKeystore.getBech32Address().asString(),
     }),
     publicDataProvider: indexerPublicDataProvider(
@@ -505,8 +542,46 @@ async function submitInsertVerifierKeyTxLocal(
   );
 
   const finalizedTx = await walletResult.wallet.finalizeRecipe(signedRecipe);
-  const txId = await walletResult.wallet.submitTransaction(finalizedTx);
+  const txId = await submitWithRetry(walletResult.wallet, finalizedTx);
   return await providers.publicDataProvider.watchForTxData(txId);
+}
+
+/**
+ * Submit a finalized transaction with retry on WS disconnect.
+ *
+ * The Midnight wallet SDK's PolkadotNodeClient disconnects after each
+ * operation by design. This can race with the submitAndWatchExtrinsic
+ * callback, causing a "Transaction submission error" with WS close code
+ * 1000 (Normal Closure). Retrying typically succeeds on the next connection.
+ */
+async function submitWithRetry(
+  wallet: WalletFacade,
+  // deno-lint-ignore no-explicit-any
+  tx: any,
+  maxAttempts = 3,
+  delayMs = 5_000,
+  // deno-lint-ignore no-explicit-any
+): Promise<any> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await wallet.submitTransaction(tx);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isDisconnect = msg.includes("submission error") ||
+        msg.includes("disconnected") ||
+        msg.includes("Normal Closure");
+
+      if (isDisconnect && attempt < maxAttempts) {
+        log.warn(
+          `Submit attempt ${attempt}/${maxAttempts} failed (WS disconnect). Retrying in ${delayMs}ms...`,
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("submitWithRetry: unreachable");
 }
 
 async function deployWithLimitedVerifierKeys(
@@ -522,14 +597,29 @@ async function deployWithLimitedVerifierKeys(
   // We deploy with NO verifier keys (stripped contract state), then insert
   // each VK individually via submitInsertVerifierKeyTx after deployment.
   //
-  // Steps:
-  // 1. Run ContractExecutable.initialize() with the real zkConfigProvider
-  //    (so VKs are validated and the contract state is correctly initialized)
-  // 2. Convert the resulting contract state to ledger format
-  // 3. Create a STRIPPED copy with only data + maintenanceAuthority (no operations)
-  // 4. Build the deploy transaction from the stripped state
-  // 5. After deployment, insert all VKs individually
+  // Deployment state is persisted to deployment-state.json so the process
+  // can resume after a crash (e.g., mid-VK-insert).
 
+  const stateFilePath = path.join(process.cwd(), "deployment-state.json");
+  let deploymentState: { contractAddress: string; deployedCircuits: string[] } = {
+    contractAddress: "",
+    deployedCircuits: [],
+  };
+
+  try {
+    const content = await readFile(stateFilePath, "utf-8");
+    deploymentState = JSON.parse(content);
+    log.info(
+      `Found existing deployment state. Resuming deployment for contract: ${deploymentState.contractAddress}`,
+    );
+  } catch (_error) {
+    // No existing state, start fresh
+  }
+
+  let contractAddress = deploymentState.contractAddress;
+
+  // Always run local initialization to get circuit IDs and contract state.
+  // This is purely local (no network), so it's fast even on resume.
   const signingKey = sampleSigningKey();
 
   const coinPublicKey = parseCoinPublicKeyToHex(
@@ -537,7 +627,6 @@ async function deployWithLimitedVerifierKeys(
     getNetworkId(),
   );
 
-  // Step 1: Initialize the contract with the real provider to get valid state
   const contractExec = ContractExecutable.make(compiledContract);
   const contractRuntime = makeContractExecutableRuntime(
     providers.zkConfigProvider,
@@ -573,109 +662,119 @@ async function deployWithLimitedVerifierKeys(
     private: { privateState, signingKey: derivedSigningKey },
   } = initResult;
 
-  // Step 2: Convert compact-runtime ContractState to ledger ContractState
+  // Convert compact-runtime ContractState to ledger ContractState
   const fullLedgerState = LedgerContractState.deserialize(
     fullContractState.serialize(),
   );
 
-  // Log all operations (circuits) found in the initialized state
   const allOperationIds = fullLedgerState.operations() as string[];
   log.info(
     `Contract initialized with ${allOperationIds.length} operations: ${allOperationIds.join(", ")}`,
   );
 
-  // Step 3: Create a stripped ContractState with NO operations (no VKs)
-  const strippedState = new LedgerContractState();
-  strippedState.data = fullLedgerState.data;
-  strippedState.maintenanceAuthority = fullLedgerState.maintenanceAuthority;
-  // Deliberately skip copying operations — this is the key to reducing tx size
+  if (!contractAddress) {
+    // Step 3: Create a stripped ContractState with NO operations (no VKs)
+    const strippedState = new LedgerContractState();
+    strippedState.data = fullLedgerState.data;
+    strippedState.maintenanceAuthority = fullLedgerState.maintenanceAuthority;
+    // Deliberately skip copying operations — this is the key to reducing tx size
 
-  log.info("Created stripped contract state (no operations/verifier keys)");
+    log.info("Created stripped contract state (no operations/verifier keys)");
 
-  // Step 4: Build the deploy transaction
-  const contractDeploy = new ContractDeploy(strippedState);
-  const contractAddress = contractDeploy.address;
+    // Step 4: Build the deploy transaction
+    const contractDeploy = new ContractDeploy(strippedState);
+    contractAddress = contractDeploy.address;
 
-  // Build the unproven transaction with Intent containing the deploy
-  const intent = Intent.new(createTtl()).addDeploy(contractDeploy);
-  const unprovenTx = Transaction.fromParts(
-    getNetworkId(),
-    undefined, // no guaranteed zswap offer needed for a stripped deploy
-    undefined, // no fallible offer
-    intent,
-  );
+    // Build the unproven transaction with Intent containing the deploy
+    const intent = Intent.new(createTtl()).addDeploy(contractDeploy);
+    const unprovenTx = Transaction.fromParts(
+      getNetworkId(),
+      undefined, // no guaranteed zswap offer needed for a stripped deploy
+      undefined, // no fallible offer
+      intent,
+    );
 
-  log.info(`Deploy tx built for contract address: ${contractAddress}`);
+    log.info(`Deploy tx built for contract address: ${contractAddress}`);
 
-  // Step 5: Balance, sign, finalize, and submit the deploy transaction.
-  // We bypass submitTx (which calls proveTx first) because our stripped deploy
-  // has no circuit calls — there are no proofs to generate. The proof provider
-  // would convert PreProof markers to Proof markers, causing the wallet to fail
-  // when trying to deserialize the intent.
-  const { wallet, walletZswapSecretKeys, walletDustSecretKey, unshieldedKeystore } = walletResult;
-  const balanceSecretKeys = {
-    shieldedSecretKeys: walletZswapSecretKeys,
-    dustSecretKey: walletDustSecretKey,
-  };
+    // Step 5: Balance, sign, finalize, and submit the deploy transaction.
+    // We bypass submitTx (which calls proveTx first) because our stripped deploy
+    // has no circuit calls — there are no proofs to generate.
+    const { wallet, walletZswapSecretKeys, walletDustSecretKey, unshieldedKeystore } = walletResult;
+    const balanceSecretKeys = {
+      shieldedSecretKeys: walletZswapSecretKeys,
+      dustSecretKey: walletDustSecretKey,
+    };
 
-  log.info("Balancing deploy transaction (unproven)...");
-  const recipe = await wallet.balanceUnprovenTransaction(
-    unprovenTx,
-    balanceSecretKeys,
-    { ttl: createTtl() },
-  );
+    log.info("Balancing deploy transaction (unproven)...");
+    const recipe = await wallet.balanceUnprovenTransaction(
+      unprovenTx,
+      balanceSecretKeys,
+      { ttl: createTtl() },
+    );
 
-  const signedRecipe = await wallet.signRecipe(
-    recipe,
-    (payload) => unshieldedKeystore.signData(payload),
-  );
+    const signedRecipe = await wallet.signRecipe(
+      recipe,
+      (payload) => unshieldedKeystore.signData(payload),
+    );
 
-  const finalizedTx = await wallet.finalizeRecipe(signedRecipe);
+    const finalizedTx = await wallet.finalizeRecipe(signedRecipe);
 
-  log.info("Submitting deploy transaction...");
-  const txId = await wallet.submitTransaction(finalizedTx);
-  log.info(`Deploy transaction submitted, txId: ${txId}`);
+    log.info("Submitting deploy transaction...");
+    const txId = await submitWithRetry(wallet, finalizedTx);
+    log.info(`Deploy transaction submitted, txId: ${txId}`);
 
-  // Wait for the transaction to be finalized on-chain
-  const finalizedTxData = await providers.publicDataProvider.watchForTxData(txId);
-  if (finalizedTxData.status !== SucceedEntirely) {
-    throw new Error(
-      `Deployment failed with status ${finalizedTxData.status}`,
+    // Wait for the transaction to be finalized on-chain
+    const finalizedTxData = await providers.publicDataProvider.watchForTxData(txId);
+    if (finalizedTxData.status !== SucceedEntirely) {
+      throw new Error(
+        `Deployment failed with status ${finalizedTxData.status}`,
+      );
+    }
+
+    log.info("Deploy transaction finalized on-chain.");
+
+    // Save deployment state so we can resume VK insertion if interrupted
+    deploymentState.contractAddress = contractAddress;
+    await writeFile(
+      stateFilePath,
+      JSON.stringify(deploymentState, null, 2),
+    );
+
+    // Scope the private state provider to this contract address (required in 3.2.0)
+    providers.privateStateProvider.setContractAddress(contractAddress);
+
+    // Save private state and signing key
+    if (config.privateStateId) {
+      await providers.privateStateProvider.set(
+        config.privateStateId,
+        privateState,
+      );
+    }
+    await providers.privateStateProvider.setSigningKey(
+      contractAddress,
+      derivedSigningKey,
     );
   }
-
-  log.info("Deploy transaction finalized on-chain.");
-
-  // Scope the private state provider to this contract address (required in 3.2.0)
-  providers.privateStateProvider.setContractAddress(contractAddress);
-
-  // Save private state and signing key
-  if (config.privateStateId) {
-    await providers.privateStateProvider.set(
-      config.privateStateId,
-      privateState,
-    );
-  }
-  await providers.privateStateProvider.setSigningKey(
-    contractAddress,
-    derivedSigningKey,
-  );
 
   // Step 6: Insert all verifier keys individually
   if (!resolveSkipInsertRemainingVks()) {
-    // Collect all verifier keys from the real zkConfigProvider
     const allVerifierKeys = await providers.zkConfigProvider.getVerifierKeys(
       allOperationIds as any,
     );
 
     log.info(
-      `Inserting ${allVerifierKeys.length} verifier keys individually...`,
+      `Inserting verifier keys (${deploymentState.deployedCircuits.length} already done)...`,
     );
     const VK_INSERT_MAX_RETRIES = 3;
     const VK_INSERT_RETRY_DELAY_MS = 10_000;
     const VK_INSERT_PAUSE_MS = 2_000;
 
     for (const [circuitId, verifierKey] of allVerifierKeys) {
+      if (deploymentState.deployedCircuits.includes(circuitId as string)) {
+        log.info(`Skipping already deployed circuit: ${circuitId}`);
+        continue;
+      }
+
       log.info(`Inserting verifier key for circuit: ${circuitId}`);
 
       let lastError: unknown;
@@ -715,10 +814,24 @@ async function deployWithLimitedVerifierKeys(
         throw lastError;
       }
 
+      // Track deployed circuit and persist state
+      deploymentState.deployedCircuits.push(circuitId as string);
+      await writeFile(
+        stateFilePath,
+        JSON.stringify(deploymentState, null, 2),
+      );
+
       // Brief pause between VK inserts to let the dust wallet state refresh
       await new Promise((r) => setTimeout(r, VK_INSERT_PAUSE_MS));
     }
     log.info("All verifier keys inserted successfully.");
+
+    // Clean up deployment state file on success
+    try {
+      await rm(stateFilePath, { force: true });
+    } catch {
+      // Ignore if already removed
+    }
   } else {
     log.warn(
       "Skipping verifier key insertion (MIDNIGHT_DEPLOY_SKIP_INSERT_REMAINING_VKS=true)",
@@ -763,7 +876,7 @@ function hasManagedArtifacts(dir: string): boolean {
   const requiredDirs = ["contract", "compiler"];
   try {
     return requiredDirs.every((name) => {
-      const stats = Deno.statSync(path.join(dir, name));
+      const stats = statSync(path.join(dir, name));
       return stats.isDirectory;
     });
   } catch {
@@ -773,7 +886,7 @@ function hasManagedArtifacts(dir: string): boolean {
 
 function findCompilerSubdirectory(managedDir: string): string {
   try {
-    for (const entry of Deno.readDirSync(managedDir)) {
+    for (const entry of readdirSync(managedDir, { withFileTypes: true })) {
       if (!entry.isDirectory) continue;
       const candidate = path.join(managedDir, entry.name);
       if (hasManagedArtifacts(candidate)) {
@@ -798,7 +911,7 @@ function findContractDirectoryForDeploy(
   contractName: string,
   baseDir?: string,
 ): string | null {
-  let current = path.resolve(baseDir ?? Deno.cwd());
+  let current = path.resolve(baseDir ?? process.cwd());
   while (true) {
     if (path.basename(current) === contractName) {
       return path.dirname(current);
@@ -806,7 +919,7 @@ function findContractDirectoryForDeploy(
 
     const candidate = path.join(current, contractName);
     try {
-      const stats = Deno.statSync(candidate);
+      const stats = statSync(candidate);
       if (stats.isDirectory) return current;
     } catch {
       // ignore
@@ -859,7 +972,7 @@ export async function deployMidnightContract(
   if (!contractDir) {
     throw new Error(
       `Could not find Midnight contract directory for "${config.contractName}". ` +
-        `Searched starting from ${config.baseDir || Deno.cwd()}. ` +
+        `Searched starting from ${config.baseDir || process.cwd()}. ` +
         `Please ensure you're running from a directory that contains or is a parent of the Midnight contract directory, ` +
         `or provide an explicit baseDir parameter.`,
     );
@@ -921,7 +1034,7 @@ export async function deployMidnightContract(
       unshieldedKeystore,
     } = walletResult;
     const resolvedDustReceiverAddress =
-      Deno.env.get("MIDNIGHT_DUST_RECEIVER_ADDRESS") ?? dustAddress;
+      process.env.MIDNIGHT_DUST_RECEIVER_ADDRESS ?? dustAddress;
     if (resolvedDustReceiverAddress === dustAddress) {
       log.info(`Using derived dust address: ${resolvedDustReceiverAddress}`);
     } else {
@@ -996,7 +1109,7 @@ export async function deployMidnightContract(
       outputFileName,
     );
 
-    await Deno.writeTextFile(
+    await writeFile(
       outputPath,
       JSON.stringify({ contractAddress }, null, 2),
     );

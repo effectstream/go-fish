@@ -1,4 +1,4 @@
-import * as log from "@std/log";
+import * as log from "./log.ts";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { Buffer } from "node:buffer";
 import * as Rx from "rxjs";
@@ -30,7 +30,7 @@ import type { DefaultV1Configuration } from "@midnight-ntwrk/wallet-sdk-shielded
  * This is useful to pass dust to Lace wallets in the browser for testing purposes.
  *
  * Usage:
- * MIDNIGHT_ADDRESS=mn_addr_undeployed1k7dst6qphntqmypwa4mhyltk794wx4lt07kherlc9y6clu5swssxqr9xe4z7txy8rscldhec7nmm47ujccf7syky0wz86jwahhkfd3mvq9wu8qx deno run -A faucet.ts
+ * MIDNIGHT_ADDRESS=mn_addr_undeployed1k7dst6qphntqmypwa4mhyltk794wx4lt07kherlc9y6clu5swssxqr9xe4z7txy8rscldhec7nmm47ujccf7syky0wz86jwahhkfd3mvq9wu8qx bun run faucet.ts
  */
 
 // ============================================================================
@@ -49,8 +49,8 @@ const DUST_FEE_BLOCKS_MARGIN = 5;
 /** Wallet sync progress logging throttle interval */
 const WALLET_SYNC_THROTTLE_MS = 10_000;
 
-/** Wallet sync timeout (5 minutes) */
-const WALLET_SYNC_TIMEOUT_MS = 300_000;
+/** Wallet sync timeout (15 minutes — initial sync can be slow) */
+const WALLET_SYNC_TIMEOUT_MS = 900_000;
 
 const GENESIS_MINT_WALLET_SEED =
   "0000000000000000000000000000000000000000000000000000000000000001";
@@ -251,7 +251,7 @@ export function getInitialShieldedState(
  * Resolve sync timeout from env or default.
  */
 export function resolveWalletSyncTimeoutMs(): number {
-  const envValue = Deno.env.get("MIDNIGHT_WALLET_SYNC_TIMEOUT_MS");
+  const envValue = process.env.MIDNIGHT_WALLET_SYNC_TIMEOUT_MS;
   if (!envValue) return WALLET_SYNC_TIMEOUT_MS;
   const parsed = Number(envValue);
   if (Number.isFinite(parsed) && parsed > 0) return parsed;
@@ -262,7 +262,7 @@ export function resolveWalletSyncTimeoutMs(): number {
 }
 
 const resolveDustFeeBlocksMargin = (): number => {
-  const envValue = Deno.env.get("MIDNIGHT_DUST_FEE_BLOCKS_MARGIN");
+  const envValue = process.env.MIDNIGHT_DUST_FEE_BLOCKS_MARGIN;
   if (!envValue) return DUST_FEE_BLOCKS_MARGIN;
   const parsed = Number(envValue);
   if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
@@ -273,7 +273,7 @@ const resolveDustFeeBlocksMargin = (): number => {
 };
 
 const resolveDustFeeOverhead = (): bigint => {
-  const envValue = Deno.env.get("MIDNIGHT_DUST_FEE_OVERHEAD");
+  const envValue = process.env.MIDNIGHT_DUST_FEE_OVERHEAD;
   if (!envValue) return DUST_FEE_OVERHEAD;
   try {
     return BigInt(envValue);
@@ -655,16 +655,16 @@ export async function registerNightForDust(
 }
 
 const resolveNetworkUrls = (): Required<Config> => ({
-  indexer: Deno.env.get("MIDNIGHT_INDEXER_URL") || DEFAULT_NETWORK_URLS.indexer,
-  indexerWS: Deno.env.get("MIDNIGHT_INDEXER_WS_URL") ||
+  indexer: process.env.MIDNIGHT_INDEXER_URL || DEFAULT_NETWORK_URLS.indexer,
+  indexerWS: process.env.MIDNIGHT_INDEXER_WS_URL ||
     DEFAULT_NETWORK_URLS.indexerWS,
-  node: Deno.env.get("MIDNIGHT_NODE_URL") || DEFAULT_NETWORK_URLS.node,
-  proofServer: Deno.env.get("MIDNIGHT_PROOF_SERVER_URL") ||
+  node: process.env.MIDNIGHT_NODE_URL || DEFAULT_NETWORK_URLS.node,
+  proofServer: process.env.MIDNIGHT_PROOF_SERVER_URL ||
     DEFAULT_NETWORK_URLS.proofServer,
 });
 
 const resolveNetworkId = (): NetworkId.NetworkId => {
-  const networkIdRaw = Deno.env.get("MIDNIGHT_NETWORK_ID") || "undeployed";
+  const networkIdRaw = process.env.MIDNIGHT_NETWORK_ID || "undeployed";
   switch (networkIdRaw.toLowerCase()) {
     case "undeployed":
       return NetworkId.NetworkId.Undeployed;
@@ -861,19 +861,19 @@ if (import.meta.main) {
     },
   });
 
-  const midnightAddress = Deno.env.get("MIDNIGHT_ADDRESS");
+  const midnightAddress = process.env.MIDNIGHT_ADDRESS;
   if (!midnightAddress) {
     console.error("❌ MIDNIGHT_ADDRESS environment variable is not set");
     console.error(
-      "Example: MIDNIGHT_ADDRESS=mn_addr_undeployed1k7dst6qphntqmypwa4mhyltk794wx4lt07kherlc9y6clu5swssxqr9xe4z7txy8rscldhec7nmm47ujccf7syky0wz86jwahhkfd3mvq9wu8qx deno run -A faucet.ts",
+      "Example: MIDNIGHT_ADDRESS=mn_addr_undeployed1k7dst6qphntqmypwa4mhyltk794wx4lt07kherlc9y6clu5swssxqr9xe4z7txy8rscldhec7nmm47ujccf7syky0wz86jwahhkfd3mvq9wu8qx bun run faucet.ts",
     );
-    Deno.exit(1);
+    process.exit(1);
   }
   try {
     await faucet(midnightAddress);
-    Deno.exit(0);
+    process.exit(0);
   } catch (error) {
     console.error("❌ Error during faucet process:", error);
-    Deno.exit(1);
+    process.exit(1);
   }
 }

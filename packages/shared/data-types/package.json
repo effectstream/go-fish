@@ -1,0 +1,26 @@
+{
+  "name": "@go-fish/data-types",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts",
+    "./config-dev": "./src/config.dev.ts",
+    "./config-mainnet": "./src/config.mainnet.ts",
+    "./grammar": "./src/grammar.ts",
+    "./types": "./src/types.ts"
+  },
+  "dependencies": {
+    "@effectstream/concise": "0.101.1",
+    "@effectstream/config": "0.101.1",
+    "@effectstream/db": "0.101.1",
+    "@effectstream/midnight-contracts": "0.101.1",
+    "@effectstream/sm": "0.101.1",
+    "@effectstream/utils": "0.101.1",
+    "@go-fish/evm-contracts": "workspace:*",
+    "@go-fish/midnight-contract": "workspace:*",
+    "@go-fish/midnight-contracts": "workspace:*",
+    "@sinclair/typebox": "0.34.41",
+    "viem": "2.37.3"
+  }
+}

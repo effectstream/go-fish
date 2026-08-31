@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-KJX5XHXL');</script>
+    <!-- End Google Tag Manager -->
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZK Go-Fish</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        /* Width of the side panel when open. 0 on mobile (overlay), 340px on desktop. */
+        --side-panel-width: 0px;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #0a0a14;
+      }
+
+      /* Three.js canvas renders behind the DOM UI; shrinks to leave room for
+         the side panel on desktop so the full 3D scene stays visible. */
+      #three-canvas-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: var(--side-panel-width);
+        bottom: 0;
+        z-index: 0;
+        pointer-events: none;
+        transition: right 0.25s ease, filter 0.4s ease;
+      }
+      #three-canvas-container canvas {
+        display: block;
+      }
+      /* When no game is selected as foreground, blur + dim the demo
+         canvas and drop a vignette over it so the "Go Fish" intro text
+         is readable. Tied to the same `body.has-foreground-game` flag
+         the idle overlay uses, so the three effects appear/disappear
+         together. */
+      body:not(.has-foreground-game) #three-canvas-container {
+        filter: blur(5px) saturate(90%) brightness(0.88);
+      }
+      body:not(.has-foreground-game) #three-canvas-container::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse at 50% 45%,
+          rgba(0, 0, 0, 0.1) 0%,
+          rgba(0, 0, 0, 0.22) 50%,
+          rgba(0, 0, 0, 0.4) 100%);
+        pointer-events: none;
+      }
+
+      /* ───────── Idle overlay: big gold "use the menu" prompt ───────── */
+      #idle-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: var(--side-panel-width);
+        bottom: 0;
+        z-index: 40;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        transition: right 0.25s ease;
+      }
+      /* Idle overlay: visible whenever no game is selected as foreground.
+         SceneManager adds `body.has-foreground-game` on enterGame() and
+         removes it on leaveGame(). Screen navigation does NOT affect this
+         — only actual game selection. So the "Go Fish" intro card shows
+         on app launch (no game yet) and reappears after dismissing the
+         last active game, but is gone as soon as you're watching a game. */
+      body:not(.has-foreground-game) #idle-overlay { display: flex; }
+
+      #idle-overlay .idle-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        padding: 28px 46px;
+        text-align: center;
+      }
+      #idle-overlay .idle-symbol {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 78px;
+        line-height: 1;
+        color: var(--gold-bright);
+        text-shadow:
+          0 0 20px rgba(250, 204, 21, 0.55),
+          0 0 44px rgba(250, 204, 21, 0.3);
+        animation: idle-beat 2.4s ease-in-out infinite;
+      }
+      #idle-overlay .idle-title {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 34px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: var(--gold-bright);
+        text-shadow:
+          0 2px 0 rgba(0, 0, 0, 0.6),
+          0 0 28px rgba(250, 204, 21, 0.4);
+      }
+      #idle-overlay .idle-tagline {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-style: italic;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        color: #fde68a;
+        opacity: 0.8;
+        margin-top: -4px;
+      }
+      #idle-overlay .idle-sub {
+        font-family: 'Inter', sans-serif;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: #fde68a;
+        opacity: 0.85;
+      }
+      @keyframes idle-beat {
+        0%, 100% {
+          transform: scale(1.00) rotate(0deg);
+          text-shadow: 0 0 18px rgba(250, 204, 21, 0.55), 0 0 40px rgba(250, 204, 21, 0.28);
+        }
+        35% {
+          transform: scale(1.12) rotate(-5deg);
+          text-shadow: 0 0 28px rgba(250, 204, 21, 0.95), 0 0 60px rgba(250, 204, 21, 0.55);
+        }
+        65% {
+          transform: scale(1.06) rotate(4deg);
+          text-shadow: 0 0 24px rgba(250, 204, 21, 0.8), 0 0 52px rgba(250, 204, 21, 0.45);
+        }
+      }
+
+      /* DOM overlay sits on top of canvas; follows the same viewport. */
+      #app-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: var(--side-panel-width);
+        bottom: 0;
+        z-index: 1;
+        transition: right 0.25s ease;
+      }
+
+      /* ───────── Casino sidebar theme ───────── */
+      :root {
+        --gold: #d4af37;
+        --gold-dim: #a8881f;
+        --gold-bright: #f5c842;
+        --burgundy: #5a0f1e;
+        --burgundy-dark: #2a0810;
+        --burgundy-felt: #1a0910;
+        --cream: #f0e4c8;
+        --cream-dim: #c9ba96;
+        --ink: #0d060a;
+        --accent-green: #2d7a4f; /* status: your turn */
+        --accent-red: #c24040;   /* status: alert/waiting */
+      }
+
+      /* Side panel. Fixed to the right edge; closed translates off-screen. */
+      #side-panel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 340px;
+        max-width: 100vw;
+        /* Almost fully transparent — lets the 3D scene and drifting suit
+           glyphs be the main visual. Just a faint gold vignette + blur for
+           legibility. */
+        background:
+          radial-gradient(ellipse at 50% 18%, rgba(212, 175, 55, 0.04) 0%, transparent 60%);
+        backdrop-filter: blur(4px) saturate(120%);
+        -webkit-backdrop-filter: blur(4px) saturate(120%);
+        border-left: 1px solid rgba(212, 175, 55, 0.22);
+        box-shadow: -4px 0 28px rgba(0, 0, 0, 0.55), inset 1px 0 0 rgba(245, 200, 66, 0.06);
+        /* Panel itself doesn't scroll — the middle content area does. */
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+        z-index: 50;
+        color: var(--cream);
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+      }
+      #side-panel::-webkit-scrollbar { width: 8px; }
+      #side-panel::-webkit-scrollbar-thumb {
+        background: rgba(212, 175, 55, 0.3);
+        border-radius: 4px;
+      }
+      body.side-open #side-panel {
+        transform: translateX(0);
+      }
+
+      /* Ambient floating suit symbols — pure decoration behind the content. */
+      #side-panel::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background-image:
+          radial-gradient(circle at 20% 18%, rgba(212, 175, 55, 0.10) 0%, transparent 6%),
+          radial-gradient(circle at 78% 72%, rgba(194, 64, 64, 0.10) 0%, transparent 6%);
+        background-size: 100% 100%;
+      }
+      /* Drifting suit glyphs rendered as separate layers so each can animate
+         independently. Positioned absolutely inside #side-panel via .sp-bg-layer */
+      .sp-bg-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        overflow: hidden;
+        z-index: 0;
+      }
+      .sp-bg-glyph {
+        position: absolute;
+        font-family: 'Georgia', serif;
+        color: rgba(212, 175, 55, 0.22);
+        user-select: none;
+        will-change: transform, opacity;
+        text-shadow: 0 0 28px rgba(212, 175, 55, 0.3);
+      }
+      .sp-bg-glyph.red {
+        color: rgba(216, 96, 96, 0.22);
+        text-shadow: 0 0 28px rgba(216, 96, 96, 0.28);
+      }
+      /* Each keyframe set now describes a ONE-WAY journey (start → extended
+         end state). Paired with `animation-direction: alternate`, the browser
+         plays it forward, then automatically backward to the start — making
+         the motion a seamless continuous loop with no "pop" at the seam. */
+      @keyframes sp-drift-1 {
+        0%   { transform: translate(0, 0)        rotate(0deg)  scale(1.00); opacity: 0.55; }
+        50%  { transform: translate(18px, -34px) rotate(14deg) scale(1.14); opacity: 0.92; }
+        100% { transform: translate(34px, -70px) rotate(26deg) scale(1.22); opacity: 0.7; }
+      }
+      @keyframes sp-drift-2 {
+        0%   { transform: translate(0, 0)         rotate(0deg)   scale(0.90); opacity: 0.5; }
+        50%  { transform: translate(-22px, 22px)  rotate(-12deg) scale(1.06); opacity: 0.88; }
+        100% { transform: translate(-42px, 50px)  rotate(-22deg) scale(1.15); opacity: 0.65; }
+      }
+
+      /* Every direct child (the screen content) sits above the background */
+      #side-panel > :not(.sp-bg-layer) {
+        position: relative;
+        z-index: 1;
+      }
+
+      /* ───────── Casino typography & controls inside the sidebar ───────── */
+      #side-panel h1,
+      #side-panel h2,
+      #side-panel h3 {
+        font-family: 'Cinzel', 'Playfair Display', 'Georgia', serif;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: var(--gold-bright);
+        text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5), 0 0 18px rgba(212, 175, 55, 0.15);
+      }
+      #side-panel h1 { font-size: 24px; margin: 0; font-weight: 700; }
+      #side-panel h2 {
+        font-size: 11px;
+        margin: 14px 16px 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.26em;
+        color: var(--gold-dim);
+        font-weight: 500;
+        font-family: 'Inter', sans-serif;
+      }
+      #side-panel h3 {
+        font-size: 17px;
+        margin: 0;
+        font-family: 'Cinzel', 'Playfair Display', serif;
+        font-weight: 600;
+      }
+
+      #side-panel .btn {
+        display: inline-block;
+        padding: 10px 22px;
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-weight: 600;
+        font-size: 13px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        border-radius: 4px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: all 0.18s ease;
+        outline: none;
+      }
+      #side-panel .btn-primary {
+        color: var(--ink);
+        background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 50%, var(--gold-dim) 100%);
+        border-color: var(--gold-dim);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+      }
+      #side-panel .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 14px rgba(212, 175, 55, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+      }
+      #side-panel .btn-primary:active { transform: translateY(0); }
+      #side-panel .btn-primary:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+      #side-panel .btn-secondary {
+        color: var(--cream);
+        background: transparent;
+        border-color: rgba(212, 175, 55, 0.4);
+      }
+      #side-panel .btn-secondary:hover {
+        background: rgba(212, 175, 55, 0.08);
+        border-color: var(--gold);
+      }
+
+      #side-panel input[type="text"] {
+        width: 100%;
+        padding: 9px 12px;
+        font-family: 'Georgia', serif;
+        font-size: 14px;
+        background: rgba(10, 5, 8, 0.65);
+        border: 1px solid rgba(212, 175, 55, 0.25);
+        border-radius: 3px;
+        color: var(--cream);
+        outline: none;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        box-sizing: border-box;
+      }
+      #side-panel input[type="text"]:focus {
+        border-color: var(--gold);
+        box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.15);
+      }
+      #side-panel label {
+        display: block;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--cream-dim);
+        margin: 0 0 6px 2px;
+      }
+
+      /* Screen wrapper inside the sidebar. Uses flex so each screen can
+         lay out its own header + scroll area + sticky footer. */
+      #side-panel .lobby-list-screen,
+      #side-panel .lobby-screen,
+      #side-panel .results-screen,
+      #side-panel .name-entry-screen {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        height: 100%;
+        padding: 0;
+        background: transparent;
+        box-shadow: none;
+        border-radius: 0;
+        max-width: none;
+        margin: 0;
+      }
+
+      /* ───────── Lobby waiting room ───────── */
+      #side-panel .players-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 12px 10px;
+      }
+      #side-panel .player-item {
+        position: relative;
+        padding: 10px 14px;
+        background: linear-gradient(180deg, rgba(90, 15, 30, 0.38) 0%, rgba(30, 6, 12, 0.45) 100%);
+        border: 1px solid rgba(212, 175, 55, 0.28);
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+      #side-panel .player-item.current-player {
+        border-color: var(--gold);
+        box-shadow: 0 2px 10px rgba(212, 175, 55, 0.15);
+      }
+      #side-panel .player-item .player-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--cream);
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 15px;
+      }
+      #side-panel .player-item .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        font-family: 'Inter', sans-serif;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        border-radius: 10px;
+        border: 1px solid currentColor;
+        background: rgba(10, 5, 8, 0.55);
+      }
+      #side-panel .player-item .badge.host { color: var(--gold-bright); }
+      #side-panel .player-item .badge.you { color: var(--accent-green); }
+      #side-panel .player-item.waiting-slot {
+        background: rgba(10, 5, 8, 0.35);
+        border-style: dashed;
+        border-color: rgba(212, 175, 55, 0.22);
+      }
+      #side-panel .player-item.waiting-slot .player-name {
+        color: var(--cream-dim);
+        font-style: italic;
+        font-family: 'Inter', sans-serif;
+      }
+
+      /* Back button in the side-header. Positioned to the left of the title. */
+      .side-header .back-btn {
+        position: absolute;
+        top: 8px;
+        left: 10px;
+        font-size: 20px;
+        line-height: 1;
+      }
+
+      /* ───────── Name-entry screen (first-time setup) ───────── */
+      .name-entry-body {
+        padding: 24px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .name-entry-body .ne-subtitle {
+        margin: 0;
+        text-align: center;
+        font-size: 13px;
+        color: var(--cream-dim);
+        letter-spacing: 0.04em;
+      }
+      .name-entry-body input[type="text"] {
+        font-size: 15px;
+        padding: 11px 14px;
+      }
+      .name-entry-body .wallet-badge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 8px 10px;
+        background: rgba(10, 5, 8, 0.55);
+        border: 1px solid rgba(212, 175, 55, 0.2);
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--cream-dim);
+        letter-spacing: 0.06em;
+      }
+      .name-entry-body .wallet-label {
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-size: 9px;
+      }
+      .name-entry-body .wallet-address {
+        color: var(--gold);
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+      }
+
+      /* Top header bar inside the sidebar */
+      .side-header {
+        position: relative;
+        flex-shrink: 0;
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        border-bottom: 1px solid rgba(212, 175, 55, 0.14);
+      }
+      /* Icon row sits at the very top. Icons align right by default. */
+      .side-header .top-actions {
+        display: flex;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+      /* Title below the icons — kept on a single line */
+      .side-header .title {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        white-space: nowrap;
+        padding: 0;
+      }
+      .side-header .title::before,
+      .side-header .title::after {
+        content: '♣';
+        color: var(--gold-dim);
+        font-size: 15px;
+      }
+      .side-header .welcome {
+        text-align: center;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--cream-dim);
+      }
+      .side-header .welcome .name {
+        color: var(--gold-bright);
+        font-weight: 600;
+        text-transform: none;
+        letter-spacing: 0.02em;
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 13px;
+        margin-left: 4px;
+      }
+      .icon-btn {
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(12, 6, 10, 0.55);
+        border: 1px solid rgba(212, 175, 55, 0.35);
+        border-radius: 6px;
+        color: var(--gold);
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.18s ease, border-color 0.18s ease, transform 0.15s ease;
+        outline: none;
+        padding: 0;
+      }
+      .icon-btn:hover {
+        background: rgba(212, 175, 55, 0.14);
+        border-color: var(--gold);
+        transform: translateY(-1px);
+      }
+
+      /* Middle scrolling content area */
+      .side-content {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 2px 0 8px;
+        min-height: 0;
+      }
+      .side-content::-webkit-scrollbar { width: 8px; }
+      .side-content::-webkit-scrollbar-thumb {
+        background: rgba(212, 175, 55, 0.3);
+        border-radius: 4px;
+      }
+
+      /* Sticky footer — Create Lobby button pinned to the bottom */
+      .side-footer {
+        flex-shrink: 0;
+        padding: 8px 14px 12px;
+        background: linear-gradient(0deg, rgba(8, 3, 6, 0.8) 0%, rgba(8, 3, 6, 0) 100%);
+        border-top: 1px solid rgba(212, 175, 55, 0.12);
+      }
+      .side-footer .btn {
+        width: 100%;
+      }
+
+      /* Lobby list wrapper */
+      .lobby-list,
+      .resume-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 12px 10px;
+      }
+
+      /* ───────── Lobby card (shared by Open + Active Games) ───────── */
+      .lobby-card {
+        position: relative;
+        padding: 10px 12px 10px;
+        background: linear-gradient(180deg, rgba(90, 15, 30, 0.38) 0%, rgba(30, 6, 12, 0.45) 100%);
+        backdrop-filter: blur(2px);
+        border: 1px solid rgba(212, 175, 55, 0.28);
+        border-radius: 6px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(245, 200, 66, 0.05);
+        overflow: hidden;
+        transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+      }
+      .lobby-card:hover {
+        /* Reserve border-color: var(--gold) for .active — hover uses a
+           subtle background lift instead so the two states don't read the
+           same. */
+        background: linear-gradient(180deg, rgba(110, 22, 40, 0.48) 0%, rgba(40, 8, 16, 0.55) 100%);
+        transform: translateY(-1px);
+      }
+      /* Giant suit watermark in corner */
+      .lobby-card::after {
+        content: '♠';
+        position: absolute;
+        right: -14px;
+        bottom: -22px;
+        font-size: 96px;
+        color: rgba(212, 175, 55, 0.05);
+        pointer-events: none;
+        line-height: 1;
+      }
+      .lobby-card.resume-card::after { content: '♥'; color: rgba(194, 64, 64, 0.07); }
+
+      .resume-dismiss-btn {
+        position: absolute;
+        top: 6px;
+        right: 8px;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        line-height: 1;
+        font-size: 18px;
+        background: transparent;
+        border: none;
+        border-radius: 50%;
+        color: rgba(255, 255, 255, 0.4);
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .resume-dismiss-btn:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.9);
+      }
+
+      /* Active/foreground game — thicker gold border + outer glow so the
+         user can tell at a glance which card corresponds to whatever is
+         currently on the 3D canvas. Only one .lobby-card.active exists at
+         any moment (tied to GameSessionManager.foregroundLobbyId). */
+      .lobby-card.active {
+        border-color: var(--gold);
+        border-width: 2px;
+        box-shadow:
+          0 0 0 3px rgba(212, 175, 55, 0.22),
+          0 2px 14px rgba(0, 0, 0, 0.45),
+          inset 0 1px 0 rgba(245, 200, 66, 0.12);
+      }
+
+      /* Card title uses the entire row; status badge drops below it. */
+      #side-panel .lobby-header,
+      .lobby-card .lobby-header {
+        background: transparent;
+        padding: 0;
+        border-radius: 0;
+        box-shadow: none;
+        margin-bottom: 4px;
+      }
+      .lobby-card h3 {
+        display: block;
+        font-size: 17px;
+        color: var(--cream);
+        letter-spacing: 0.02em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        margin: 0 0 6px 0;
+      }
+
+      /* Status badge — dark base so gold/green/red text stays readable */
+      .lobby-status {
+        display: inline-block;
+        padding: 3px 10px;
+        font-family: 'Georgia', serif;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        border-radius: 10px;
+        border: 1px solid currentColor;
+        background: rgba(12, 6, 10, 0.75);
+      }
+      .lobby-status.open,
+      .lobby-status.waiting { color: var(--gold-bright); }
+      .lobby-status.in_progress { color: var(--accent-green); }
+      .lobby-status.your-turn {
+        color: var(--ink);
+        background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 100%);
+        border-color: var(--gold-dim);
+        animation: status-pulse 1.8s ease-in-out infinite;
+        font-weight: 700;
+      }
+      @keyframes status-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(245, 200, 66, 0.0); }
+        50%      { box-shadow: 0 0 0 5px rgba(245, 200, 66, 0.28); }
+      }
+      .lobby-status.finished { color: var(--cream-dim); }
+
+      /* ───────── Mini hand preview ───────── */
+      .mini-hand {
+        display: flex;
+        justify-content: center;
+        gap: 2px;
+        padding: 4px 0 6px;
+        margin: 2px -2px 0;
+      }
+      .mini-card {
+        position: relative;
+        width: 28px;
+        height: 40px;
+        background: linear-gradient(180deg, #fdfbf2 0%, #e8e0cc 100%);
+        border: 1px solid rgba(10, 5, 8, 0.4);
+        border-radius: 3px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+        font-family: 'Georgia', serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        color: #1a0910;
+        flex-shrink: 0;
+        transform-origin: bottom center;
+      }
+      .mini-card.red { color: #b53333; }
+      .mini-card .mc-rank {
+        position: absolute;
+        top: 2px;
+        left: 3px;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .mini-card .mc-suit {
+        font-size: 14px;
+        line-height: 1;
+      }
+      /* Slight fan rotation for a casino-hand feel. Beyond 5 cards we
+         render a `+N` chip instead, so only the first 5 need rotations. */
+      .mini-card:nth-child(1) { transform: rotate(-6deg) translateY(2px); }
+      .mini-card:nth-child(2) { transform: rotate(-3deg); }
+      .mini-card:nth-child(3) { transform: rotate(0deg); }
+      .mini-card:nth-child(4) { transform: rotate(3deg); }
+      .mini-card:nth-child(5) { transform: rotate(6deg) translateY(2px); }
+
+      /* `+N` chip shown when the real hand is larger than the fan cap. */
+      .mini-card-more {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 22px;
+        height: 40px;
+        padding: 0 5px;
+        margin-left: 2px;
+        background: rgba(12, 6, 10, 0.75);
+        border: 1px solid rgba(212, 175, 55, 0.35);
+        border-radius: 3px;
+        color: var(--gold-bright);
+        font-family: 'Inter', sans-serif;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        flex-shrink: 0;
+      }
+
+      .lobby-info {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: 10px;
+        font-size: 12px;
+        color: var(--cream-dim);
+      }
+      .lobby-info .info-item {
+        display: flex;
+        justify-content: space-between;
+      }
+      .lobby-info .info-item .label {
+        color: rgba(240, 228, 200, 0.55);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-size: 10px;
+      }
+      .lobby-info .info-item .value {
+        color: var(--cream);
+        font-size: 12px;
+      }
+
+      /* Score row with dealer chip marking whose turn it is */
+      .score-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 10px;
+        margin-bottom: 8px;
+        background: rgba(10, 5, 8, 0.55);
+        border: 1px solid rgba(212, 175, 55, 0.18);
+        border-radius: 5px;
+        font-size: 13px;
+      }
+      .score-row .score-side {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 4px 10px 10px 4px;
+        border-radius: 4px;
+        position: relative;
+        transition: background 0.2s ease;
+      }
+      .score-row .score-side.them {
+        align-items: flex-end;
+        padding: 4px 4px 10px 10px;
+      }
+      .score-row .score-side .name {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--cream-dim);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: 'Inter', sans-serif;
+        font-weight: 500;
+      }
+      .score-row .score-side .books {
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--gold-bright);
+        line-height: 1;
+        font-family: 'Cinzel', 'Georgia', serif;
+      }
+      .score-row .score-side.me .name { color: var(--gold); }
+
+      /* Active side: gold underline (with breathing room under the digit) */
+      .score-row .score-side.active {
+        background: linear-gradient(180deg, rgba(245, 200, 66, 0.08) 0%, rgba(212, 175, 55, 0.02) 100%);
+        box-shadow: inset 0 -2px 0 var(--gold);
+      }
+      .score-row .score-side.active .name {
+        color: var(--gold-bright);
+      }
+
+      /* Dealer chip — small gold disc. Placed inline with the active name. */
+      .dealer-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 40% 35%, var(--gold-bright) 0%, var(--gold) 50%, var(--gold-dim) 100%);
+        border: 1.5px solid rgba(12, 6, 10, 0.6);
+        color: var(--ink);
+        font-family: 'Georgia', serif;
+        font-size: 8px;
+        font-weight: 800;
+        line-height: 1;
+        box-shadow: 0 0 8px rgba(245, 200, 66, 0.5);
+        flex-shrink: 0;
+      }
+      /* Point the arrow INTO the score row (toward the opposite player) —
+         chip on "me" side points right; chip on "them" side points left. */
+      .score-row .score-side.them .dealer-chip {
+        transform: scaleX(-1);
+      }
+      .score-row .score-side.active .dealer-chip {
+        animation: chip-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes chip-pulse {
+        0%, 100% { box-shadow: 0 0 6px rgba(245, 200, 66, 0.35); }
+        50%      { box-shadow: 0 0 14px rgba(245, 200, 66, 0.9); }
+      }
+
+      .score-row .divider {
+        font-size: 20px;
+        color: rgba(212, 175, 55, 0.45);
+      }
+
+      .lobby-card .btn {
+        width: 100%;
+      }
+
+      .empty-state {
+        padding: 20px 18px;
+        text-align: center;
+        color: var(--cream-dim);
+        font-style: italic;
+        font-size: 13px;
+      }
+
+      /* ───────── Create Lobby modal ───────── */
+      .create-lobby-modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(5, 2, 5, 0.7);
+        backdrop-filter: blur(4px);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .create-lobby-modal {
+        width: 360px;
+        max-width: 92vw;
+        padding: 22px 24px;
+        background: linear-gradient(180deg, #2a0810 0%, #1a0910 100%);
+        border: 1px solid var(--gold);
+        border-radius: 8px;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.7), 0 0 40px rgba(212, 175, 55, 0.12);
+        color: var(--cream);
+      }
+      .create-lobby-modal .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+      .create-lobby-modal .modal-header h2 {
+        margin: 0;
+        letter-spacing: 0.08em;
+        color: var(--gold-bright);
+        font-size: 18px;
+      }
+      .create-lobby-modal .modal-close-btn {
+        background: transparent;
+        border: none;
+        color: var(--cream-dim);
+        font-size: 24px;
+        cursor: pointer;
+        line-height: 1;
+      }
+      .create-lobby-modal .form-group {
+        margin-bottom: 14px;
+      }
+      .create-lobby-modal .form-hint {
+        font-size: 11px;
+        color: var(--cream-dim);
+        font-style: italic;
+      }
+      .create-lobby-modal .modal-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 4px;
+      }
+      .create-lobby-modal .modal-actions .btn { flex: 1; }
+
+      /* ───────── Info / Help modals ───────── */
+      .info-modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(5, 2, 5, 0.75);
+        backdrop-filter: blur(4px);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .info-modal {
+        position: relative;
+        width: 340px;
+        max-width: 92vw;
+        max-height: 85vh;
+        overflow-y: auto;
+        padding: 22px 24px 18px;
+        background: linear-gradient(180deg, #2a0810 0%, #1a0910 100%);
+        border: 1px solid var(--gold);
+        border-radius: 8px;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.7), 0 0 40px rgba(212, 175, 55, 0.12);
+        color: var(--cream);
+      }
+      .info-modal--wide { width: 460px; }
+      .info-modal .modal-close-btn {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        background: transparent;
+        border: none;
+        color: var(--cream-dim);
+        font-size: 22px;
+        cursor: pointer;
+        line-height: 1;
+      }
+      .info-modal-title {
+        margin: 0 0 10px;
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 20px;
+        letter-spacing: 0.08em;
+        color: var(--gold-bright);
+      }
+      .info-modal-desc {
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--cream-dim);
+        margin: 0 0 18px;
+      }
+      .info-modal-desc strong { color: var(--gold); }
+      .info-modal-link {
+        display: block;
+        text-align: center;
+        text-decoration: none;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+
+      /* How-to-play steps */
+      .help-steps {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .help-step {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 12px;
+        background: rgba(10, 5, 8, 0.55);
+        border: 1px solid rgba(212, 175, 55, 0.15);
+        border-radius: 6px;
+      }
+      .help-visual {
+        flex-shrink: 0;
+        width: 130px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .help-hand {
+        gap: 1px !important;
+        padding: 2px 0 !important;
+        margin: 0 !important;
+      }
+      .help-hand .mini-card {
+        width: 22px;
+        height: 32px;
+      }
+      .help-hand .mini-card { transform: none !important; }
+      .help-hand .mini-card .mc-rank { font-size: 7px; top: 1px; left: 2px; }
+      .help-hand .mini-card .mc-suit { font-size: 11px; }
+      .help-text {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .help-text strong {
+        font-family: 'Cinzel', 'Georgia', serif;
+        font-size: 13px;
+        color: var(--gold-bright);
+        letter-spacing: 0.06em;
+      }
+      .help-text span {
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--cream-dim);
+      }
+
+      /* Ask example row */
+      .help-ask-example {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .help-ask-example .mini-card {
+        width: 26px;
+        height: 36px;
+        transform: none !important;
+      }
+      .help-ask-example .mini-card .mc-rank { font-size: 8px; top: 2px; left: 2px; }
+      .help-ask-example .mini-card .mc-suit { font-size: 12px; }
+      .help-card-highlight {
+        box-shadow: 0 0 8px rgba(245, 200, 66, 0.6);
+        border-color: var(--gold) !important;
+      }
+      .help-card-facedown {
+        background: linear-gradient(135deg, #3a1520 0%, #2a0810 100%) !important;
+        border-color: rgba(212, 175, 55, 0.35) !important;
+        color: var(--gold) !important;
+      }
+      .help-card-facedown .mc-suit {
+        color: var(--gold-dim);
+        font-family: 'Inter', sans-serif;
+        font-weight: 700;
+      }
+      .help-arrow {
+        font-size: 16px;
+        color: var(--gold);
+      }
+      .help-speech {
+        font-size: 12px;
+        font-style: italic;
+        color: var(--cream);
+        background: rgba(212, 175, 55, 0.12);
+        border: 1px solid rgba(212, 175, 55, 0.25);
+        border-radius: 4px;
+        padding: 3px 8px;
+        white-space: nowrap;
+      }
+
+      /* Book example */
+      .help-book-example {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+      }
+      .help-book-example .mini-card {
+        width: 26px;
+        height: 36px;
+        transform: none !important;
+        border-color: var(--gold) !important;
+        box-shadow: 0 0 6px rgba(245, 200, 66, 0.35);
+      }
+      .help-book-example .mini-card .mc-rank { font-size: 8px; top: 2px; left: 2px; }
+      .help-book-example .mini-card .mc-suit { font-size: 12px; }
+      .help-book-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--gold-bright);
+        margin-left: 4px;
+        white-space: nowrap;
+      }
+
+      /* Trophy icon */
+      .help-trophy {
+        font-size: 36px;
+        filter: drop-shadow(0 0 8px rgba(245, 200, 66, 0.4));
+      }
+
+      /* Hamburger toggle — always visible, top-right over the canvas */
+      #side-toggle {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        width: 44px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 60;
+        background: rgba(25, 25, 40, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 10px;
+        color: #facc15;
+        font-size: 22px;
+        cursor: pointer;
+        transition: right 0.25s ease, background 0.2s ease;
+        user-select: none;
+      }
+      #side-toggle:hover { background: rgba(40, 40, 60, 0.95); }
+
+      /* Desktop: side panel always open, hamburger hidden (panel is fixed). */
+      @media (min-width: 1024px) {
+        :root { --side-panel-width: 340px; }
+        #side-panel { transform: translateX(0); }
+        #side-toggle { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KJX5XHXL"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+    <div id="three-canvas-container"></div>
+    <div id="idle-overlay" aria-hidden="true">
+      <div class="idle-card">
+        <div class="idle-symbol">♣</div>
+        <div class="idle-title">Go Fish</div>
+        <div class="idle-tagline">A ZK Card Game on the Midnight Network</div>
+        <div class="idle-sub">Use the menu to start a game</div>
+      </div>
+    </div>
+    <button id="side-toggle" type="button" aria-label="Toggle menu" title="Toggle menu">☰</button>
+    <aside id="side-panel"></aside>
+    <script>
+      (function() {
+        var host = window.location.hostname;
+        var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        if (host !== "localhost" && host !== "127.0.0.1") {
+          window.MQTT_ENGINE_BROKER_URL = protocol + "//" + host + "/mqtt";
+          window.MQTT_BATCHER_BROKER_URL = protocol + "//" + host + "/mqtt-batcher";
+        }
+      })();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

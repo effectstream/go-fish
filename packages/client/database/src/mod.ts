@@ -2,12 +2,13 @@
  * Database module - exports all database queries and types
  */
 
-import type { DBMigrations } from "@paimaexample/runtime";
+import type { DBMigrations } from "@effectstream/runtime";
 
 // Export pgtyped query functions
 export * from './lobby-queries.queries.ts';
 export * from './game-queries.queries.ts';
 export * from './user-queries.queries.ts';
+export * from './midnight-games-queries.queries.ts';
 
 // Migration table for database schema
 // In v0.3.128+, this is now an array of migration objects
@@ -29,11 +30,11 @@ CREATE TABLE IF NOT EXISTS user_game_state (
 );
 
 -- Lobbies table (game lobbies before the game starts)
+-- Go Fish is always a 2-player game; max_players is a code constant, not a column.
 CREATE TABLE IF NOT EXISTS lobbies (
     lobby_id TEXT PRIMARY KEY,
     lobby_name TEXT NOT NULL,
     host_account_id INTEGER NOT NULL,
-    max_players INTEGER NOT NULL DEFAULT 4,
     status TEXT NOT NULL DEFAULT 'open',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
@@ -41,11 +42,11 @@ CREATE TABLE IF NOT EXISTS lobbies (
 );
 
 -- Lobby players table (tracks players in each lobby)
+-- No ready flag: join auto-starts the game when the lobby fills.
 CREATE TABLE IF NOT EXISTS lobby_players (
     lobby_id TEXT NOT NULL,
     account_id INTEGER NOT NULL,
     player_name TEXT NOT NULL,
-    is_ready BOOLEAN DEFAULT false,
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (lobby_id, account_id)
 );
@@ -108,6 +109,50 @@ CREATE TABLE IF NOT EXISTS go_fish_leaderboard (
 -- Track each player's Midnight shielded address for leaderboard attribution
 ALTER TABLE lobby_players
   ADD COLUMN IF NOT EXISTS midnight_address TEXT;
+    `,
+  },
+  {
+    name: "3_simplify_lobbies",
+    sql: `
+-- Simplify the lobby model to a fixed 2-player game with auto-start on join.
+-- Drops the per-lobby max_players column and the per-player ready flag.
+ALTER TABLE lobbies       DROP COLUMN IF EXISTS max_players;
+ALTER TABLE lobby_players DROP COLUMN IF EXISTS is_ready;
+    `,
+  },
+  {
+    name: "4_host_mask_applied",
+    sql: `
+-- Host applies their Midnight mask immediately after createdLobby. While the
+-- mask is still being proved / landed on-chain, the lobby is "Preparing" and
+-- cannot be joined. The host flips this flag via the hostReady grammar tx.
+ALTER TABLE lobbies
+  ADD COLUMN IF NOT EXISTS host_mask_applied BOOLEAN NOT NULL DEFAULT false;
+    `,
+  },
+  {
+    name: "5_midnight_games",
+    sql: `
+-- Games projection driven purely from Midnight ledger diffs. No foreign keys;
+-- no strong consistency with the EVM tables. evm_id is the ASCII decode of
+-- midnight_id (the Bytes<32> key the contract uses), not a cross-reference.
+CREATE TABLE IF NOT EXISTS midnight_games (
+    midnight_id    TEXT PRIMARY KEY,
+    evm_id         TEXT UNIQUE,
+    host_pubkey    TEXT,
+    joiner_pubkey  TEXT,
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at       TIMESTAMP,
+    state          TEXT NOT NULL DEFAULT 'ongoing'
+);
+CREATE INDEX IF NOT EXISTS idx_midnight_games_state ON midnight_games(state);
+CREATE INDEX IF NOT EXISTS idx_midnight_games_evm_id ON midnight_games(evm_id);
+    `,
+  },
+  {
+    name: "6_midnight_games_scored",
+    sql: `
+ALTER TABLE midnight_games ADD COLUMN IF NOT EXISTS scored BOOLEAN NOT NULL DEFAULT false;
     `,
   },
 ];

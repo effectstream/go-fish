@@ -13,17 +13,16 @@
  * - GET /health - Health check endpoint
  */
 
-import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 
 const PORT = 8000;
 const BATCHER_SEED = "0000000000000000000000000000000000000000000000000000000000000001";
 
 // Indexer URLs - connect directly to indexer v3 API for health checks
 // The batcher doesn't need SDK compatibility, it just needs to verify the indexer is running
-const INDEXER_HTTP_URL = Deno.env.get("INDEXER_HTTP_URL") || "http://127.0.0.1:8088/api/v3/graphql";
-const INDEXER_WS_URL = Deno.env.get("INDEXER_WS_URL") || "ws://127.0.0.1:8088/api/v3/graphql/ws";
-const PROOF_SERVER_URL = Deno.env.get("PROOF_SERVER_URL") || "http://127.0.0.1:6300";
-const NODE_URL = Deno.env.get("NODE_URL") || "http://127.0.0.1:9944";
+const INDEXER_HTTP_URL = process.env.INDEXER_HTTP_URL || "http://127.0.0.1:8088/api/v3/graphql";
+const INDEXER_WS_URL = process.env.INDEXER_WS_URL || "ws://127.0.0.1:8088/api/v3/graphql/ws";
+const PROOF_SERVER_URL = process.env.PROOF_SERVER_URL || "http://127.0.0.1:6300";
+const NODE_URL = process.env.NODE_URL || "http://127.0.0.1:9944";
 
 // CORS headers for cross-origin requests
 const corsHeaders = {
@@ -186,19 +185,19 @@ async function main() {
 
   console.log(`[ts-batcher] Starting HTTP server on port ${PORT}...`);
 
-  await serve(handleRequest, {
+  Bun.serve({
     port: PORT,
-    onListen: () => {
-      console.log(`[ts-batcher] Server running at http://localhost:${PORT}`);
-      console.log("[ts-batcher] Endpoints:");
-      console.log(`[ts-batcher]   GET  /address  - Get batcher address`);
-      console.log(`[ts-batcher]   POST /submitTx - Submit transaction`);
-      console.log(`[ts-batcher]   GET  /health   - Health check`);
-    },
+    fetch: handleRequest,
   });
+
+  console.log(`[ts-batcher] Server running at http://localhost:${PORT}`);
+  console.log("[ts-batcher] Endpoints:");
+  console.log(`[ts-batcher]   GET  /address  - Get batcher address`);
+  console.log(`[ts-batcher]   POST /submitTx - Submit transaction`);
+  console.log(`[ts-batcher]   GET  /health   - Health check`);
 }
 
 main().catch((error) => {
   console.error("[ts-batcher] Fatal error:", error);
-  Deno.exit(1);
+  process.exit(1);
 });

@@ -1,0 +1,836 @@
+/**
+ * Midnight Bridge - Frontend interface to Midnight Go Fish contract
+ * Handles circuit calls, witness generation, and proof submission
+ *
+ * ✅ SECURITY: This is the CORRECT architecture for Mental Poker
+ *
+ * Frontend responsibilities:
+ * - Generate player secrets locally (NEVER send to backend)
+ * - Store secrets securely in encrypted localStorage (via PlayerKeyManager)
+ * - Execute ZK circuits in browser
+ * - Generate proofs
+ * - Submit proofs to backend for verification
+ *
+ * The PlayerKeyManager handles:
+ * - Cryptographically secure secret generation (full Jubjub scalar field)
+ * - Per-game key isolation
+ * - Persistent storage with session recovery
+ * - Automatic cleanup of expired sessions
+ */
+
+import { Contract } from '../../packages/shared/contracts/midnight/go-fish-contract/src/managed/contract/index.js';
+import type { CircuitContext, WitnessContext } from '@midnight-ntwrk/compact-runtime';
+import {
+  PlayerKeyManager,
+  JUBJUB_SCALAR_FIELD_ORDER,
+  modInverse,
+} from './services/PlayerKeyManager';
+
+// Ledger type placeholder (empty in this contract)
+type Ledger = Record<string, never>;
+import {
+  sampleContractAddress,
+  createConstructorContext,
+  createCircuitContext,
+} from '@midnight-ntwrk/compact-runtime';
+
+// Private state type - now managed by PlayerKeyManager
+export type PrivateState = {
+  playerSecretKey?: bigint;
+  shuffleSeed?: Uint8Array;
+  currentGameId?: string; // Track which game we're working with
+  currentPlayerId?: 1 | 2;
+};
+
+// Midnight contract and state (using any for flexibility with Contract's generic types)
+let contract: any = null;
+let circuitContext: CircuitContext<PrivateState> | null = null;
+let privateState: PrivateState = {};
+
+// Current game context (for witness functions)
+let currentGameId: string | null = null;
+let currentPlayerId: (1 | 2) | null = null;
+
+/**
+ * Initialize Midnight contract (call this once on app startup)
+ */
+export async function initializeMidnightContract(): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    console.log('[MidnightBridge] Initializing Midnight contract...');
+
+    // Create contract instance with witnesses
+    contract = new Contract(witnesses);
+
+    // Initialize contract state (constructor creates static deck)
+    // For local simulation, pass an EncodedCoinPublicKey with 32 bytes directly
+    // This bypasses the string encoding that expects a specific format
+    const dummyCoinPublicKey = { bytes: new Uint8Array(32) };
+    const initContext = createConstructorContext({}, dummyCoinPublicKey);
+    const { currentPrivateState, currentContractState, currentZswapLocalState } =
+      contract.initialState(initContext);
+
+    // Create circuit context using the helper function
+    circuitContext = createCircuitContext(
+      sampleContractAddress(),
+      currentZswapLocalState,
+      currentContractState,
+      currentPrivateState,
+    );
+
+    // Initialize the static deck mappings (required before any game can be created)
+    // This sets up reverseDeckCurveToCard and deckCurveToCard for all 21 cards
+    console.log('[MidnightBridge] Initializing static deck mappings...');
+    const initDeckResult = contract.provableCircuits.init_deck(circuitContext);
+    circuitContext = initDeckResult.context;
+    console.log('[MidnightBridge] Static deck initialized');
+
+    console.log('[MidnightBridge] Contract initialized successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] Failed to initialize contract:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Check if Midnight contract is initialized
+ */
+export function isMidnightConnected(): boolean {
+  return contract !== null && circuitContext !== null;
+}
+
+/**
+ * Set current game context for witness functions
+ * Must be called before any circuit operations
+ */
+export function setGameContext(gameId: string, playerId: 1 | 2): void {
+  currentGameId = gameId;
+  currentPlayerId = playerId;
+  console.log(`[MidnightBridge] Game context set: gameId=${gameId}, playerId=${playerId}`);
+}
+
+/**
+ * Witness implementations for client-side proof generation
+ *
+ * These use PlayerKeyManager for secure, per-game key management:
+ * - Secrets are generated using crypto.getRandomValues() over full Jubjub scalar field
+ * - Keys are isolated per game (different secret for each game)
+ * - Keys persist in encrypted localStorage for session recovery
+ * Type is any to avoid complex generic type mismatches with the Contract class
+ */
+export const witnesses: any = {
+  getFieldInverse: (
+    context: WitnessContext<Ledger, PrivateState>,
+    x: bigint
+  ): [PrivateState, bigint] => {
+    // Use modInverse from PlayerKeyManager
+    const inverse = modInverse(x, JUBJUB_SCALAR_FIELD_ORDER);
+    return [context.privateState, inverse];
+  },
+
+  /**
+   * V3 (2026-04-17): Split a card index (0..20) into [suit, rank] where
+   * cardIndex = suit*7 + rank. Used by `afterGoFish` to recover a drawn
+   * card's rank from its decrypted curve point. Circuit verifies the
+   * reconstruction, so a malicious witness can't cheat.
+   *
+   * Return type MUST be `[bigint, bigint]` — compact-runtime 0.15.0
+   * marshals `Uint<N>` across the witness boundary as bigint; returning
+   * plain numbers throws "expected value of type [Uint<0..256>,
+   * Uint<0..256>] but received [ 1, 3 ]".
+   */
+  wit_split_card_index: (
+    context: WitnessContext<Ledger, PrivateState>,
+    cardIndex: bigint,
+  ): [PrivateState, [bigint, bigint]] => {
+    if (cardIndex < 0n || cardIndex > 20n) {
+      throw new Error(
+        `[MidnightBridge] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`,
+      );
+    }
+    const n = Number(cardIndex);
+    return [context.privateState, [BigInt(Math.floor(n / 7)), BigInt(n % 7)]];
+  },
+
+  /**
+   * V4.1 (2026-04-18): admin secret for owner-only circuits (initialize,
+   * cleanupGame). The local-simulation Contract constructor validates that
+   * every witness name declared in the compact source has an implementation
+   * here — so this MUST be defined even though the frontend never runs
+   * owner-only circuits through midnightBridge (those go through an admin
+   * tool path). Returns a throwing stub: if anything ever does try to run
+   * an admin circuit via this path, fail loudly rather than authenticate
+   * as a phantom admin.
+   */
+  admin_secret_key: (
+    context: WitnessContext<Ledger, PrivateState>,
+  ): [PrivateState, bigint] => {
+    throw new Error(
+      '[MidnightBridge] admin_secret_key: not supported in the local-simulation bridge. ' +
+      'Admin circuits must use the shared witnesses module via GoFishContractService.',
+    );
+  },
+
+  player_secret_key: (
+    context: WitnessContext<Ledger, PrivateState>,
+    gameIdBytes: Uint8Array,
+    player: bigint
+  ): [PrivateState, bigint] => {
+    // Convert gameId bytes to string for PlayerKeyManager
+    const gameId = currentGameId || new TextDecoder().decode(gameIdBytes).replace(/\0+$/, '');
+    const playerId = currentPlayerId || (Number(player) as 1 | 2);
+
+    // Get secret from PlayerKeyManager (generates if not exists)
+    const secret = PlayerKeyManager.getPlayerSecret(gameId, playerId);
+
+    // Also store in privateState for backwards compatibility
+    privateState.playerSecretKey = secret;
+
+    console.log(`[MidnightBridge] player_secret_key witness called for game=${gameId}, player=${playerId}`);
+    return [context.privateState, secret];
+  },
+
+  shuffle_seed: (
+    context: WitnessContext<Ledger, PrivateState>,
+    gameIdBytes: Uint8Array,
+    player: bigint
+  ): [PrivateState, Uint8Array] => {
+    // Convert gameId bytes to string for PlayerKeyManager
+    const gameId = currentGameId || new TextDecoder().decode(gameIdBytes).replace(/\0+$/, '');
+    const playerId = currentPlayerId || (Number(player) as 1 | 2);
+
+    // Get shuffle seed from PlayerKeyManager (generates if not exists)
+    const seed = PlayerKeyManager.getShuffleSeed(gameId, playerId);
+
+    // Also store in privateState for backwards compatibility
+    privateState.shuffleSeed = seed;
+
+    console.log(`[MidnightBridge] shuffle_seed witness called for game=${gameId}, player=${playerId}`);
+    return [context.privateState, seed];
+  },
+
+  get_sorted_deck_witness: (
+    context: WitnessContext<Ledger, PrivateState>,
+    input: { x: bigint; y: bigint }[]
+  ): [PrivateState, { x: bigint; y: bigint }[]] => {
+    // Assign random weights and sort (shuffles the deck)
+    const mappedPoints = input.map((point) => ({
+      x: point.x,
+      y: point.y,
+      weight: Math.floor(Math.random() * 1000000) | 0,
+    }));
+
+    // Bubble sort by weight
+    for (let i = 0; i < input.length; i++) {
+      for (let j = i + 1; j < input.length; j++) {
+        if (mappedPoints[i]!.weight > mappedPoints[j]!.weight) {
+          const temp = input[i];
+          input[i] = input[j]!;
+          input[j] = temp!;
+        }
+      }
+    }
+    return [context.privateState, mappedPoints.map((x) => ({ x: x.x, y: x.y }))];
+  },
+};
+
+/**
+ * Convert lobbyId to gameId (deterministic hash)
+ */
+export function lobbyIdToGameId(lobbyId: string): Uint8Array {
+  // In production, use proper keccak256 hash
+  // For now, use a simple encoding
+  const encoder = new TextEncoder();
+  const encoded = encoder.encode(lobbyId);
+  const gameId = new Uint8Array(32);
+  gameId.set(encoded.slice(0, Math.min(32, encoded.length)));
+  return gameId;
+}
+
+/**
+ * Apply mask to the deck (Setup phase - both players must call)
+ */
+export async function applyMask(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] applyMask(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    // Call contract circuit
+    const result = contract.provableCircuits.applyMask(
+      circuitContext,
+      gameId,
+      BigInt(playerId)
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    console.log('[MidnightBridge] applyMask succeeded');
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] applyMask failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Deal cards to opponent (Setup phase - both players must call)
+ */
+export async function dealCards(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] dealCards(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    // Call contract circuit
+    const result = contract.provableCircuits.dealCards(
+      circuitContext,
+      gameId,
+      BigInt(playerId)
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    console.log('[MidnightBridge] dealCards succeeded');
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] dealCards failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V4.3: Start the game — transition phase from Setup to TurnStart.
+ *
+ * Called after both players' dealCards transactions are on-chain. The
+ * contract dedups via `assert(phase == Setup)`, so whichever caller lands
+ * first wins; the other is rejected with "Game already started" and handled
+ * as success by the caller (phase has already transitioned).
+ */
+export async function startGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] startGame(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    const result = contract.provableCircuits.startGame(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+    );
+    circuitContext = result.context;
+
+    console.log('[MidnightBridge] startGame succeeded');
+    return { success: true };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    // Self-dedup: the other player already transitioned phase — treat as success.
+    if (msg.includes('Game already started') || msg.includes('already started')) {
+      console.log('[MidnightBridge] startGame: phase already transitioned — treating as success');
+      return { success: true };
+    }
+    console.error('[MidnightBridge] startGame failed:', error);
+    return { success: false, errorMessage: msg };
+  }
+}
+
+/**
+ * Ask opponent for cards of a specific rank
+ */
+export async function askForCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+  targetRank: number
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] askForCard(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${targetRank})`);
+
+    // Call contract circuit
+    const result = contract.provableCircuits.askForCard(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      BigInt(targetRank)
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    console.log('[MidnightBridge] askForCard succeeded');
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] askForCard failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Respond to opponent's ask (transfer cards or go fish)
+ */
+export async function respondToAsk(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<{ success: boolean; hasCards?: boolean; count?: number; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] respondToAsk(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    // Call contract circuit - returns [hasCards: boolean, count: bigint]
+    const result = contract.provableCircuits.respondToAsk(
+      circuitContext,
+      gameId,
+      BigInt(playerId)
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    const [hasCards, count] = result.result;
+
+    console.log(`[MidnightBridge] respondToAsk succeeded: hasCards=${hasCards}, count=${count}`);
+    return { success: true, hasCards, count: Number(count) };
+  } catch (error) {
+    console.error('[MidnightBridge] respondToAsk failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+// goFish() deleted — no goFish circuit exists in the compiled contract.
+// respondToAsk handles the draw internally; the turn flow is:
+// askForCard → respondToAsk → (if WaitForDrawCheck) afterGoFish.
+
+/**
+ * Complete the go fish action — contract v3 decrypts the drawn card
+ * internally and determines drewRequestedCard (game.compact:451-510).
+ */
+export async function afterGoFish(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+
+    setGameContext(lobbyId, playerId);
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+
+    console.log(`[MidnightBridge] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    const result = contract.provableCircuits.afterGoFish(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    console.log('[MidnightBridge] afterGoFish succeeded');
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] afterGoFish failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.1: restored. Asker's frontend calls this after a successful respondToAsk
+ * transfer to score any resulting book at the just-asked rank.
+ */
+export async function checkAndScoreBook(
+  lobbyId: string,
+  playerId: 1 | 2,
+  targetRank: number,
+): Promise<{ success: boolean; scored?: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = contract.provableCircuits.checkAndScoreBook(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      BigInt(targetRank),
+    );
+    circuitContext = result.context;
+    return { success: true, scored: Boolean(result.result) };
+  } catch (error) {
+    console.error('[MidnightBridge] checkAndScoreBook failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.3: empty-hand draw request. Caller has 0 cards, deck has cards.
+ * Opponent resolves with `drawCard`.
+ */
+export async function requestToDrawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.requestToDrawCard(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] requestToDrawCard failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.3: opponent fulfils an empty-hand draw request. Caller is the
+ * NON-asking player.
+ */
+export async function drawCard(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.drawCard(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] drawCard failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V3.3: empty-hand AND empty-deck skip. Just switches turn.
+ */
+export async function skipTurn(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.skipTurn(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      now,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] skipTurn failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Voluntarily end the game — the caller concedes. Winner resolution:
+ *   - `phase == Setup`  → winner = 0 (draw; neither player gains books)
+ *   - `phase ∈ {TurnStart, WaitFor*}` → winner = opponent
+ *   - `phase == GameOver` → reverts "Game is already over"
+ * `now` is bound by the contract's `assertNowWithinWindow` helper:
+ *   `blockTime - 240s ≤ now ≤ blockTime + 120s`.
+ */
+export async function concede(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const nowSecs = BigInt(Math.floor(Date.now() / 1000));
+    const result = contract.provableCircuits.concede(
+      circuitContext,
+      gameId,
+      BigInt(playerId),
+      nowSecs,
+    );
+    circuitContext = result.context;
+    return { success: true };
+  } catch (error) {
+    console.error('[MidnightBridge] concede failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * V4.2: detect and finalize exhaustion game-over. Returns the contract's
+ * boolean verdict ("did this call end the game?"). Caller is any player
+ * (no playerId argument on the circuit — just gameId).
+ */
+export async function checkAndEndGame(
+  lobbyId: string,
+  playerId: 1 | 2,
+): Promise<{ success: boolean; ended?: boolean; errorMessage?: string }> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return { success: false, errorMessage: 'Midnight contract not initialized' };
+    }
+    setGameContext(lobbyId, playerId);
+    const gameId = lobbyIdToGameId(lobbyId);
+    const result = contract.provableCircuits.checkAndEndGame(circuitContext, gameId);
+    circuitContext = result.context;
+    return { success: true, ended: Boolean(result.result) };
+  } catch (error) {
+    console.error('[MidnightBridge] checkAndEndGame failed:', error);
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Query game phase from Midnight contract
+ */
+export async function getGamePhase(lobbyId: string): Promise<number | null> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return null;
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] getGamePhase(gameId: ${lobbyId})`);
+
+    // Call contract circuit
+    const result = contract.provableCircuits.getGamePhase(
+      circuitContext,
+      gameId
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    console.log(`[MidnightBridge] getGamePhase succeeded: phase=${result.result}`);
+    return Number(result.result);
+  } catch (error) {
+    console.error('[MidnightBridge] getGamePhase failed:', error);
+    return null;
+  }
+}
+
+/**
+ * Query game scores from Midnight contract
+ */
+export async function getScores(lobbyId: string): Promise<[number, number] | null> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      return null;
+    }
+
+    const gameId = lobbyIdToGameId(lobbyId);
+
+    console.log(`[MidnightBridge] getScores(gameId: ${lobbyId})`);
+
+    // Call contract circuit
+    const result = contract.provableCircuits.getScores(
+      circuitContext,
+      gameId
+    );
+
+    // Update circuit context with result
+    circuitContext = result.context;
+
+    const [score1, score2] = result.result;
+
+    console.log(`[MidnightBridge] getScores succeeded: scores=[${score1}, ${score2}]`);
+    return [Number(score1), Number(score2)];
+  } catch (error) {
+    console.error('[MidnightBridge] getScores failed:', error);
+    return null;
+  }
+}
+
+/**
+ * Get and decrypt player's hand
+ * Returns array of {rank, suit} objects for cards in player's hand
+ */
+export async function getPlayerHand(
+  lobbyId: string,
+  playerId: 1 | 2
+): Promise<Array<{ rank: number; suit: number }>> {
+  try {
+    if (!isMidnightConnected() || !contract || !circuitContext) {
+      console.warn('[MidnightBridge] Contract not initialized, returning empty hand');
+      return [];
+    }
+
+    // Set game context for witness functions
+    setGameContext(lobbyId, playerId);
+
+    const gameId = lobbyIdToGameId(lobbyId);
+    console.log(`[MidnightBridge] getPlayerHand(gameId: ${lobbyId}, playerId: ${playerId})`);
+
+    const hand: Array<{ rank: number; suit: number }> = [];
+
+    // Iterate through all 21 cards (7 ranks × 3 suits) - simplified deck
+    // Card index = rank + (suit * 7)
+    for (let rank = 0; rank < 7; rank++) {
+      for (let suit = 0; suit < 3; suit++) {
+        const cardIndex = rank + suit * 7;
+
+        try {
+          // Check if player owns this semi-masked card
+          const checkResult: any = contract.provableCircuits.doesPlayerHaveSpecificCard(
+            circuitContext,
+            gameId,
+            BigInt(playerId),
+            BigInt(cardIndex)
+          );
+          circuitContext = checkResult.context;
+
+          if (checkResult.result) {
+            // Player has this card!
+            hand.push({ rank, suit });
+          }
+        } catch (_error) {
+          // Card not in hand, continue
+          continue;
+        }
+      }
+    }
+
+    console.log(`[MidnightBridge] Found ${hand.length} cards in player ${playerId}'s hand`);
+    return hand;
+  } catch (error) {
+    console.error('[MidnightBridge] getPlayerHand failed:', error);
+    return [];
+  }
+}
+
+// Re-export PlayerKeyManager for convenience
+export { PlayerKeyManager } from './services/PlayerKeyManager';
+
+// Export all functions as a single bridge object
+export const MidnightBridge = {
+  initializeMidnightContract,
+  isMidnightConnected,
+  setGameContext,
+  applyMask,
+  dealCards,
+  startGame,
+  askForCard,
+  respondToAsk,
+  afterGoFish,
+  getGamePhase,
+  getScores,
+  getPlayerHand,
+  lobbyIdToGameId,
+  // Key management
+  PlayerKeyManager,
+};
+
+export default MidnightBridge;

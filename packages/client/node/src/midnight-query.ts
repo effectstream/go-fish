@@ -46,6 +46,9 @@ const queryWitnesses: any = {
   getFieldInverse: (_context: any, _x: any) => {
     throw new Error('Backend should not generate proofs');
   },
+  wit_split_card_index: (_context: any, _cardIndex: any) => {
+    throw new Error('Backend should not generate proofs');
+  },
   player_secret_key: (_context: any, _gameId: any, _player: any) => {
     throw new Error('Backend should not access player secrets');
   },
@@ -54,6 +57,9 @@ const queryWitnesses: any = {
   },
   get_sorted_deck_witness: (_context: any, _input: any) => {
     throw new Error('Backend should not generate proofs');
+  },
+  admin_secret_key: (_context: any) => {
+    throw new Error('Backend does not hold admin_secret_key — owner-only circuits must be called from the admin client');
   },
 };
 

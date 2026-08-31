@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 /**
  * Midnight Actions - Backend utilities for executing Midnight contract actions
  * This runs on the Paima node and provides write access to the contract
@@ -172,7 +174,7 @@ const SECRETS_FILE = './data/player-secrets.json';
 
 function loadPersistedSecrets(): void {
   try {
-    const text = Deno.readTextFileSync(SECRETS_FILE);
+    const text = readFileSync(SECRETS_FILE, "utf-8");
     const data = JSON.parse(text) as { secrets?: Record<string, string>; seeds?: Record<string, string> };
     for (const [key, value] of Object.entries(data.secrets ?? {})) {
       persistentSecrets.set(key, BigInt('0x' + value));
@@ -190,7 +192,7 @@ function loadPersistedSecrets(): void {
 
 function persistSecrets(): void {
   try {
-    Deno.mkdirSync('./data', { recursive: true });
+    mkdirSync("./data", { recursive: true });
     const secrets: Record<string, string> = {};
     const seeds: Record<string, string> = {};
     for (const [k, v] of persistentSecrets.entries()) {
@@ -199,7 +201,7 @@ function persistSecrets(): void {
     for (const [k, v] of persistentShuffleSeeds.entries()) {
       seeds[k] = Array.from(v).map(b => b.toString(16).padStart(2, '0')).join('');
     }
-    Deno.writeTextFileSync(SECRETS_FILE, JSON.stringify({ secrets, seeds }, null, 2));
+    writeFileSync(SECRETS_FILE, JSON.stringify({ secrets, seeds }, null, 2));
   } catch (err) {
     console.warn('[MidnightActions] Failed to persist secrets:', err);
   }
@@ -233,6 +235,20 @@ const actionWitnesses: any = {
     return [context.privateState, modInverse(x, JUBJUB_SCALAR_FIELD_ORDER)];
   },
 
+  wit_split_card_index: (context: any, cardIndex: bigint) => {
+    // Split a 0–20 card index into [suit, rank] where index = suit*7 + rank.
+    // Must return bigints — compact-runtime marshals Uint<N> as bigint;
+    // returning plain numbers throws a type error. Mirrors the frontend
+    // midnightBridge witness; the contract verifies via reconstruction.
+    if (cardIndex < 0n || cardIndex > 20n) {
+      throw new Error(
+        `[MidnightActions] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`,
+      );
+    }
+    const n = Number(cardIndex);
+    return [context.privateState, [BigInt(Math.floor(n / 7)), BigInt(n % 7)]];
+  },
+
   player_secret_key: (context: any, gameId: Uint8Array, player: bigint) => {
     // ⚠️ INSECURE: Backend should NOT have access to player secrets!
     // Following example.test.ts pattern but this is for TESTING ONLY
@@ -240,9 +256,9 @@ const actionWitnesses: any = {
     const hexGameId = Array.from(new Uint8Array(gameId)).map(b => b.toString(16).padStart(2, '0')).join('');
     const key = `${hexGameId}-${player}`;
 
-    // Check if we already have a secret for this player/game
-    if (playerSecrets.has(key)) {
-      const s = playerSecrets.get(key)!;
+    // Check volatile map first, then persistent store (survives hand queries that clear volatile map)
+    const s = playerSecrets.get(key) ?? persistentSecrets.get(key);
+    if (s !== undefined) {
       return [context.privateState, s];
     }
 
@@ -258,13 +274,12 @@ const actionWitnesses: any = {
     const hexGameId = Array.from(new Uint8Array(gameId)).map(b => b.toString(16).padStart(2, '0')).join('');
     const key = `${hexGameId}-${player}`;
 
-    // Use injected shuffle seed if available (set before replay via injectShuffleSeed)
-    if (playerShuffleSeeds.has(key)) {
-      const seed = playerShuffleSeeds.get(key)!;
+    // Check volatile map first, then persistent store (survives hand queries that clear volatile map)
+    const cachedSeed = playerShuffleSeeds.get(key) ?? persistentShuffleSeeds.get(key);
+    if (cachedSeed) {
       console.log(`[MidnightActions] shuffle_seed: HIT key="${key}"`);
-      // Capture so get_sorted_deck_witness can generate deterministic weights
-      lastActionShuffleSeed = seed;
-      return [context.privateState, seed];
+      lastActionShuffleSeed = cachedSeed;
+      return [context.privateState, cachedSeed];
     }
 
     // Fallback: deterministic seed (only used when no real seed was provided)
@@ -303,6 +318,10 @@ const actionWitnesses: any = {
       }
     }
     return [context.privateState, mappedPoints.map((x) => ({ x: x.x, y: x.y }))];
+  },
+
+  admin_secret_key: (_context: any) => {
+    throw new Error('Backend does not hold admin_secret_key — owner-only circuits must be called from the admin client');
   },
 };
 
@@ -782,7 +801,11 @@ export async function ensureGameReplayedIfNeeded(
     } else {
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: phase=${currentPhase}, skipping applyMask replay`);
     }
-    // dealCards P1 before P2 (canonical order)
+    // dealCards P1 before P2 — V4.3: dealing uses fixed disjoint deck
+    // indices (P1→0..3, P2→4..7), and dealCards no longer transitions phase
+    // or touches gameTopCardIndex. Canonical replay order is still P1→P2
+    // because the deck's shuffle/mask replay relied on the same ordering
+    // for keying gamePlayersKeysHashes; we keep it to avoid churn elsewhere.
     try {
       const r3 = actionContract.provableCircuits.dealCards(actionContext, gameId, BigInt(canonicalP1));
       actionContext = r3.context;
@@ -796,6 +819,18 @@ export async function ensureGameReplayedIfNeeded(
       console.log(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} replayed`);
     } catch (e: unknown) {
       console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: dealCards P${canonicalP2} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // V4.3: startGame is now a separate circuit that flips phase Setup→TurnStart.
+    // Replay it here (using canonicalP1) so the local sim matches the on-chain
+    // state observed after both players' dealCards have landed. If it fails
+    // because both players haven't dealt, or the phase is already advanced, swallow.
+    try {
+      const r5 = actionContract.provableCircuits.startGame(actionContext, gameId, BigInt(canonicalP1));
+      actionContext = r5.context;
+      console.log(`[MidnightActions] ensureGameReplayedIfNeeded: startGame replayed`);
+    } catch (e: unknown) {
+      console.warn(`[MidnightActions] ensureGameReplayedIfNeeded: startGame failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Mark this game as correctly replayed if we had real seeds
@@ -917,11 +952,13 @@ export async function askForCard(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] askForCard(gameId: ${lobbyId}, playerId: ${playerId}, rank: ${rank})`);
 
+    const now = BigInt(Date.now());
     const result = actionContract.provableCircuits.askForCard(
       actionContext,
       gameId,
       BigInt(playerId),
-      BigInt(rank)
+      BigInt(rank),
+      now
     );
     actionContext = result.context;
 
@@ -948,10 +985,12 @@ export async function goFish(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] goFish(gameId: ${lobbyId}, playerId: ${playerId})`);
 
+    const now = BigInt(Date.now());
     const result = actionContract.provableCircuits.goFish(
       actionContext,
       gameId,
-      BigInt(playerId)
+      BigInt(playerId),
+      now
     );
     actionContext = result.context;
 
@@ -1146,10 +1185,12 @@ export async function respondToAsk(
 
     let result;
     try {
+      const now = BigInt(Date.now());
       result = actionContract.provableCircuits.respondToAsk(
         actionContext,
         gameId,
-        BigInt(playerId)
+        BigInt(playerId),
+        now
       );
       actionContext = result.context;
     } catch (respondError: any) {
@@ -1206,11 +1247,13 @@ export async function afterGoFish(
     const gameId = lobbyIdToGameId(lobbyId);
     console.log(`[MidnightActions] afterGoFish(gameId: ${lobbyId}, playerId: ${playerId}, drewRequestedCard: ${drewRequestedCard})`);
 
+    // V3 contract: afterGoFish no longer takes drewRequestedCard — it decrypts and checks internally
+    const now = BigInt(Date.now());
     const result = actionContract.provableCircuits.afterGoFish(
       actionContext,
       gameId,
       BigInt(playerId),
-      drewRequestedCard
+      now
     );
     actionContext = result.context;
 

@@ -1,307 +1,381 @@
 /**
  * State Machine - Defines how game state transitions based on blockchain events
+ *
+ * Grammar commands (see packages/shared/data-types/src/grammar.ts):
+ *   createdLobby  — host creates a new lobby (host is added as first player)
+ *   joinedLobby   — second player joins; auto-starts the game
+ *   closedLobby   — host cancels an open lobby while still alone
  */
 
-import { PaimaSTM } from "@paimaexample/sm";
+import { Stm } from "@effectstream/sm";
 import { grammar } from "@go-fish/data-types/grammar";
-import type { StartConfigGameStateTransitions } from "@paimaexample/runtime";
-import { World } from "@paimaexample/coroutine";
+import type { StartConfigGameStateTransitions } from "@effectstream/runtime";
+import { World } from "@effectstream/coroutine";
 import {
   getAddressByAddress,
   newAddressWithId,
   newAccount,
-  updateAddressAccount
-} from "@paimaexample/db";
-import { createLobby, joinLobby, togglePlayerReady, startGame, leaveLobby } from "@go-fish/database";
+  updateAddressAccount,
+  newScheduledTimestampData,
+} from "@effectstream/db";
+import { AddressType } from "@effectstream/utils";
+import {
+  createLobby,
+  joinLobby,
+  startGame,
+  getLobbyState,
+  countLobbyPlayers,
+  deleteLobbyPlayers,
+  deleteLobby,
+  setHostMaskApplied,
+  finishLobby,
+} from "@go-fish/database";
+import * as path from "node:path";
+import { computeLedgerDiff, logLedgerDiff } from "./ledger-diff.ts";
+import { projectMidnightGamesFromDiff } from "./midnight-games-sync.ts";
 
-const stm = new PaimaSTM<typeof grammar, any>(grammar);
+const stm = new Stm<typeof grammar, any>(grammar);
+
+// Go Fish is always a 2-player game.
+const MAX_PLAYERS = 2;
 
 /**
- * Handle createdLobby command - create a new game lobby
+ * Handle createdLobby - host creates a new lobby
  */
 stm.addStateTransition("createdLobby", function* (data) {
-  const { playerName, lobbyName, maxPlayers } = data.parsedInput;
-  const walletAddress = data.signerAddress;
+  const { playerName, lobbyName } = data.parsedInput;
+  // Normalize to lowercase — Paima auto-creates effectstream.addresses
+  // entries in lowercase, but data.signerAddress can be checksummed
+  // (mixed-case). The framework's getAddressByAddress is case-sensitive,
+  // so a mismatch creates a duplicate account and breaks wallet resolution.
+  const walletAddress = data.signerAddress?.toLowerCase();
+  if (!walletAddress) {
+    console.error('[createdLobby] No signer address');
+    return;
+  }
 
-  console.log(`🎮 [createdLobby] Creating lobby "${lobbyName}" - Player: ${playerName}, Max Players: ${maxPlayers}, Wallet: ${walletAddress}`);
+  console.log(`🎮 [createdLobby] "${lobbyName}" by ${playerName} @ ${walletAddress}`);
 
-  // Generate unique lobby ID based on block height and timestamp
-  const lobbyId = `lobby_${data.blockHeight}_${Date.now()}`;
+  // Deterministic lobby ID: block height + short address slice.
+  const addrSlug = walletAddress.slice(2, 10).toLowerCase();
+  const lobbyId = `lobby_${data.blockHeight}_${addrSlug}`;
 
-  // Get or create account ID for this wallet address
+  // Resolve (or create) the account for this wallet.
   const addressResult = yield* World.resolve(
     getAddressByAddress,
-    { address: walletAddress! }
+    { address: walletAddress }
   );
-
-  console.log('[createdLobby] addressResult:', addressResult);
 
   let accountId: number | undefined;
 
-  // Check if address exists AND has a valid account_id
   if (addressResult && addressResult.length > 0 && addressResult[0].account_id !== null) {
     accountId = addressResult[0].account_id;
-    console.log('[createdLobby] Found existing account:', accountId);
   } else {
-    // Create new account (either address doesn't exist or account_id is null)
-    console.log('[createdLobby] Creating new account for:', walletAddress);
     const newAccountResult = yield* World.resolve(
       newAccount,
-      { primary_address: walletAddress! }
+      { primary_address: walletAddress }
     );
-
-    console.log('[createdLobby] newAccountResult:', newAccountResult);
-
     if (!newAccountResult || newAccountResult.length === 0) {
-      console.error('[createdLobby] Failed to create account - empty result');
+      console.error('[createdLobby] Failed to create account');
       return;
     }
-
     accountId = newAccountResult[0].id;
-    console.log('[createdLobby] Created new account:', accountId);
 
-    // If address already exists (but with null account_id), update it
-    // Otherwise, create new address record
     if (addressResult && addressResult.length > 0) {
-      console.log('[createdLobby] Updating existing address with new account_id');
-      // Address exists but has null account_id - we need to update it
       yield* World.resolve(
         updateAddressAccount,
-        {
-          address: walletAddress!,
-          account_id: accountId
-        }
+        { address: walletAddress, account_id: accountId }
       );
     } else {
-      console.log('[createdLobby] Creating new address record');
-      // Link new address to account
       yield* World.resolve(
         newAddressWithId,
-        {
-          address: walletAddress!,
-          address_type: 0,
-          account_id: accountId
-        }
+        { address: walletAddress, address_type: 0, account_id: accountId }
       );
     }
   }
 
   if (!accountId) {
-    console.error('[createdLobby] accountId is undefined after account resolution');
+    console.error('[createdLobby] accountId undefined after resolution');
     return;
   }
 
-  console.log('[createdLobby] Using accountId:', accountId);
-
-  // Insert lobby using pgtyped query
   yield* World.resolve(
     createLobby,
     {
-      lobbyId: lobbyId,
-      lobbyName: lobbyName,
+      lobbyId,
+      lobbyName,
       hostAccountId: accountId,
-      maxPlayers: maxPlayers
     }
   );
 
-  // Add host as first player using pgtyped query
   yield* World.resolve(
     joinLobby,
     {
-      lobbyId: lobbyId,
-      accountId: accountId,
-      playerName: playerName
+      lobbyId,
+      accountId,
+      playerName,
     }
   );
 
-  console.log(`✅ [createdLobby] Lobby created in database: ${lobbyId}`);
+  console.log(`✅ [createdLobby] created ${lobbyId}`);
 });
 
 /**
- * Handle joinedLobby command - player joins an existing lobby
+ * Handle joinedLobby - second player joins; auto-starts the game when full.
  */
 stm.addStateTransition("joinedLobby", function* (data) {
   const { playerName, lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
+  const walletAddress = data.signerAddress?.toLowerCase();
+  if (!walletAddress) {
+    console.error('[joinedLobby] No signer address');
+    return;
+  }
 
-  console.log(`🎮 [joinedLobby] Player ${playerName} joining lobby ${lobbyID} with wallet ${walletAddress}`);
+  console.log(`🎮 [joinedLobby] ${playerName} → ${lobbyID} @ ${walletAddress}`);
 
-  // Get or create account ID for this wallet address
+  // Lobby must exist and still be open.
+  const lobbyState = yield* World.resolve(getLobbyState, { lobbyId: lobbyID });
+  if (!lobbyState || lobbyState.length === 0) {
+    console.warn('[joinedLobby] Lobby not found:', lobbyID);
+    return;
+  }
+  if (lobbyState[0].status !== 'open') {
+    console.warn('[joinedLobby] Lobby not open:', lobbyID, lobbyState[0].status);
+    return;
+  }
+
+  // Guard against joining a full lobby.
+  const countResult = yield* World.resolve(countLobbyPlayers, { lobbyId: lobbyID });
+  const currentCount = Number(countResult?.[0]?.count ?? 0);
+  if (currentCount >= MAX_PLAYERS) {
+    console.warn('[joinedLobby] Lobby already full:', lobbyID, currentCount);
+    return;
+  }
+
+  // Resolve (or create) the account for this wallet.
   const addressResult = yield* World.resolve(
     getAddressByAddress,
-    { address: walletAddress! }
+    { address: walletAddress }
   );
-
-  console.log('[joinedLobby] addressResult:', addressResult);
 
   let accountId: number | undefined;
 
-  // Check if address exists AND has a valid account_id
   if (addressResult && addressResult.length > 0 && addressResult[0].account_id !== null) {
     accountId = addressResult[0].account_id;
-    console.log('[joinedLobby] Found existing account:', accountId);
   } else {
-    // Create new account (either address doesn't exist or account_id is null)
-    console.log('[joinedLobby] Creating new account for:', walletAddress);
     const newAccountResult = yield* World.resolve(
       newAccount,
-      { primary_address: walletAddress! }
+      { primary_address: walletAddress }
     );
-
-    console.log('[joinedLobby] newAccountResult:', newAccountResult);
-
     if (!newAccountResult || newAccountResult.length === 0) {
-      console.error('[joinedLobby] Failed to create account - empty result');
+      console.error('[joinedLobby] Failed to create account');
       return;
     }
-
     accountId = newAccountResult[0].id;
-    console.log('[joinedLobby] Created new account:', accountId);
 
-    // If address already exists (but with null account_id), update it
-    // Otherwise, create new address record
     if (addressResult && addressResult.length > 0) {
-      console.log('[joinedLobby] Updating existing address with new account_id');
       yield* World.resolve(
         updateAddressAccount,
-        {
-          address: walletAddress!,
-          account_id: accountId
-        }
+        { address: walletAddress, account_id: accountId }
       );
     } else {
-      console.log('[joinedLobby] Creating new address record');
       yield* World.resolve(
         newAddressWithId,
-        {
-          address: walletAddress!,
-          address_type: 0,
-          account_id: accountId
-        }
+        { address: walletAddress, address_type: 0, account_id: accountId }
       );
     }
   }
 
   if (!accountId) {
-    console.error('[joinedLobby] accountId is undefined after account resolution');
+    console.error('[joinedLobby] accountId undefined after resolution');
     return;
   }
 
-  console.log('[joinedLobby] Using accountId:', accountId);
-
-  // Add player to lobby using pgtyped query
-  yield* World.resolve(
+  // Insert the player. ON CONFLICT DO NOTHING → empty RETURNING means the
+  // player was already in the lobby, which we treat as a no-op.
+  const joinResult = yield* World.resolve(
     joinLobby,
-    {
-      lobbyId: lobbyID,
-      accountId: accountId,
-      playerName: playerName
-    }
+    { lobbyId: lobbyID, accountId, playerName }
   );
 
-  console.log(`✅ [joinedLobby] Player ${playerName} joined lobby ${lobbyID}`);
-});
-
-/**
- * Handle toggledReady command - player toggles ready status
- */
-stm.addStateTransition("toggledReady", function* (data) {
-  const { lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
-
-  console.log(`🎮 [toggledReady] Player toggling ready in lobby ${lobbyID} with wallet ${walletAddress}`);
-
-  // Get account ID for this wallet address
-  const addressResult = yield* World.resolve(
-    getAddressByAddress,
-    { address: walletAddress! }
-  );
-
-  if (!addressResult || addressResult.length === 0 || addressResult[0].account_id === null) {
-    console.error('[toggledReady] No account found for address:', walletAddress);
+  if (!joinResult || joinResult.length === 0) {
+    console.warn('[joinedLobby] Player already in lobby — no auto-start');
     return;
   }
 
-  const accountId = addressResult[0].account_id;
-
-  // Toggle ready status
-  yield* World.resolve(
-    togglePlayerReady,
-    {
-      lobbyId: lobbyID,
-      accountId: accountId
-    }
-  );
-
-  console.log(`✅ [toggledReady] Player ready status toggled in lobby ${lobbyID}`);
+  // Auto-start the game once the lobby fills.
+  const newCountResult = yield* World.resolve(countLobbyPlayers, { lobbyId: lobbyID });
+  const newCount = Number(newCountResult?.[0]?.count ?? 0);
+  if (newCount >= MAX_PLAYERS) {
+    yield* World.resolve(startGame, { lobbyId: lobbyID });
+    console.log(`✅ [joinedLobby] ${lobbyID} filled — auto-started`);
+  } else {
+    console.log(`✅ [joinedLobby] ${lobbyID} now has ${newCount} player(s)`);
+  }
 });
 
 /**
- * Handle startedGame command - host starts the game
+ * Handle closedLobby - host cancels an open lobby while still alone.
  */
-stm.addStateTransition("startedGame", function* (data) {
+stm.addStateTransition("closedLobby", function* (data) {
   const { lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
-
-  console.log(`🎮 [startedGame] Starting game for lobby ${lobbyID} by host ${walletAddress}`);
-
-  // Get account ID for this wallet address
-  const addressResult = yield* World.resolve(
-    getAddressByAddress,
-    { address: walletAddress! }
-  );
-
-  if (!addressResult || addressResult.length === 0 || addressResult[0].account_id === null) {
-    console.error('[startedGame] No account found for address:', walletAddress);
+  const walletAddress = data.signerAddress?.toLowerCase();
+  if (!walletAddress) {
+    console.error('[closedLobby] No signer address');
     return;
   }
 
-  const accountId = addressResult[0].account_id;
+  console.log(`🎮 [closedLobby] ${lobbyID} by ${walletAddress}`);
 
-  // Update lobby status to 'in_progress'
-  yield* World.resolve(
-    startGame,
-    {
-      lobbyId: lobbyID,
-      hostAccountId: accountId
-    }
+  const lobbyState = yield* World.resolve(getLobbyState, { lobbyId: lobbyID });
+  if (!lobbyState || lobbyState.length === 0) {
+    console.warn('[closedLobby] Lobby not found:', lobbyID);
+    return;
+  }
+  const lobby = lobbyState[0];
+  if (lobby.status !== 'open') {
+    console.warn('[closedLobby] Lobby not open:', lobbyID, lobby.status);
+    return;
+  }
+
+  // Only the host may close.
+  const signerResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress }
   );
+  const signerAccountId = signerResult?.[0]?.account_id;
+  if (signerAccountId == null) {
+    console.warn('[closedLobby] No account for signer:', walletAddress);
+    return;
+  }
+  if (signerAccountId !== lobby.host_account_id) {
+    console.warn('[closedLobby] Non-host close attempt:', signerAccountId, '!=', lobby.host_account_id);
+    return;
+  }
 
-  console.log(`✅ [startedGame] Game started for lobby ${lobbyID}`);
+  // Must be alone — cannot close once someone else has joined.
+  const countResult = yield* World.resolve(countLobbyPlayers, { lobbyId: lobbyID });
+  const count = Number(countResult?.[0]?.count ?? 0);
+  if (count > 1) {
+    console.warn('[closedLobby] Lobby has other players:', count);
+    return;
+  }
+
+  yield* World.resolve(deleteLobbyPlayers, { lobbyId: lobbyID });
+  yield* World.resolve(deleteLobby, { lobbyId: lobbyID });
+
+  console.log(`✅ [closedLobby] ${lobbyID} deleted`);
 });
 
 /**
- * Handle leftLobby command - player leaves a lobby
+ * Handle hostReady - host's Midnight applyMask has been confirmed on-chain.
+ * Flips lobbies.host_mask_applied so other clients stop showing "Preparing".
  */
-stm.addStateTransition("leftLobby", function* (data) {
+stm.addStateTransition("hostReady", function* (data) {
   const { lobbyID } = data.parsedInput;
-  const walletAddress = data.signerAddress;
-
-  console.log(`🎮 [leftLobby] Player leaving lobby ${lobbyID} with wallet ${walletAddress}`);
-
-  // Get account ID for this wallet address
-  const addressResult = yield* World.resolve(
-    getAddressByAddress,
-    { address: walletAddress! }
-  );
-
-  if (!addressResult || addressResult.length === 0 || addressResult[0].account_id === null) {
-    console.error('[leftLobby] No account found for address:', walletAddress);
+  const walletAddress = data.signerAddress?.toLowerCase();
+  if (!walletAddress) {
+    console.error('[hostReady] No signer address');
     return;
   }
 
-  const accountId = addressResult[0].account_id;
+  const lobbyState = yield* World.resolve(getLobbyState, { lobbyId: lobbyID });
+  if (!lobbyState || lobbyState.length === 0) {
+    console.warn('[hostReady] Lobby not found:', lobbyID);
+    return;
+  }
+  const lobby = lobbyState[0];
 
-  // Remove player from lobby
-  yield* World.resolve(
-    leaveLobby,
-    {
-      lobbyId: lobbyID,
-      accountId: accountId
-    }
+  // Only the host may flip the flag.
+  const signerResult = yield* World.resolve(
+    getAddressByAddress,
+    { address: walletAddress }
   );
+  const signerAccountId = signerResult?.[0]?.account_id;
+  if (signerAccountId == null || signerAccountId !== lobby.host_account_id) {
+    console.warn('[hostReady] Non-host ready attempt:', signerAccountId, '!=', lobby.host_account_id);
+    return;
+  }
 
-  console.log(`✅ [leftLobby] Player left lobby ${lobbyID}`);
+  yield* World.resolve(setHostMaskApplied, { lobbyId: lobbyID });
+  console.log(`✅ [hostReady] ${lobbyID} marked ready`);
+});
+
+/**
+ * Handle event_midnight - ledger-state events from the Midnight Go Fish contract.
+ * Fired by the parallelMidnight sync protocol whenever the contract's ledger changes.
+ * For now we just log the payload — a minimal observability hook.
+ */
+stm.addStateTransition("event_midnight", function* (data) {
+  const { payload } = data.parsedInput as { payload: Record<string, unknown> };
+  const { diffs, isInitial } = computeLedgerDiff(payload);
+  logLedgerDiff(diffs, isInitial, data.blockHeight);
+  yield* projectMidnightGamesFromDiff(diffs, data.blockHeight);
+
+  // Schedule Midnight contract cleanup 2 hours after each new game is created.
+  // Skip the initial snapshot (node restart) — those games already had cleanup
+  // scheduled on their original creation, or have already been cleaned up.
+  const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+  for (const d of diffs) {
+    if (!isInitial && d.op === "add" && d.path.startsWith("go_fish_gameExists.") && d.new === true) {
+      const evmId = d.path.slice("go_fish_gameExists.".length);
+      yield* World.resolve(newScheduledTimestampData, {
+        from_address: "0x0",
+        from_address_type: AddressType.NONE,
+        future_ms_timestamp: new Date(data.blockTimestamp + TWO_HOURS_MS),
+        input_data: JSON.stringify(["cleanupGame", evmId]),
+      });
+      console.log(`⏰ [event_midnight] Scheduled cleanupGame for "${evmId}" at +2h`);
+    }
+  }
+});
+
+/**
+ * Handle cleanupGame — scheduled system action that removes all on-chain
+ * Midnight contract state for a finished (or stale) game.
+ * Spawns an isolated Bun subprocess that proves the cleanupGame circuit
+ * and delegates balancing/submission to the batcher (same pattern as pvp-v2).
+ */
+stm.addStateTransition("cleanupGame", function* (data) {
+  const { gameId } = data.parsedInput;
+
+  // Mark the EVM lobby as finished if still in_progress (catches stale games)
+  yield* World.resolve(finishLobby, { lobbyId: gameId });
+
+  setTimeout(async () => {
+    try {
+      console.log(`🧹 [cleanupGame] Scheduled cleanup fired for gameId: ${gameId}`);
+
+      const scriptPath = path.resolve(
+        import.meta.dirname!,
+        "..", "..", "..", "shared", "contracts", "midnight",
+        "contract-gofish-cleanup.ts",
+      );
+      const child = Bun.spawn(["bun", "run", scriptPath, gameId], {
+        env: {
+          ...process.env,
+          MIDNIGHT_ADMIN_SECRET: process.env.MIDNIGHT_ADMIN_SECRET || "",
+          MIDNIGHT_CLEAN_SEED: process.env.MIDNIGHT_CLEAN_SEED || "",
+          MIDNIGHT_NETWORK_ID: process.env.MIDNIGHT_NETWORK_ID || "",
+          MIDNIGHT_STORAGE_PASSWORD: process.env.MIDNIGHT_STORAGE_PASSWORD || "",
+          BATCHER_URL: process.env.BATCHER_URL || "",
+        },
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      child.exited.then((code) => {
+        if (code === 0) {
+          console.log(`✅ [cleanupGame] cleanup script succeeded for gameId=${gameId}`);
+        } else {
+          console.error(`❌ [cleanupGame] cleanup script exited with code ${code} for gameId=${gameId}`);
+        }
+      }).catch((err) => {
+        console.error(`❌ [cleanupGame] cleanup script status error for gameId=${gameId}:`, err);
+      });
+    } catch (err) {
+      console.error(`❌ [cleanupGame] failed to spawn cleanup script for gameId=${gameId}:`, err);
+    }
+  }, 0);
 });
 
 /**

@@ -1,0 +1,449 @@
+/**
+ * GlobalLoader — animated status indicator at the bottom-left of the screen.
+ *
+ * Two visual states:
+ *   - 'proving'  → floating hearts (♥), red   — WASM proof generation
+ *   - 'sending'  → floating diamonds (♦), blue — posting to batcher / waiting for chain
+ *
+ * Symbols randomly rotate, scale, and fade on staggered loops so the motion
+ * looks organic even though everything is pure CSS.
+ *
+ * Usage:
+ *   globalLoader.show('proving', 'Proving — generating ZK circuit...');
+ *   globalLoader.show('sending', 'Submitting to chain...');
+ *   globalLoader.hide();
+ *
+ * Idempotent: show() with the same (state, message) is a no-op; changing
+ * either updates in place without destroying the DOM node.
+ */
+
+export type LoaderState = 'proving' | 'sending' | 'waiting';
+
+const STYLE_ID = 'global-loader-style';
+const ROOT_ID = 'global-loader-root';
+
+const SYMBOLS: Record<LoaderState, string> = {
+  proving: '♥',
+  sending: '♦',
+  waiting: '♠',
+};
+
+const COLORS: Record<LoaderState, string> = {
+  proving: '#e53935',
+  sending: '#42a5f5',
+  waiting: '#9e9e9e',
+};
+
+/** Per-state animation duration. Slower for 'waiting' so it reads as idle/ambient. */
+const DURATION_BASE: Record<LoaderState, number> = {
+  proving: 1.4,
+  sending: 1.4,
+  waiting: 3.0,
+};
+
+const DURATION_JITTER: Record<LoaderState, number> = {
+  proving: 0.8,
+  sending: 0.8,
+  waiting: 1.4,
+};
+
+const SYMBOL_COUNT = 6;
+
+/** Show "Taking more than expected…" subtitle once overtime exceeds this. */
+const OVERTIME_HINT_AFTER_MS = 2000;
+/** Switch to a longer reassurance message once overtime exceeds this. */
+const OVERTIME_HINT_LONG_AFTER_MS = 10000;
+
+const OVERTIME_HINT_SHORT = 'Taking more than expected, please wait…';
+const OVERTIME_HINT_LONG = 'Still working - please wait…';
+
+function ensureStyles(): void {
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = `
+    #${ROOT_ID} {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      z-index: 9000;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px 10px 12px;
+      background: rgba(20, 20, 30, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(4px);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+      pointer-events: none;
+    }
+    #${ROOT_ID}.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    #${ROOT_ID} .gl-symbols {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 32px;
+    }
+    #${ROOT_ID} .gl-symbol {
+      font-size: 22px;
+      line-height: 1;
+      display: inline-block;
+      animation-name: gl-dance;
+      animation-duration: 1.8s;
+      animation-iteration-count: infinite;
+      animation-timing-function: ease-in-out;
+      will-change: transform, opacity;
+    }
+    #${ROOT_ID} .gl-text-col {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    #${ROOT_ID} .gl-message {
+      color: #e8e8ee;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      letter-spacing: 0.2px;
+    }
+    #${ROOT_ID} .gl-overtime-hint {
+      color: #f2b56b;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      max-width: 320px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #${ROOT_ID} .gl-overtime-hint.visible {
+      opacity: 1;
+    }
+    #${ROOT_ID} .gl-countdown {
+      margin-left: 6px;
+      color: #aab4c4;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+    }
+    #${ROOT_ID} .gl-countdown.gl-countdown-over {
+      color: #f2b56b;
+    }
+    @keyframes gl-dance {
+      0%   { transform: rotate(0deg)   scale(1.0); opacity: 0.55; }
+      20%  { transform: rotate(-18deg) scale(1.25); opacity: 1.0; }
+      45%  { transform: rotate(14deg)  scale(0.85); opacity: 0.65; }
+      70%  { transform: rotate(-6deg)  scale(1.15); opacity: 0.9; }
+      100% { transform: rotate(0deg)   scale(1.0); opacity: 0.55; }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function ensureRoot(): HTMLDivElement {
+  let el = document.getElementById(ROOT_ID) as HTMLDivElement | null;
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = ROOT_ID;
+  el.innerHTML = `
+    <div class="gl-symbols"></div>
+    <div class="gl-text-col">
+      <div class="gl-message"></div>
+      <div class="gl-overtime-hint" hidden></div>
+    </div>
+    <div class="gl-countdown" hidden></div>
+  `;
+  document.body.appendChild(el);
+  return el;
+}
+
+function formatCountdown(remainingMs: number): string {
+  // Under 10s show one decimal ("4.2s"); above that round to whole seconds
+  // so the number doesn't jitter distractingly at long durations.
+  const abs = Math.abs(remainingMs);
+  const secs = abs / 1000;
+  if (secs < 10) return `${secs.toFixed(1)}s`;
+  return `${Math.round(secs)}s`;
+}
+
+interface Intent {
+  state: LoaderState;
+  message: string;
+  /** If set, render a live countdown starting at this many ms. */
+  countdownMs?: number;
+  /** performance.now() when this intent was shown — anchors the countdown. */
+  startedAt?: number;
+}
+
+class GlobalLoaderImpl {
+  private currentState: LoaderState | null = null;
+  private currentMessage = '';
+  private visible = false;
+
+  /** Foreground intent — proving/sending (high priority, short-lived). */
+  private foreground: Intent | null = null;
+  /** Background intent — waiting for opponent (low priority, long-lived). */
+  private background: Intent | null = null;
+
+  /** Intent whose countdown is currently being ticked by the timer. */
+  private countdownOwner: Intent | null = null;
+  private countdownTimer: number | null = null;
+
+  /** Subscribers for tx-in-flight transitions. See {@link onTxInFlightChange}. */
+  private txSubs: Array<(busy: boolean) => void> = [];
+  /** Last emitted value so we only notify on actual transitions. */
+  private lastTxInFlight = false;
+
+  /**
+   * When true, the loader suppresses all rendering even if foreground /
+   * background intents are set. SceneManager toggles this based on whether
+   * the user is actively watching a game (foreground session set) or on
+   * the menu. Background GameSessions keep firing proving/sending intents
+   * for their setup txs, but the user shouldn't see those as full-screen
+   * loaders when they're on the menu — the Active Games card badge is the
+   * right UI for that.
+   */
+  private muted = false;
+
+  /**
+   * Show a high-priority state. Masks any background waiting state.
+   *
+   * @param countdownMs  If provided, shows a live "Ns" countdown next to
+   *                     the message, ticking down from this value. Goes
+   *                     into overtime (styled differently) once elapsed.
+   */
+  show(state: LoaderState, message: string, countdownMs?: number): void {
+    this.foreground = {
+      state,
+      message,
+      countdownMs,
+      startedAt: countdownMs !== undefined ? performance.now() : undefined,
+    };
+    this.render();
+  }
+
+  /** Hide the foreground intent. If a background intent is active,
+   *  it takes over; otherwise the loader hides. */
+  hide(): void {
+    this.foreground = null;
+    this.render();
+  }
+
+  /** Set a persistent background state (e.g., waiting for opponent).
+   *  Only visible when no foreground state is active. Call with null
+   *  state to clear. */
+  setBackground(state: LoaderState | null, message = ''): void {
+    this.background = state ? { state, message } : null;
+    this.render();
+  }
+
+  /**
+   * True when a tx is actively in flight — foreground intent is 'proving'
+   * or 'sending'. 'waiting' is passive (waiting for the opponent) and does
+   * NOT count as busy: the user is free to navigate / create a new game.
+   * Mute state does not affect this flag — a background session proving
+   * still counts as "tx in flight" for the purpose of blocking new actions.
+   */
+  isTxInFlight(): boolean {
+    const s = this.foreground?.state;
+    return s === 'proving' || s === 'sending';
+  }
+
+  /**
+   * Subscribe to tx-in-flight transitions. The callback fires immediately
+   * with the current value and then on every transition. Returns an
+   * unsubscribe fn — call it to stop receiving updates.
+   */
+  onTxInFlightChange(cb: (busy: boolean) => void): () => void {
+    this.txSubs.push(cb);
+    try { cb(this.isTxInFlight()); } catch { /* subscriber threw — ignore */ }
+    return () => {
+      const idx = this.txSubs.indexOf(cb);
+      if (idx >= 0) this.txSubs.splice(idx, 1);
+    };
+  }
+
+  private notifyTxInFlightChange(): void {
+    const current = this.isTxInFlight();
+    if (current === this.lastTxInFlight) return;
+    this.lastTxInFlight = current;
+    for (const cb of this.txSubs) {
+      try { cb(current); } catch { /* subscriber threw — ignore */ }
+    }
+  }
+
+  /** Toggle muted state. When muted, render() always hides regardless of
+   *  foreground/background intents. Called by SceneManager when the user
+   *  enters/leaves the game screen. */
+  setMuted(muted: boolean): void {
+    if (this.muted === muted) return;
+    this.muted = muted;
+    this.render();
+  }
+
+  private render(): void {
+    try {
+      if (this.muted) {
+        this.stopCountdown();
+        this.applyHidden();
+        return;
+      }
+      const intent = this.foreground ?? this.background;
+      if (!intent) {
+        this.stopCountdown();
+        this.applyHidden();
+        return;
+      }
+      this.applyVisible(intent.state, intent.message);
+      this.syncCountdown(intent);
+    } finally {
+      // isTxInFlight tracks `foreground` only (not mute / background), so
+      // notify regardless of what path render() took. Subscribers want to
+      // know about every transition including those hidden by mute.
+      this.notifyTxInFlightChange();
+    }
+  }
+
+  private applyVisible(state: LoaderState, message: string): void {
+    ensureStyles();
+    const root = ensureRoot();
+
+    // Update symbols only when the state changes (different suit / color)
+    if (state !== this.currentState) {
+      const symbolsEl = root.querySelector('.gl-symbols') as HTMLDivElement;
+      symbolsEl.innerHTML = '';
+      const base = DURATION_BASE[state];
+      const jitter = DURATION_JITTER[state];
+      for (let i = 0; i < SYMBOL_COUNT; i++) {
+        const span = document.createElement('span');
+        span.className = 'gl-symbol';
+        span.textContent = SYMBOLS[state];
+        span.style.color = COLORS[state];
+        // Stagger: each symbol starts at a random phase of the animation so
+        // the group pulses organically instead of marching in lock-step.
+        const delay = -Math.random() * base;
+        span.style.animationDelay = `${delay.toFixed(2)}s`;
+        const dur = base + Math.random() * jitter;
+        span.style.animationDuration = `${dur.toFixed(2)}s`;
+        symbolsEl.appendChild(span);
+      }
+      this.currentState = state;
+    }
+
+    if (message !== this.currentMessage) {
+      const msgEl = root.querySelector('.gl-message') as HTMLDivElement;
+      msgEl.textContent = message;
+      this.currentMessage = message;
+    }
+
+    if (!this.visible) {
+      // Double rAF ensures the initial styles have committed before the
+      // transition class flips visibility (avoids snapping in).
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => root.classList.add('visible'));
+      });
+      this.visible = true;
+    }
+  }
+
+  private applyHidden(): void {
+    const root = document.getElementById(ROOT_ID);
+    if (!root) return;
+    root.classList.remove('visible');
+    this.visible = false;
+    // Keep DOM around for the next show() — cheap and avoids re-flashing styles
+  }
+
+  private syncCountdown(intent: Intent): void {
+    if (intent.countdownMs === undefined || intent.startedAt === undefined) {
+      this.stopCountdown();
+      this.hideCountdownEl();
+      return;
+    }
+    if (this.countdownOwner !== intent) {
+      this.countdownOwner = intent;
+      if (this.countdownTimer === null) {
+        this.countdownTimer = window.setInterval(() => this.tickCountdown(), 100);
+      }
+    }
+    this.tickCountdown();
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    this.countdownOwner = null;
+  }
+
+  private tickCountdown(): void {
+    const intent = this.countdownOwner;
+    if (!intent || intent.countdownMs === undefined || intent.startedAt === undefined) {
+      this.stopCountdown();
+      this.hideCountdownEl();
+      return;
+    }
+    const root = document.getElementById(ROOT_ID);
+    if (!root) return;
+    const el = root.querySelector('.gl-countdown') as HTMLDivElement | null;
+    if (!el) return;
+    const elapsed = performance.now() - intent.startedAt;
+    const remaining = intent.countdownMs - elapsed;
+    const over = remaining < 0;
+    el.textContent = over ? `+${formatCountdown(-remaining)}` : formatCountdown(remaining);
+    el.classList.toggle('gl-countdown-over', over);
+    el.hidden = false;
+
+    this.updateOvertimeHint(root, over ? -remaining : 0);
+  }
+
+  /**
+   * Surface a subtitle under the loader message when the proof / send is
+   * running past its estimated duration. Threshold constants defined at top
+   * of file. Hidden (opacity 0) while under the first threshold so it doesn't
+   * flash for tiny overages.
+   */
+  private updateOvertimeHint(root: HTMLElement, overByMs: number): void {
+    const el = root.querySelector('.gl-overtime-hint') as HTMLDivElement | null;
+    if (!el) return;
+    if (overByMs < OVERTIME_HINT_AFTER_MS) {
+      el.classList.remove('visible');
+      el.hidden = true;
+      return;
+    }
+    const text = overByMs >= OVERTIME_HINT_LONG_AFTER_MS
+      ? OVERTIME_HINT_LONG
+      : OVERTIME_HINT_SHORT;
+    if (el.textContent !== text) el.textContent = text;
+    el.hidden = false;
+    // Toggle .visible on the next frame so the CSS transition plays.
+    if (!el.classList.contains('visible')) {
+      requestAnimationFrame(() => el.classList.add('visible'));
+    }
+  }
+
+  private hideCountdownEl(): void {
+    const root = document.getElementById(ROOT_ID);
+    if (!root) return;
+    const el = root.querySelector('.gl-countdown') as HTMLDivElement | null;
+    if (el) el.hidden = true;
+    const hintEl = root.querySelector('.gl-overtime-hint') as HTMLDivElement | null;
+    if (hintEl) {
+      hintEl.classList.remove('visible');
+      hintEl.hidden = true;
+    }
+  }
+}
+
+export const globalLoader = new GlobalLoaderImpl();

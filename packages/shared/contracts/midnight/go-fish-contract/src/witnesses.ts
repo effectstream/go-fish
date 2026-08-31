@@ -2,16 +2,12 @@ import { type WitnessContext } from "@midnight-ntwrk/compact-runtime";
 export type Ledger = {};
 export type PrivateState = {};
 
-/**
- * Default keys for testing/development
- * In production, these should be provided by the client via setPlayerSecrets()
- */
-export const keys = {
-  player1: BigInt(Math.floor(Math.random() * 1000000)),
-  player2: BigInt(Math.floor(Math.random() * 1000000)),
-  shuffleSeed1: new Uint8Array(32).fill(Math.floor(Math.random() * 256)),
-  shuffleSeed2: new Uint8Array(32).fill(Math.floor(Math.random() * 256)),
-};
+// Static fallback keys removed — they were 20-bit `Math.random()` values
+// that silently produced wrong ec_mul results when the witness was consulted
+// without `setPlayerSecrets` being called first. The witness now throws
+// immediately on a miss so bugs surface at the exact circuit that depends
+// on the secret, not downstream in a card-ownership mismatch.
+// See BACKEND_ISSUES.md #1 and e2e/smoke/test-witnesses.ts for context.
 
 /**
  * Dynamic per-game secrets storage
@@ -27,6 +23,31 @@ export const keys = {
  */
 const dynamicSecrets = new Map<string, { secret: bigint; shuffleSeed: Uint8Array }>();
 const secretRefCount = new Map<string, number>();
+
+/**
+ * V4.1: Admin secret for the contract. Global (one per deployed contract),
+ * separate from per-game player secrets. The Compact circuit stores only
+ * `h_hashField(admin_secret_key())` in the `owner` ledger; the secret itself
+ * never leaves the admin's client.
+ *
+ * Set by the operator via `setAdminSecret(...)` before calling `initialize`,
+ * `cleanupGame` (owner path), or any future owner-only circuit. Clear with
+ * `clearAdminSecret` after the tx settles.
+ */
+let adminSecret: bigint | null = null;
+
+export function setAdminSecret(secret: bigint): void {
+    if (secret === 0n) {
+        throw new Error("[Witnesses] setAdminSecret: refusing to set zero secret");
+    }
+    adminSecret = secret;
+    console.log(`[Witnesses] setAdminSecret: admin secret set (hash-derivable locally)`);
+}
+
+export function clearAdminSecret(): void {
+    adminSecret = null;
+    console.log(`[Witnesses] clearAdminSecret`);
+}
 
 /**
  * Last shuffle seed provided to the shuffle_seed witness.
@@ -80,7 +101,6 @@ export function setPlayerSecrets(
   const prevCount = secretRefCount.get(key) ?? 0;
   dynamicSecrets.set(key, { secret, shuffleSeed });
   secretRefCount.set(key, prevCount + 1);
-  console.log(`[Witnesses] setPlayerSecrets: player=${playerId} refCount=${prevCount}->${prevCount + 1} secret=${secret}`);
 }
 
 /**
@@ -92,67 +112,64 @@ export function clearPlayerSecrets(gameIdHex: string, playerId: 1 | 2): void {
   const key = `${gameIdHex}-${playerId}`;
   const count = secretRefCount.get(key) ?? 0;
   if (count <= 1) {
-    console.log(`[Witnesses] clearPlayerSecrets: player=${playerId} refCount=${count}->0 (deleting)`);
     dynamicSecrets.delete(key);
     secretRefCount.delete(key);
   } else {
-    console.log(`[Witnesses] clearPlayerSecrets: player=${playerId} refCount=${count}->${count - 1} (keeping)`);
     secretRefCount.set(key, count - 1);
   }
 }
 
 /**
- * Get secret key - checks dynamic secrets first, falls back to static keys
+ * Get secret key from dynamic secrets. Throws on miss — there is no
+ * silent fallback to static keys. The old fallback used
+ * `Math.random() * 1000000` (a 20-bit integer, far below the 254-bit
+ * Jubjub field order), which silently produced wrong masked card values
+ * downstream. Failing loud is always better than silent corruption.
+ *
+ * Callers must ensure `setPlayerSecrets` has been called for the
+ * (gameIdHex, playerIndex) pair BEFORE any circuit that consults this
+ * witness. The batcher does this in its adapter; the frontend does it
+ * via `GoFishContractService.withSecrets`; the e2e test uses its own
+ * `WitnessState` and never touches this module.
  */
 const getSecretKey = (gameIdHex: string | null, index: number) => {
-  // Check dynamic secrets first
   if (gameIdHex) {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
     if (dynamic) {
-      const refCount = secretRefCount.get(key) ?? 0;
-      console.log(`[Witnesses] player_secret_key: HIT player=${index} refCount=${refCount} secret=${dynamic.secret}`);
       return dynamic.secret;
     }
-    // Log all currently-set keys to help diagnose key mismatch
     const allKeys = [...dynamicSecrets.keys()].join(", ") || "(empty)";
-    console.warn(`[Witnesses] player_secret_key: MISS for key="${key}" — current keys: ${allKeys}`);
+    throw new Error(
+      `[Witnesses] player_secret_key: MISSING secret for player=${index} ` +
+      `in game=${gameIdHex.slice(0, 20)}… — call setPlayerSecrets() first. ` +
+      `Current keys: ${allKeys}`
+    );
   }
-
-  // Fall back to static keys — this means the batcher did NOT receive a dynamic secret
-  // for this player. This is a bug if it happens during applyMask or dealCards.
-  switch (index) {
-    case 1:
-      console.warn(`[Witnesses] FALLBACK to static key for player 1 (game ${gameIdHex}) — secret=${keys.player1}`);
-      return keys.player1;
-    case 2:
-      console.warn(`[Witnesses] FALLBACK to static key for player 2 (game ${gameIdHex}) — secret=${keys.player2}`);
-      return keys.player2;
-  }
-  throw new Error("Invalid player index");
+  throw new Error(
+    `[Witnesses] player_secret_key: called with null gameIdHex for player=${index}`
+  );
 };
 
 /**
- * Get shuffle seed - checks dynamic secrets first, falls back to static seeds
+ * Get shuffle seed from dynamic secrets. Same strict-fail policy as
+ * getSecretKey — no fallback to static seeds.
  */
 const getShuffleSeed = (gameIdHex: string | null, index: number) => {
-  // Check dynamic secrets first
   if (gameIdHex) {
     const key = `${gameIdHex}-${index}`;
     const dynamic = dynamicSecrets.get(key);
     if (dynamic) {
       return dynamic.shuffleSeed;
     }
+    throw new Error(
+      `[Witnesses] shuffle_seed: MISSING seed for player=${index} ` +
+      `in game=${gameIdHex.slice(0, 20)}… — call setPlayerSecrets() first.`
+    );
   }
-
-  // Fall back to static seeds
-  switch (index) {
-    case 1:
-      return keys.shuffleSeed1;
-    case 2:
-      return keys.shuffleSeed2;
-  }
-  throw new Error("Invalid shuffle seed index");
+  throw new Error(
+    `[Witnesses] shuffle_seed: called with null gameIdHex for player=${index}`
+  );
 };
 
 /**
@@ -276,12 +293,63 @@ const printCurvePoint = (
   return [a.privateState, true];
 };
 
+/**
+ * Card-index split witness: given a card index (0..20), returns [suit, rank]
+ * where cardIndex = suit * 7 + rank.
+ * The circuit verifies via `rank < 7 && suit*7 + rank == cardIndex`, so a
+ * malicious witness can't cheat — it would fail the reconstruction check.
+ *
+ * NOTE: return type is `[bigint, bigint]`, not `[number, number]`.
+ * compact-runtime 0.15.0 marshals `Uint<8>` across the witness boundary as
+ * bigint; returning plain numbers produces:
+ *   "type error: expected value of type [Uint<0..256>, Uint<0..256>] but
+ *    received [ 1, 3 ]"
+ */
+function splitCardIndexWitness(cardIndex: bigint): [bigint, bigint] {
+  if (cardIndex < 0n || cardIndex > 20n) {
+    throw new Error(
+      `[Witnesses] wit_split_card_index: cardIndex ${cardIndex} out of range [0, 20]`
+    );
+  }
+  const n = Number(cardIndex);
+  return [BigInt(Math.floor(n / 7)), BigInt(n % 7)];
+}
+
 export const witnesses = {
   print_field: printAny,
   print_bytes_32: printAny,
   print_vector_2_field: printAny,
   print_curve_point: printCurvePoint,
   print_uint_64: printAny,
+
+  wit_split_card_index: (
+    { privateState }: WitnessContext<Ledger, PrivateState>,
+    cardIndex: bigint,
+  ): [PrivateState, [bigint, bigint]] => {
+    return [privateState, splitCardIndexWitness(cardIndex)];
+  },
+
+  /**
+   * V4.1: Admin secret for the contract. Strict-fail — if the operator forgot
+   * to call `setAdminSecret(...)` before invoking initialize / cleanupGame
+   * (owner path), we throw loudly rather than silently authenticating as a
+   * phantom admin. The Compact `initialize` circuit computes
+   * `h_hashField(admin_secret_key())` and stores that in the `owner` ledger;
+   * subsequent owner-only circuits re-derive the hash and compare.
+   */
+  admin_secret_key: (
+    { privateState }: WitnessContext<Ledger, PrivateState>,
+  ): [PrivateState, bigint] => {
+    if (adminSecret === null) {
+      throw new Error(
+        "[Witnesses] admin_secret_key: MISSING admin secret — call setAdminSecret(...) before invoking owner-only circuits"
+      );
+    }
+    if (adminSecret >= JUBJUB_SCALAR_FIELD_ORDER) {
+      throw new Error(`[Witnesses] admin_secret_key: secret exceeds field order`);
+    }
+    return [privateState, adminSecret];
+  },
 
   get_sorted_deck_witness: (
     { privateState }: WitnessContext<Ledger, PrivateState>,

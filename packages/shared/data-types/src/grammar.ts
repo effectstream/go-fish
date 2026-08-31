@@ -1,87 +1,34 @@
 /**
- * Grammar definitions for Paima Engine command parsing
+ * Grammar definitions for Effectstream command parsing
  * Go Fish Game - Defines the concise encoding format for on-chain commands
  */
 
-import type { GrammarDefinition } from "@paimaexample/concise";
+import type { GrammarDefinition } from "@effectstream/concise";
 import { Type } from "@sinclair/typebox";
+import { builtinGrammars } from "@effectstream/sm/grammar";
 
-// Custom types for Go Fish
 const PlayerName = Type.String({ minLength: 1, maxLength: 20 });
 const LobbyName = Type.String({ minLength: 1, maxLength: 30 });
 const LobbyID = Type.String({ minLength: 1, maxLength: 100 });
-const PlayerID = Type.String({ minLength: 1, maxLength: 100 });
-const Rank = Type.Union([
-  Type.Literal('2'),
-  Type.Literal('3'),
-  Type.Literal('4'),
-  Type.Literal('5'),
-  Type.Literal('6'),
-  Type.Literal('7'),
-  Type.Literal('8'),
-  Type.Literal('9'),
-  Type.Literal('10'),
-  Type.Literal('J'),
-  Type.Literal('Q'),
-  Type.Literal('K'),
-  Type.Literal('A'),
-]);
 
-export const goFishL2Grammar = {
-  /**
-   * Create Lobby: c|playerName|lobbyName|maxPlayers
-   * Example: c|Alice|Alice's Game|4
-   */
+export const effectstreamL2Grammar = {
   createdLobby: [
-    ['playerName', PlayerName],
-    ['lobbyName', LobbyName],
-    ['maxPlayers', Type.Number({ minimum: 2, maximum: 6 })],
+    ["playerName", PlayerName],
+    ["lobbyName", LobbyName],
   ],
-
-  /**
-   * Join Lobby: j|playerName|lobbyID
-   * Example: j|Bob|abc123def456
-   */
   joinedLobby: [
-    ['playerName', PlayerName],
-    ['lobbyID', LobbyID],
+    ["playerName", PlayerName],
+    ["lobbyID", LobbyID],
   ],
-
-  /**
-   * Leave Lobby: l|lobbyID
-   * Example: l|abc123def456
-   */
-  leftLobby: [['lobbyID', LobbyID]],
-
-  /**
-   * Toggle Ready: r|lobbyID
-   * Example: r|abc123def456
-   */
-  toggledReady: [['lobbyID', LobbyID]],
-
-  /**
-   * Start Game (Host only): start|lobbyID
-   * Example: start|abc123def456
-   */
-  startedGame: [['lobbyID', LobbyID]],
-
-  /**
-   * Ask For Card: ask|lobbyID|targetPlayerID|rank
-   * Example: ask|abc123def456|player_123|K
-   */
-  askedForCard: [
-    ['lobbyID', LobbyID],
-    ['targetPlayerID', PlayerID],
-    ['rank', Rank],
-  ],
-
-  /**
-   * Close Lobby (Host only): close|lobbyID
-   * Example: close|abc123def456
-   */
-  closedLobby: [['lobbyID', LobbyID]],
+  closedLobby: [["lobbyID", LobbyID]],
+  hostReady: [["lobbyID", LobbyID]],
+  cleanupGame: [["gameId", LobbyID]],
 } as const satisfies GrammarDefinition;
 
 export const grammar = {
-  ...goFishL2Grammar,
+  ...effectstreamL2Grammar,
+  "event_midnight": builtinGrammars.midnightGeneric,
 } as const satisfies GrammarDefinition;
+
+/** @deprecated Use effectstreamL2Grammar */
+export const goFishL2Grammar = effectstreamL2Grammar;

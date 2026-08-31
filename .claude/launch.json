@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend-preview",
+      "runtimeExecutable": "bunx",
+      "runtimeArgs": ["vite", "preview", "--mode", "mainnet", "--port", "4173", "--host"],
+      "cwd": "frontend",
+      "port": 4173
+    }
+  ]
+}

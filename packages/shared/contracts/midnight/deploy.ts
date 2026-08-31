@@ -1,20 +1,12 @@
 /**
  * Deploy Go Fish Contract to Midnight Network
  *
- * This script deploys the Go Fish compact contract to the Midnight blockchain.
- *
  * Usage:
- *   deno task -f @go-fish/midnight-contracts midnight-contract:deploy
- *
- * Prerequisites:
- *   1. Midnight node running (deno task midnight-node:start)
- *   2. Midnight indexer running (deno task midnight-indexer:start)
- *   3. Midnight proof server running (deno task midnight-proof-server:start)
- *   4. Contract compiled (deno task contract:compile)
+ *   bun run --filter @go-fish/midnight-contracts midnight-contract:deploy
  */
 
 import { type DeployConfig, deployMidnightContract } from "./deploy.midnight.ts";
-import { midnightNetworkConfig } from "./midnight-env.ts";
+import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import {
   Contract,
   witnesses,
@@ -34,9 +26,9 @@ const config: DeployConfig = {
 deployMidnightContract(config, midnightNetworkConfig)
   .then(() => {
     console.log("Go Fish contract deployment successful");
-    Deno.exit(0);
+    process.exit(0);
   })
   .catch((e: unknown) => {
     console.error("Deployment failed:", e);
-    Deno.exit(1);
+    process.exit(1);
   });

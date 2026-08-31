@@ -1,18 +1,19 @@
-#!/usr/bin/env -S deno run -A
+#!/usr/bin/env bun
 /**
  * Convert Forge artifacts to Hardhat format
  * This is needed because Hardhat Ignition requires Hardhat-format artifacts
  */
 
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+
 const __dirname = import.meta.dirname!;
 
 // Create Hardhat artifacts directory structure
-await Deno.mkdir(`${__dirname}/build/artifacts/hardhat/contracts`, { recursive: true });
-await Deno.mkdir(`${__dirname}/build/artifacts/hardhat/build-info`, { recursive: true });
+await mkdir(`${__dirname}/build/artifacts/hardhat/contracts`, { recursive: true });
+await mkdir(`${__dirname}/build/artifacts/hardhat/build-info`, { recursive: true });
 
 const contracts = [
   { name: "PaimaL2Contract", source: "contracts/PaimaL2Contract.sol" },
-  { name: "GoFishLobby", source: "contracts/GoFishLobby.sol" },
 ];
 
 const buildInfoId = "stub-build-info";
@@ -23,12 +24,12 @@ for (const contract of contracts) {
   let forgeArtifact;
 
   try {
-    forgeArtifact = JSON.parse(await Deno.readTextFile(forgePath));
+    forgeArtifact = JSON.parse(await readFile(forgePath, "utf-8"));
   } catch {
     // Try alternative path without contracts/ subdirectory
     const altSource = contract.source.replace('contracts/', '');
     forgePath = `${__dirname}/build/artifacts/forge/${altSource}/${contract.name}.json`;
-    forgeArtifact = JSON.parse(await Deno.readTextFile(forgePath));
+    forgeArtifact = JSON.parse(await readFile(forgePath, "utf-8"));
   }
 
   // Convert to Hardhat format
@@ -47,8 +48,8 @@ for (const contract of contracts) {
 
   // Write Hardhat artifact
   const hardhatPath = `${__dirname}/build/artifacts/hardhat/${contract.source}`;
-  await Deno.mkdir(hardhatPath, { recursive: true });
-  await Deno.writeTextFile(
+  await mkdir(hardhatPath, { recursive: true });
+  await writeFile(
     `${hardhatPath}/${contract.name}.json`,
     JSON.stringify(hardhatArtifact, null, 2)
   );
@@ -85,11 +86,11 @@ const buildInfo = {
 
 // Write both .json and .output.json files (Hardhat needs both)
 const buildInfoJson = JSON.stringify(buildInfo, null, 2);
-await Deno.writeTextFile(
+await writeFile(
   `${__dirname}/build/artifacts/hardhat/build-info/${buildInfoId}.json`,
   buildInfoJson
 );
-await Deno.writeTextFile(
+await writeFile(
   `${__dirname}/build/artifacts/hardhat/build-info/${buildInfoId}.output.json`,
   buildInfoJson
 );

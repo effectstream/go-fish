@@ -1,12 +1,57 @@
 {
-    "scripts": {
-        "dev:batcher": "cd packages/frontend && npm run dev:batcher",
-        "build:batcher": "cd packages/frontend && npm run build:batcher"
-    },
-    "dependencies": {
-        "@electric-sql/pglite": "^0.3.14"
-    },
-    "devDependencies": {
-        "wait-on": "8.0.3"
-    }
+  "name": "go-fish",
+  "private": true,
+  "workspaces": [
+    "packages/client/*",
+    "packages/shared/data-types",
+    "packages/shared/contracts/evm",
+    "packages/shared/contracts/midnight",
+    "packages/shared/contracts/midnight/go-fish-contract",
+    "frontend",
+    "e2e"
+  ],
+  "scripts": {
+    "check": "bun x tsc --noEmit -p tsconfig.check.json",
+    "build:evm": "bun run --filter @go-fish/evm-contracts contract:compile",
+    "build:midnight": "bun run --filter @go-fish/midnight-contracts contract:compile",
+    "dev": "NODE_ENV=development EFFECTSTREAM_ENV=dev bunx orchestrator start",
+    "dev:batcher": "USE_BATCHER_MODE=true NODE_ENV=development EFFECTSTREAM_ENV=dev bunx orchestrator start",
+    "dev:typescript": "USE_TYPESCRIPT_CONTRACT=true NODE_ENV=development EFFECTSTREAM_ENV=dev bunx orchestrator start",
+    "mainnet": "bun run --filter @go-fish/node mainnet",
+    "frontend:dev": "bun run --filter @go-fish/frontend dev",
+    "frontend:dev:mainnet": "bun run --filter @go-fish/frontend dev:mainnet",
+    "frontend:build": "bun run --filter @go-fish/frontend build",
+    "frontend:build:undeployed": "bun run --filter @go-fish/frontend build:undeployed",
+    "frontend:build:mainnet": "bun run --filter @go-fish/frontend build:mainnet",
+    "midnight:node": "bun run --filter @go-fish/midnight-contracts midnight-node:start",
+    "midnight:indexer": "bun run --filter @go-fish/midnight-contracts midnight-indexer:start",
+    "midnight:proof-server": "bun run --filter @go-fish/midnight-contracts midnight-proof-server:start",
+    "midnight:deploy": "bun run --filter @go-fish/midnight-contracts midnight-contract:deploy",
+    "midnight:faucet": "bun run --filter @go-fish/midnight-contracts midnight-faucet:start",
+    "leaderboard:seed": "bun run --filter @go-fish/node leaderboard:seed",
+    "leaderboard:seed:clear": "bun run --filter @go-fish/node leaderboard:seed:clear",
+    "test": "bun run --filter @go-fish/node test",
+    "test:e2e": "bun run --filter @go-fish/e2e test",
+    "postinstall": "./patch.sh"
+  },
+  "effectstream": {
+    "default": "start.dev.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.14",
+    "@effectstream/evm-contracts": "0.101.1",
+    "@effectstream/midnight-contracts": "0.101.1",
+    "@effectstream/orchestrator": "0.101.1",
+    "@midnight-ntwrk/wallet-sdk-address-format": "3.1.0",
+    "wait-on": "8.0.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "@effect/platform": "0.96.1",
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
+    "hardhat": "3.9.0"
+  }
 }
